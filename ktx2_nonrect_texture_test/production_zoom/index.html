@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Production KTX2 Zoom Probe</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "/node_modules/three/build/three.module.js",
+                "three/addons/": "/node_modules/three/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <main>
+        <section class="stage-wrap">
+            <canvas id="stage"></canvas>
+            <div class="panel-label left">square patches</div>
+            <div class="panel-label right">hex-masked patches</div>
+        </section>
+
+        <aside>
+            <header>
+                <p class="eyebrow">real TIF source, KTX2 only</p>
+                <h1>LOD Texture Coupling Probe</h1>
+            </header>
+
+            <div class="controls">
+                <button id="play">Play zoom</button>
+                <button id="prev">Prev</button>
+                <button id="next">Next</button>
+                <label>
+                    Zoom state
+                    <input id="zoom" type="range" min="0" max="3" step="1" value="0">
+                </label>
+                <label class="check">
+                    <input id="raw-containers" type="checkbox">
+                    show full containers
+                </label>
+            </div>
+
+            <section class="card">
+                <h2>State</h2>
+                <dl id="state-report" class="kv"></dl>
+            </section>
+
+            <section class="card">
+                <h2>Browser Format</h2>
+                <dl id="format-report" class="kv"></dl>
+            </section>
+
+            <section class="card">
+                <h2>Totals</h2>
+                <div id="totals"></div>
+            </section>
+
+            <section class="card">
+                <h2>Source Mosaic</h2>
+                <pre id="source-report"></pre>
+            </section>
+        </aside>
+    </main>
+
+    <script type="module" src="./main.js"></script>
+</body>
+
+</html>

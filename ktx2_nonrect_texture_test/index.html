@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>KTX2 Non-Rect Texture Test</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "/node_modules/three/build/three.module.js",
+                "three/addons/": "/node_modules/three/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <main id="app">
+        <section id="viewport-wrap" aria-label="KTX2 texture comparison viewport">
+            <canvas id="viewport"></canvas>
+            <div class="scene-label scene-label-a">A rectangle halves</div>
+            <div class="scene-label scene-label-b">B lock/key shared coordinates</div>
+        </section>
+
+        <aside id="inspector">
+            <header>
+                <p class="eyebrow">KTX2-only texture probe</p>
+                <h1>Non-Rect Containers</h1>
+            </header>
+
+            <div class="controls">
+                <label>
+                    Codec payload
+                    <select id="codec">
+                        <option value="">Loading generated KTX2 payloads</option>
+                    </select>
+                </label>
+                <button id="probe">Probe browser</button>
+                <button id="load-rect">Load A only</button>
+                <button id="load-lock">Load B only</button>
+                <button id="load-both">Load A/B</button>
+                <button id="clear">Dispose textures</button>
+            </div>
+
+            <section class="panel">
+                <h2>Browser GPU</h2>
+                <dl id="browser-report" class="kv"></dl>
+            </section>
+
+            <section class="panel">
+                <h2>Selected Formats</h2>
+                <div id="format-report" class="table-wrap"></div>
+            </section>
+
+            <section class="panel">
+                <h2>A/B Totals</h2>
+                <div id="summary-report" class="table-wrap"></div>
+            </section>
+
+            <section class="panel">
+                <h2>Asset Manifest</h2>
+                <pre id="manifest-report"></pre>
+            </section>
+        </aside>
+    </main>
+
+    <script type="module" src="./main.js"></script>
+</body>
+
+</html>
