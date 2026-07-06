@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 
 # Large Data
+local_data/
 *.tif
 *.tiff
 *.ktx2

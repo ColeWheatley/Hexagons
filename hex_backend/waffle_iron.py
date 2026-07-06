@@ -23,7 +23,8 @@
 # OUTPUT FORMATS (baked per-sector, also NOT in git):
 #   .bin:   HEX4 header + 4 LOD layers of packed 16-byte records
 #           Each record: dq(b) dr(b) h(H) d1(h) d2(h) d3(h) s1(B) s2(B) s3(B) nx(B) nz(B) pad(x)
-#   .webp:  Aerial texture with 64px padding for seamless tile blending
+#   .webp:  Aerial texture, 4096px canvas = 3360px sector content + 368px padding
+#           per side (covers scale-24 LOD hex overhang for seamless tile blending)
 #           Saved at full res + 1/16 "low" res for LOD streaming
 #
 # HARDWARE PROFILE (reference machine):
@@ -68,7 +69,15 @@ S3_PREFIX = "powfinder/app"
 # =============================================================================
 # CONSTANTS & CONFIGURATION
 # =============================================================================
-TEXTURE_PADDING_PX = 64  
+# Texture canvas is locked to 4096px total (GPU MAX_TEXTURE_SIZE floor, PoT mips)
+# instead of growing to 4992px for padding. The 819.2m sector content is rendered
+# at 3360px (0.2438 m/px, unit hex = 26.25px instead of 32px) leaving 368px of
+# padding per side = 89.72m, which covers the largest LOD hex circumradius
+# (scale=24 → 6.4·24/√3 = 88.68m) with margin. World geometry is unaffected —
+# this only changes texture-space density. uUvScale = 3360/4096 exact.
+TEXTURE_CANVAS_PX = 4096
+TEXTURE_CONTENT_PX = 3360
+TEXTURE_PADDING_PX = (TEXTURE_CANVAS_PX - TEXTURE_CONTENT_PX) // 2  # 368
 WEB_P_QUALITY = 10
 DEBUG_MODE = False
 
@@ -287,17 +296,62 @@ def generate_regional_gradient(dem_ds, bounds, upsample_factor=2, output_path="h
     print(f"   ✅ Regional gradient: {size_mb:.1f} MB in {elapsed:.1f}s")
     return rasterio.open(output_path)
 
+def load_tif_bounds(tif_list):
+    """
+    Returns [{"path", "poly"}] for every readable TIF, using a persistent
+    bounds cache. rasterio.open on all ~3,486 aerial TIFs costs ~5s of pure
+    header I/O per bake invocation (measured: 4.8s of a 5.9s single-sector
+    run); bounds never change for a given file, so cache them keyed on
+    (size, mtime). Cache lives inside AERIAL_DIR, which is gitignored.
+    """
+    cache_path = os.path.join(AERIAL_DIR, ".tif_bounds_cache.json")
+    try:
+        with open(cache_path) as fh:
+            cache = json.load(fh)
+    except Exception:
+        cache = {}
+
+    out, dirty = [], False
+    for f in tif_list:
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        key = os.path.basename(f)
+        ent = cache.get(key)
+        if not ent or ent.get("size") != st.st_size or ent.get("mtime") != st.st_mtime:
+            try:
+                with rasterio.open(f) as src:
+                    bounds = list(src.bounds)
+            except Exception:
+                continue
+            ent = {"size": st.st_size, "mtime": st.st_mtime, "bounds": bounds}
+            cache[key] = ent
+            dirty = True
+        out.append({"path": f, "poly": box(*ent["bounds"])})
+
+    if dirty:
+        try:
+            with open(cache_path, "w") as fh:
+                json.dump(cache, fh)
+        except Exception:
+            pass  # cache is an optimization; never fail the bake over it
+    return out
+
 def bake_sector_textures(SX, SY, valid_tifs, output_dir="frontend/app/aerial_tiles"):
     import PIL.Image as Image
     from rasterio.windows import from_bounds
     if not os.path.exists(output_dir): os.makedirs(output_dir)
 
     min_x, min_y, max_x, max_y = coord_util.sector_id_to_bounds_meters(SX, SY)
-    padding_m = TEXTURE_PADDING_PX * coord_util.METERS_PER_PIXEL
+    # Texture density is decoupled from the world 0.2 m/px constant: the sector's
+    # 819.2m are rendered into TEXTURE_CONTENT_PX so the padded canvas stays 4096.
+    tex_mpp = coord_util.SECTOR_SIZE_METERS / TEXTURE_CONTENT_PX  # 0.24381 m/px
+    padding_m = TEXTURE_PADDING_PX * tex_mpp
     padded_min_x, padded_max_x = min_x - padding_m, max_x + padding_m
     padded_min_y, padded_max_y = min_y - padding_m, max_y + padding_m
-    
-    total_size_px = coord_util.SECTOR_PIXELS + (TEXTURE_PADDING_PX * 2)
+
+    total_size_px = TEXTURE_CANVAS_PX
     target_poly = box(padded_min_x, padded_min_y, padded_max_x, padded_max_y)
 
     canvas = Image.new("RGB", (total_size_px, total_size_px), (0, 0, 0))
@@ -310,16 +364,21 @@ def bake_sector_textures(SX, SY, valid_tifs, output_dir="frontend/app/aerial_til
             if ix_min_x >= ix_max_x or ix_min_y >= ix_max_y: continue
 
             window = from_bounds(ix_min_x, ix_min_y, ix_max_x, ix_max_y, src.transform)
-            w_px = int((ix_max_x - ix_min_x) / coord_util.METERS_PER_PIXEL)
-            h_px = int((ix_max_y - ix_min_y) / coord_util.METERS_PER_PIXEL)
+            # Round canvas-space *edges* (not widths) so adjacent TIF patches share
+            # the exact same rounded seam — at non-integer texel alignment (tex_mpp
+            # no longer divides TIF bounds evenly) truncating widths would leave
+            # 1px black gaps between source tiles.
+            px0 = round((ix_min_x - padded_min_x) / tex_mpp)
+            px1 = round((ix_max_x - padded_min_x) / tex_mpp)
+            py0 = round((padded_max_y - ix_max_y) / tex_mpp)
+            py1 = round((padded_max_y - ix_min_y) / tex_mpp)
+            w_px, h_px = px1 - px0, py1 - py0
             if w_px <= 0 or h_px <= 0: continue
 
             try:
                 data = src.read(window=window, out_shape=(src.count, h_px, w_px), resampling=rasterio.enums.Resampling.lanczos)
                 patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8"), "RGB")
-                px = int((ix_min_x - padded_min_x) / coord_util.METERS_PER_PIXEL)
-                py = int((padded_max_y - ix_max_y) / coord_util.METERS_PER_PIXEL)
-                canvas.paste(patch, (px, py))
+                canvas.paste(patch, (px0, py0))
             except: pass
 
     res_dirs = { k: os.path.join(output_dir, k) for k in ["full", "low"] }
@@ -402,11 +461,29 @@ def bake_sector_binary(SX, SY, dem_ds, grad_ds, output_dir="frontend/app/tiles_b
     
     # Pre-calculate center slopes/normals for the block?
     # Actually, let's keep the diamond stats lightweight by indexing into this array
-    
+
+    # --- FAST INVERSE AFFINE ---
+    # rasterio.transform.rowcol wraps every lookup in array coercion plus a
+    # 2x2 linalg solve; profiled at ~5s/sector across ~217k calls (10 per hex).
+    # Our window transforms are axis-aligned north-up (b == d == 0), so the
+    # inverse is two multiplications and a floor — same semantics as rowcol's
+    # default op=math.floor.
+    def make_fast_rowcol(transform):
+        if transform.b != 0 or transform.d != 0:  # rotated raster: keep the safe path
+            return lambda x, y: rasterio.transform.rowcol(transform, x, y)
+        inv_a, inv_e = 1.0 / transform.a, 1.0 / transform.e
+        c0, f0 = transform.c, transform.f
+        def _rowcol(x, y):
+            return math.floor((y - f0) * inv_e), math.floor((x - c0) * inv_a)
+        return _rowcol
+
+    dem_rowcol = make_fast_rowcol(dem_transform)
+    grad_rowcol = make_fast_rowcol(sector_grad_transform)
+
     def fast_diamond_slope(wx1, wy1, wx2, wy2):
         # Map to array indices
-        r1, c1 = rasterio.transform.rowcol(sector_grad_transform, wx1, wy1)
-        r2, c2 = rasterio.transform.rowcol(sector_grad_transform, wx2, wy2)
+        r1, c1 = grad_rowcol(wx1, wy1)
+        r2, c2 = grad_rowcol(wx2, wy2)
         
         r_min, r_max = min(r1, r2), max(r1, r2)
         c_min, c_max = min(c1, c2), max(c1, c2)
@@ -425,7 +502,7 @@ def bake_sector_binary(SX, SY, dem_ds, grad_ds, output_dir="frontend/app/tiles_b
         return math.degrees(math.atan(math.sqrt(mdx*mdx + mdy*mdy)))
 
     def get_center_normal_packed(wx, wy):
-        r, c = rasterio.transform.rowcol(sector_grad_transform, wx, wy)
+        r, c = grad_rowcol(wx, wy)
         r = max(0, min(sector_grads.shape[1]-1, r))
         c = max(0, min(sector_grads.shape[2]-1, c))
         dx = sector_grads[0, r, c]
@@ -505,7 +582,7 @@ def bake_sector_binary(SX, SY, dem_ds, grad_ds, output_dir="frontend/app/tiles_b
                     nwy = wy + ody
                     
                     # Sample Neighbor Height
-                    nr_r, nc_c = rasterio.transform.rowcol(dem_transform, nwx, nwy)
+                    nr_r, nc_c = dem_rowcol(nwx, nwy)
                     nr_r = max(0, min(dem_data.shape[0]-1, nr_r))
                     nc_c = max(0, min(dem_data.shape[1]-1, nc_c))
                     nh_val = dem_data[nr_r, nc_c]
@@ -684,12 +761,9 @@ def main():
 
     # Calculate Bounds
     if args.full:
-        print("Scanning ALL TIFs...")
-        for f in glob.glob(os.path.join(AERIAL_DIR, "*.tif")):
-            try:
-                with rasterio.open(f) as src: valid_tifs.append({"path": f, "poly": box(*src.bounds)})
-            except: pass
-        
+        print("Scanning ALL TIFs (cached bounds)...")
+        valid_tifs = load_tif_bounds(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
+
         all_min_x, all_min_y = 1e12, 1e12
         all_max_x, all_max_y = -1e12, -1e12
         for t in valid_tifs:
@@ -724,15 +798,9 @@ def main():
         mini_box = box(m_x1, m_y1, m_x2, m_y2)
 
         # Only load intersecting TIFs
-        print("Filtering TIFs for Mini-Bake area...")
+        print("Filtering TIFs for Mini-Bake area (cached bounds)...")
         tif_list = glob.glob(os.path.join(AERIAL_DIR, "*.tif"))
-        for f in tif_list:
-            try:
-                with rasterio.open(f) as src:
-                    t_poly = box(*src.bounds)
-                    if t_poly.intersects(mini_box):
-                        valid_tifs.append({"path": f, "poly": t_poly})
-            except: pass
+        valid_tifs = [t for t in load_tif_bounds(tif_list) if t["poly"].intersects(mini_box)]
         print(f"✅ Found {len(valid_tifs)} intersecting TIFs (of {len(tif_list)} total).")
 
         # Generate a lightweight regional gradient (~150MB vs 14GB full cache)

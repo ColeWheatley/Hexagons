@@ -696,10 +696,13 @@ class PistonViewer {
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
             shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 100000.0) }; // Min, Max
 
-            // UV Padding correction (64px padding on 4096px base)
-            const pad = 64.0;
-            const size = 4096.0;
-            const total = size + pad * 2;
+            // UV Padding correction. Texture canvas is locked to 4096px total:
+            // 3360px of sector content + 368px padding per side (89.72m — covers
+            // largest LOD hex circumradius, scale=24 → 88.68m). Must match
+            // TEXTURE_CONTENT_PX / TEXTURE_PADDING_PX in hex_backend/waffle_iron.py.
+            const pad = 368.0;
+            const size = 3360.0;
+            const total = size + pad * 2; // = 4096
             shader.uniforms.uUvScale = { value: size / total };
             shader.uniforms.uUvOffset = { value: pad / total };
 
@@ -1183,8 +1186,8 @@ class PistonViewer {
         }
 
         // 2. Texture Upgrades (Lower Priority)
-        // A full-res 4224×4224 RGBA texture is ~67 MB — must pre-gate.
-        const ESTIMATED_FULL_TEX_VRAM = 67 * 1024 * 1024;
+        // A full-res 4096×4096 RGBA texture is 64 MB — must pre-gate.
+        const ESTIMATED_FULL_TEX_VRAM = 64 * 1024 * 1024;
 
         if (!this.isMoving3D && this.activeWorkerCount < maxConcurrent && this.loadQueue.length === 0 && this.upgradeQueue.length > 0) {
             const tile = this.upgradeQueue.shift();
@@ -1594,7 +1597,12 @@ class PistonViewer {
 
         // 3. Flat mesh
         if (tile.flatMesh) {
-            if (tile.flatMesh.geometry) tile.flatMesh.geometry.dispose();
+            // NB: flat meshes share this.flatGeometry — disposing it here would
+            // nuke the GL buffer for every other tile's flat mesh and force a
+            // re-upload on their next draw. Only dispose tile-owned geometry.
+            if (tile.flatMesh.geometry && tile.flatMesh.geometry !== this.flatGeometry) {
+                tile.flatMesh.geometry.dispose();
+            }
             if (tile.flatMesh.material) {
                 if (tile.flatMesh.material.map) {
                     tile.flatMesh.material.map.dispose();
@@ -1632,6 +1640,7 @@ class PistonViewer {
         tile.container = null;
         tile.lods = null;
         tile.hexDataLayers = null;
+        tile.hexHeightIndex = null;
     }
 
     hideLoader() {
@@ -1657,6 +1666,16 @@ class PistonViewer {
         }
     }
 
+    // HUD readouts: cache element refs once and only touch the DOM when the
+    // string actually changed — this method runs every rendered frame.
+    _setHudText(id, text) {
+        if (!this._hudEls) { this._hudEls = {}; this._hudLast = {}; }
+        if (this._hudLast[id] === text) return;
+        let el = this._hudEls[id];
+        if (el === undefined) el = this._hudEls[id] = document.getElementById(id);
+        if (el) { el.textContent = text; this._hudLast[id] = text; }
+    }
+
     maintainCameraAltitudeDuringAnimation(h) {
         const target = this.controls.target;
         const wx = target.x + this.worldOrigin.x;
@@ -1667,46 +1686,41 @@ class PistonViewer {
         const tile = this.tiles.get(key);
 
         // Update Readouts
-        const secEl = document.getElementById('sector-val');
-        if (secEl) secEl.textContent = `${q_r.Q}, ${q_r.R}`;
-
-        const worldEl = document.getElementById('world-val');
-        if (worldEl) worldEl.textContent = `${wx.toFixed(0)}, ${wy.toFixed(0)}`;
+        this._setHudText('sector-val', `${q_r.Q}, ${q_r.R}`);
+        this._setHudText('world-val', `${wx.toFixed(0)}, ${wy.toFixed(0)}`);
 
         // Approximate Hex (Axial)
         const h_size = UNIT_HEX_WIDTH_METERS;
         const aq = Math.round(wx / (Math.sqrt(3) / 2 * h_size));
         const ar = Math.round((wy - (aq * 0.5 * h_size)) / h_size);
 
-        const hexEl = document.getElementById('hex-val');
-        if (hexEl) hexEl.textContent = `${aq}, ${ar}`;
+        this._setHudText('hex-val', `${aq}, ${ar}`);
 
         if (tile && tile.center) {
             // Find specific hex height
             const dq = aq - tile.center.q;
             const dr = ar - tile.center.r;
 
-            let groundH = tile.stats.min; // Fallback
-            let found = false;
-
-            // Search Active Layers (start from finest L3 -> index 3)
-            // Or just search all? Finest is best.
-            for (let l = 3; l >= 0; l--) {
-                const layer = tile.hexDataLayers[l];
-                if (!layer) continue;
-                // Simple linear search (fast enough for 1 hex per frame)
-                for (const hx of layer) {
-                    if (hx.dq === dq && hx.dr === dr) {
-                        groundH = hx.h;
-                        found = true;
-                        break;
+            // O(1) lookup via a lazily-built index. The old per-frame linear
+            // scan walked up to the whole unit layer (~16k hexes) every frame.
+            // Finest layer wins (build order 3 -> 0, first-set wins) — same
+            // semantics as the original finest-first search.
+            if (!tile.hexHeightIndex && tile.hexDataLayers) {
+                const index = new Map();
+                for (let l = 3; l >= 0; l--) {
+                    const layer = tile.hexDataLayers[l];
+                    if (!layer) continue;
+                    for (const hx of layer) {
+                        const k = (hx.dq << 8) + hx.dr; // dq/dr are int8 → injective
+                        if (!index.has(k)) index.set(k, hx.h);
                     }
                 }
-                if (found) break;
+                tile.hexHeightIndex = index;
             }
 
+            let groundH = tile.hexHeightIndex ? tile.hexHeightIndex.get((dq << 8) + dr) : undefined;
             // If not found (maybe gap?), fall back to average, not MAX.
-            if (!found) groundH = tile.stats.avg;
+            if (groundH === undefined) groundH = tile.stats.avg;
 
             const animatedH = (groundH - this.floorState.value) * h;
             const minCamY = animatedH + 50.0;
@@ -1714,11 +1728,9 @@ class PistonViewer {
             // Soft constraint: only push if below
             if (this.camera.position.y < minCamY) this.camera.position.y = minCamY;
 
-            const thEl = document.getElementById('tile-height');
-            if (thEl) thEl.textContent = `${animatedH.toFixed(1)}m`;
+            this._setHudText('tile-height', `${animatedH.toFixed(1)}m`);
         }
-        const chEl = document.getElementById('camera-height');
-        if (chEl) chEl.textContent = `${this.camera.position.y.toFixed(0)}m`;
+        this._setHudText('camera-height', `${this.camera.position.y.toFixed(0)}m`);
     }
 
     updateFloorState(h) {
