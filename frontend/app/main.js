@@ -54,6 +54,19 @@ const LIGHTING_DEFAULTS = {
     slopeLight: 0.0,
 };
 
+// Worker-reported formatKey -> THREE compressed-texture format constant.
+// Only formats the tile_worker.js Basis v2 transcoder can actually emit are
+// listed here (see selectTarget() in tile_worker.js) — source KTX2s are
+// always XUASTC LDR 6x6 encoded with -no_alpha, so no RGBA/alpha variants
+// (BC3, ETC2 RGBA, PVRTC RGBA) are ever produced.
+const KTX2_FORMAT_MAP = {
+    'astc-6x6': THREE.RGBA_ASTC_6x6_Format,
+    'bc7': THREE.RGBA_BPTC_Format,
+    'bc1': THREE.RGB_S3TC_DXT1_Format,
+    'etc1': THREE.RGB_ETC1_Format,
+    'pvrtc-rgb': THREE.RGB_PVRTC_4BPPV1_Format,
+};
+
 class PistonViewer {
     constructor() {
         console.log(`[HEXAGONS] ${APP_VERSION} — loading...`);
@@ -210,7 +223,17 @@ class PistonViewer {
         this.nextWorkerIdx = 0;
         this.pendingJobs = new Map(); // ID -> {resolve, reject}
         this.jobIdCounter = 0;
+        this.textureSupport = null; // set by initWorkers() from renderer.extensions
         this.initWorkers();
+
+        // Full-res texture VRAM budget gate. Starts at the BC7 worst case (24 MB
+        // for a 4096x4096 mip chain) and is overwritten with the real observed
+        // gpuBytes after the first full-res upgrade completes (ASTC 6x6 ≈ 10MB).
+        this.estimatedFullTexVRAM = 24 * 1024 * 1024;
+
+        // Dumb counters for the perf harness — updated on every texture arrival
+        // (low-res on tile instantiation, full-res on upgrade). No logging loop.
+        this.texStats = { count: 0, totalTranscodeMs: 0, maxTranscodeMs: 0, formatKey: null, totalGpuBytes: 0 };
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
@@ -226,9 +249,25 @@ class PistonViewer {
         const count = Math.min(6, Math.max(2, navigator.hardwareConcurrency || 4));
         // Workers initialized silently
 
+        // Capability handshake: detect compressed-texture extension support once
+        // (renderer already exists at this point) and hand it to every worker so
+        // the worker-side Basis v2 transcoder can select a GPU target without
+        // ever touching the renderer or DOM.
+        const ext = this.renderer.extensions;
+        this.textureSupport = {
+            astc: ext.has('WEBGL_compressed_texture_astc'),
+            bptc: ext.has('EXT_texture_compression_bptc'),
+            s3tc: ext.has('WEBGL_compressed_texture_s3tc'),
+            etc2: ext.has('WEBGL_compressed_texture_etc'),
+            etc1: ext.has('WEBGL_compressed_texture_etc1'),
+            pvrtc: ext.has('WEBGL_compressed_texture_pvrtc') || ext.has('WEBKIT_WEBGL_compressed_texture_pvrtc'),
+        };
+
         for (let i = 0; i < count; i++) {
             const w = new Worker('./tile_worker.js');
             w.onmessage = (e) => this.handleWorkerMessage(e);
+            // Worker does not reply to INIT — fire and forget.
+            w.postMessage({ type: 'INIT', support: this.textureSupport });
             this.workers.push(w);
         }
     }
@@ -1186,8 +1225,10 @@ class PistonViewer {
         }
 
         // 2. Texture Upgrades (Lower Priority)
-        // A full-res 4096×4096 RGBA texture is 64 MB — must pre-gate.
-        const ESTIMATED_FULL_TEX_VRAM = 64 * 1024 * 1024;
+        // Compressed full-res texture VRAM — starts at the BC7 worst case and is
+        // corrected to the real observed size after the first upgrade (see
+        // this.estimatedFullTexVRAM, set in the constructor / upgradeTexture()).
+        const ESTIMATED_FULL_TEX_VRAM = this.estimatedFullTexVRAM;
 
         if (!this.isMoving3D && this.activeWorkerCount < maxConcurrent && this.loadQueue.length === 0 && this.upgradeQueue.length > 0) {
             const tile = this.upgradeQueue.shift();
@@ -1200,7 +1241,7 @@ class PistonViewer {
                     this.camera.projectionMatrix, this.camera.matrixWorldInverse);
                 this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
 
-                // Try up to 3 swaps to free enough for the ~67 MB texture
+                // Try up to 3 swaps to free enough for the full-res texture
                 let attempts = 0;
                 while (!this.cacheManager.canAllocate(ESTIMATED_FULL_TEX_VRAM) && attempts < 3) {
                     const swapped = this.cacheManager.requestSwap(
@@ -1234,7 +1275,7 @@ class PistonViewer {
     async fetchTileOnWorker(task) {
         try {
             const { t } = task;
-            const lowTexUrl = `aerial_tiles/low/sector_${t.q}_${t.r}.webp`;
+            const lowTexUrl = `aerial_tiles/low/sector_${t.q}_${t.r}.ktx2`;
             const binUrl = `tiles_bin/sector_${t.q}_${t.r}.bin?v=6`;
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
@@ -1253,6 +1294,36 @@ class PistonViewer {
             this.loadingTiles.delete(`${task.t.q}_${task.t.r}`);
             return null;
         }
+    }
+
+    // Build a THREE.CompressedTexture from a worker-transcoded KTX2 result
+    // ({ mipmaps, width, height, formatKey, isSRGB, ... }). Used for both the
+    // low-res texture on tile instantiation and the full-res upgrade — the
+    // worker never imports THREE, so this mapping only happens here.
+    buildCompressedTexture(texResult) {
+        const { mipmaps, width, height, formatKey, isSRGB } = texResult;
+        const threeFormat = KTX2_FORMAT_MAP[formatKey];
+        if (!threeFormat) {
+            throw new Error(`Unknown compressed texture formatKey from worker: ${formatKey}`);
+        }
+        const texture = new THREE.CompressedTexture(mipmaps, width, height, threeFormat);
+        texture.minFilter = mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.flipY = false;
+        texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+        texture.needsUpdate = true;
+        return texture;
+    }
+
+    // Dumb telemetry accumulator for the perf harness — no logging loop, just
+    // running totals read externally via window.pistonViewer.texStats.
+    updateTexStats(texResult) {
+        this.texStats.count++;
+        this.texStats.totalTranscodeMs += texResult.transcodeMs || 0;
+        this.texStats.maxTranscodeMs = Math.max(this.texStats.maxTranscodeMs, texResult.transcodeMs || 0);
+        this.texStats.formatKey = texResult.formatKey;
+        this.texStats.totalGpuBytes += texResult.gpuBytes || 0;
     }
 
     processInstantiationQueue() {
@@ -1291,9 +1362,8 @@ class PistonViewer {
             // This cuts shader compilation overhead by 75%
             let initialTex = null;
             if (tex) {
-                initialTex = new THREE.CanvasTexture(tex);
-                initialTex.colorSpace = THREE.SRGBColorSpace; // Fix "Ghostly Hue"
-                initialTex.flipY = false;
+                initialTex = this.buildCompressedTexture(tex);
+                this.updateTexStats(tex);
             }
             const sharedMaterial = this.createTileMaterial(0, !!tex, initialTex);
             this.materialsToUpdate.add(sharedMaterial);
@@ -1414,10 +1484,12 @@ class PistonViewer {
             // --- LEDGER: Register tile's GPU footprint ---
             // Geometry bytes pre-computed on worker thread (Graft 3)
             const geometryBytes = workerData.geometryBytes || 0;
-            // Texture: low-res bitmap (worker returns ImageBitmap → CanvasTexture)
+            // Texture: low-res KTX2, transcoded on the worker to a compressed
+            // GPU format — use the worker-reported byte count directly instead
+            // of estimating from raw RGBA dimensions.
             let textureBytes = 0;
-            if (workerData.texture && workerData.texture.width) {
-                textureBytes = workerData.texture.width * workerData.texture.height * 4;
+            if (workerData.texture && workerData.texture.gpuBytes) {
+                textureBytes = workerData.texture.gpuBytes;
             }
             this.vramLedger.register(key, {
                 geometryBytes, textureBytes,
@@ -1479,7 +1551,7 @@ class PistonViewer {
     async upgradeTexture(tile) {
         tile.loadingTex = true;
         const key = `${tile.q}_${tile.r}`;
-        const url = `aerial_tiles/full/sector_${tile.q}_${tile.r}.webp`;
+        const url = `aerial_tiles/full/sector_${tile.q}_${tile.r}.ktx2`;
         try {
             const texStart = performance.now();
             const result = await this.postWorkerJob('LOAD_TEXTURE', { url });
@@ -1490,9 +1562,8 @@ class PistonViewer {
                 this.vramLedger.addNetworkPayload(key, { bin: 0, tex: result.networkBytes });
             }
 
-            const fullTex = new THREE.CanvasTexture(result.bitmap);
-            fullTex.colorSpace = THREE.SRGBColorSpace;
-            fullTex.flipY = false;
+            const fullTex = this.buildCompressedTexture(result);
+            this.updateTexStats(result);
 
             const assignStart = performance.now();
 
@@ -1519,8 +1590,11 @@ class PistonViewer {
             const assignTime = performance.now() - assignStart; // Measure ENTIRE assignment block in ms
 
             // --- LEDGER: Update texture VRAM (old low-res → new full-res) ---
-            const newTexBytes = result.bitmap.width * result.bitmap.height * 4;
-            this.vramLedger.updateTexture(key, newTexBytes);
+            this.vramLedger.updateTexture(key, result.gpuBytes);
+            // Correct the upgrade-gate estimate to the real observed size now
+            // that we know it (ASTC 6x6 ≈ 10MB, BC7 ≈ 22MB — the 24MB default
+            // was only ever a worst-case placeholder).
+            this.estimatedFullTexVRAM = result.gpuBytes;
 
             tile.isFullTex = true;
 
