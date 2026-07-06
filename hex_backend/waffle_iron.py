@@ -1,4 +1,4 @@
-# @atlas: The central terrain baking pipeline ('Waffle Iron' v4.1). Ingests large EPSG:31254 DEMs and high-res orthophotos (TIFs). It processes these into a proprietary 16-byte 'Uber-Hex' binary structure (.bin) featuring delta compression, 'Diamond' slope area sampling, and packed lighting normals. Simultaneously generates and uploads padded webp tiles (full and low-res LODs) to S3, using incremental caching to prevent redundant bakes.
+# @atlas: The central terrain baking pipeline ('Waffle Iron' v4.1). Ingests large EPSG:31254 DEMs and high-res orthophotos (TIFs). It processes these into a proprietary 16-byte 'Uber-Hex' binary structure (.bin) featuring delta compression, 'Diamond' slope area sampling, and packed lighting normals. Simultaneously generates and uploads padded XUASTC LDR 6x6 KTX2 tiles (full and low-res LODs) to S3, using incremental caching to prevent redundant bakes.
 # 🧇 Waffle Iron v4.1 - Incremental Bake Edition
 # =============================================================================
 # FEATURES:
@@ -23,9 +23,10 @@
 # OUTPUT FORMATS (baked per-sector, also NOT in git):
 #   .bin:   HEX4 header + 4 LOD layers of packed 16-byte records
 #           Each record: dq(b) dr(b) h(H) d1(h) d2(h) d3(h) s1(B) s2(B) s3(B) nx(B) nz(B) pad(x)
-#   .webp:  Aerial texture, 4096px canvas = 3360px sector content + 368px padding
-#           per side (covers scale-24 LOD hex overhang for seamless tile blending)
-#           Saved at full res + 1/16 "low" res for LOD streaming
+#   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
+#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). 4096px canvas = 3360px sector
+#           content + 368px padding per side (covers scale-24 LOD hex overhang for
+#           seamless tile blending). Saved at full res + 1/16 "low" res for LOD streaming.
 #
 # HARDWARE PROFILE (reference machine):
 #   MacBook M1, 16 GB shared memory
@@ -49,6 +50,8 @@ import argparse
 import shutil
 import sys
 import struct
+import subprocess
+import tempfile
 from pyproj import Transformer
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -78,14 +81,26 @@ S3_PREFIX = "powfinder/app"
 TEXTURE_CANVAS_PX = 4096
 TEXTURE_CONTENT_PX = 3360
 TEXTURE_PADDING_PX = (TEXTURE_CANVAS_PX - TEXTURE_CONTENT_PX) // 2  # 368
-WEB_P_QUALITY = 10
+XUASTC_QUALITY = 75  # basisu -quality (0-100); tradeoff vs bitrate — never reduce this for speed
+# basisu -effort (0-10); tradeoff vs encode speed. Benchmarked full-res (4096x4096)
+# single-file encodes on the reference M1: effort=4 -> ~45s, effort=2 -> ~23s,
+# effort=1 -> ~8s (file size differs by <2% across all three at fixed quality=75 —
+# effort mostly buys robustness against harder blocks, not raw size). effort=4
+# alone blows the ~30s/sector bake budget; effort=1 keeps a full sector (canvas
+# composite + full + low encode + .bin bake) at ~11s, matching run_lil_bake.sh's
+# "rapid iteration" intent. Lowered per the "reduce effort, never quality/block
+# size" rule — see run_basisu_encode() for a second, unrelated speed fix
+# (dropping -parallel, which disables intra-image multithreading for
+# single-file invocations and was independently costing ~3.4x).
+XUASTC_EFFORT = 1
 DEBUG_MODE = False
 
 # Stubai Center (For Mini-Bake) — precise coordinates for sector (73, 252)
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "4.1.0"  # bump this when you change baking logic to trigger re-bake
+BAKER_VERSION = "4.1.0"  # bump this when you change .bin baking logic to trigger re-bake
+TEXTURE_VERSION = "1.0.0"  # bump this when you change texture encoding to trigger re-bake
 
 DEFAULT_GRID_SIZE = 12  # 12×12 grid for mini-bake (configurable via --grid)
 
@@ -93,6 +108,81 @@ DEM_PATH = "hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif"
 GRADIENT_PATH = "hex_backend/DGM_Tirol_gradient_cached.tif"
 AERIAL_DIR = "hex_backend/aerial_tifs"
 METADATA_PATH = "frontend/app/tiles_bin/metadata.json"
+
+# Resolved once in main() at bake start — no fallback codec exists, so a bake
+# either has a working XUASTC-capable basisu binary or it fails loudly before
+# baking anything.
+BASISU_BINARY = None
+
+
+def resolve_basisu_binary():
+    """
+    Resolve the basisu v2 binary used to encode XUASTC LDR 6x6 KTX2 textures.
+    Order: $BASISU env var -> ktx2_nonrect_texture_test/.basisu_v2/source/bin/basisu
+    (relative to repo root) -> raise. The system basisu (v1.60) does NOT support
+    XUASTC — there is no fallback codec.
+    """
+    env_path = os.environ.get("BASISU")
+    if env_path:
+        return env_path
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_path = os.path.join(repo_root, "ktx2_nonrect_texture_test", ".basisu_v2", "source", "bin", "basisu")
+    if os.path.exists(default_path):
+        return default_path
+    raise RuntimeError(
+        "No XUASTC-capable basisu v2 binary found. Set $BASISU to its path, or build one with "
+        "`pixi run texture-build-basisu-v2` (requires Basis Universal v2.x — the system basisu "
+        "v1.60 does not expose XUASTC). There is no fallback codec."
+    )
+
+
+def verify_basisu_xuastc(basisu_bin):
+    """Fail loudly at bake start if the resolved basisu binary can't encode XUASTC LDR 6x6."""
+    try:
+        result = subprocess.run([basisu_bin, "-help"], capture_output=True, text=True, check=False)
+        help_text = f"{result.stdout}\n{result.stderr}"
+    except FileNotFoundError:
+        raise RuntimeError(f"basisu binary not found or not executable: {basisu_bin}")
+    if "-ldr_6x6i" not in help_text:
+        raise RuntimeError(
+            f"basisu binary at {basisu_bin} does not expose -ldr_6x6i (XUASTC LDR 6x6). "
+            "This pipeline requires Basis Universal v2.x — build one with "
+            "`pixi run texture-build-basisu-v2`. There is no fallback codec."
+        )
+
+
+def run_basisu_encode(input_png, output_ktx2):
+    """
+    Encode a PNG to XUASTC LDR 6x6 KTX2. Raises loudly on failure — no fallback codec.
+
+    Deliberately omits -parallel: that flag means "compress multiple textures
+    simultaneously, one thread per texture" (for multi -file invocations). We
+    always encode exactly one file per call, so -parallel does not add
+    parallelism here — it was measured to *disable* basisu's default
+    intra-image multithreading instead, taking a single 4096x4096 encode from
+    ~8s to ~27s on the reference M1. -max_threads still caps the (default,
+    already-multithreaded) single-image compressor's thread count.
+    """
+    cmd = [
+        BASISU_BINARY,
+        "-ldr_6x6i",
+        "-quality", str(XUASTC_QUALITY),
+        "-effort", str(XUASTC_EFFORT),
+        "-ktx2",
+        "-mipmap",
+        "-mip_srgb",
+        "-no_alpha",
+        "-y_flip",
+        "-max_threads", str(os.cpu_count() or 4),
+        "-file", str(input_png),
+        "-output_file", str(output_ktx2),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ basisu encode failed for {output_ktx2}:\n{e.stdout}\n{e.stderr}")
+        raise
+
 
 def upload_to_s3(local_path):
     """
@@ -119,9 +209,11 @@ def upload_to_s3(local_path):
     cmd = ["aws", "s3", "cp", local_path, s3_url, "--quiet"]
     
     # Set Cache-Control for immutable assets
-    if local_path.endswith(('.webp', '.bin')):
+    if local_path.endswith(('.ktx2', '.bin')):
         cmd += ["--cache-control", "max-age=31536000"]
-        
+    if local_path.endswith('.ktx2'):
+        cmd += ["--content-type", "image/ktx2"]
+
     try:
         # Launch in background, do not wait
         subprocess.Popen(cmd)
@@ -385,15 +477,22 @@ def bake_sector_textures(SX, SY, valid_tifs, output_dir="frontend/app/aerial_til
     for d in res_dirs.values():
         if not os.path.exists(d): os.makedirs(d)
 
-    f_name = f"sector_{SX}_{SY}.webp"
+    f_name = f"sector_{SX}_{SY}.ktx2"
     full_path = os.path.join(res_dirs["full"], f_name)
     low_path = os.path.join(res_dirs["low"], f_name)
 
-    canvas.save(full_path, "WEBP", quality=WEB_P_QUALITY)
-    upload_to_s3(full_path)
-
     c_low = canvas.resize((total_size_px // 16, total_size_px // 16), Image.LANCZOS)
-    c_low.save(low_path, "WEBP", quality=WEB_P_QUALITY)
+
+    with tempfile.TemporaryDirectory(prefix="waffle_ktx2_") as tmp_dir:
+        full_png = os.path.join(tmp_dir, "full.png")
+        low_png = os.path.join(tmp_dir, "low.png")
+        canvas.save(full_png, "PNG")
+        c_low.save(low_png, "PNG")
+
+        run_basisu_encode(full_png, full_path)
+        run_basisu_encode(low_png, low_path)
+
+    upload_to_s3(full_path)
     upload_to_s3(low_path)
 
 def get_diamond_stats(grad_ds, p1, p2):
@@ -692,7 +791,7 @@ def bake_sector_binary(SX, SY, dem_ds, grad_ds, output_dir="frontend/app/tiles_b
     upload_to_s3(bin_path)
 
 def main():
-    global S3_ENABLED
+    global S3_ENABLED, BASISU_BINARY
     parser = argparse.ArgumentParser(description="🧇 Waffle Iron v4.1 — Incremental Bake")
     parser.add_argument("--full", action="store_true", help="Run full global bake (defaults to Mini-Bake)")
     parser.add_argument("--center", type=str, help="Center sector as 'Q,R' (e.g. 73,252)")
@@ -712,14 +811,27 @@ def main():
                 metadata = json.load(f)
         except: pass
     
-    prev_version = metadata.get("baker_version", "")
-    can_skip = (prev_version == BAKER_VERSION) and not args.force
-    if can_skip:
-        print(f"🔄 Incremental bake: BAKER_VERSION {BAKER_VERSION} matches. Will skip existing tiles.")
-    elif args.force:
-        print(f"🔥 Force re-bake enabled.")
+    prev_baker_version = metadata.get("baker_version", "")
+    prev_texture_version = metadata.get("texture_version", "")
+    can_skip_bin = (prev_baker_version == BAKER_VERSION) and not args.force
+    can_skip_tex = (prev_texture_version == TEXTURE_VERSION) and not args.force
+    if args.force:
+        print(f"🔥 Force re-bake enabled (bin + textures).")
     else:
-        print(f"✨ New baker version detected ({prev_version} -> {BAKER_VERSION}). Re-baking everything in range.")
+        if can_skip_bin:
+            print(f"🔄 Incremental bake: BAKER_VERSION {BAKER_VERSION} matches. Will skip existing .bin files.")
+        else:
+            print(f"✨ New baker version detected ({prev_baker_version} -> {BAKER_VERSION}). Re-baking all .bin files in range.")
+        if can_skip_tex:
+            print(f"🔄 Incremental bake: TEXTURE_VERSION {TEXTURE_VERSION} matches. Will skip existing textures.")
+        else:
+            print(f"✨ New texture version detected ({prev_texture_version} -> {TEXTURE_VERSION}). Re-baking all textures in range.")
+
+    # Resolve + verify the XUASTC encoder up front — fail loudly before doing any
+    # other work. There is no fallback codec.
+    BASISU_BINARY = resolve_basisu_binary()
+    verify_basisu_xuastc(BASISU_BINARY)
+    print(f"🎨 basisu (XUASTC-capable): {BASISU_BINARY}")
 
     # Disk Space Check
     import shutil as disk_check
@@ -830,17 +942,23 @@ def main():
             if not has_imagery:
                 skipped_no_imagery += 1
                 continue
-            # Skip logic (already baked)
+            # Skip logic (already baked) — .bin and textures are versioned/skipped
+            # independently, so a sector can re-bake one without the other.
             bin_file = f"frontend/app/tiles_bin/sector_{sx}_{sy}.bin"
-            tex_file = f"frontend/app/aerial_tiles/full/sector_{sx}_{sy}.webp"
-            if can_skip and os.path.exists(bin_file) and os.path.exists(tex_file):
+            tex_full_file = f"frontend/app/aerial_tiles/full/sector_{sx}_{sy}.ktx2"
+            tex_low_file = f"frontend/app/aerial_tiles/low/sector_{sx}_{sy}.ktx2"
+            skip_bin = can_skip_bin and os.path.exists(bin_file)
+            skip_tex = can_skip_tex and os.path.exists(tex_full_file) and os.path.exists(tex_low_file)
+            if skip_bin and skip_tex:
                 skipped += 1
                 continue
 
             t0 = time.time()
             print(f"Cooking Sector {sx}, {sy}...")
-            bake_sector_textures(sx, sy, valid_tifs)
-            bake_sector_binary(sx, sy, dem, grad_ds)
+            if not skip_tex:
+                bake_sector_textures(sx, sy, valid_tifs)
+            if not skip_bin:
+                bake_sector_binary(sx, sy, dem, grad_ds)
             elapsed = time.time() - t0
             bake_times.append(elapsed)
             print(f"   ⏱️  {elapsed:.1f}s")
@@ -863,7 +981,8 @@ def main():
 
     # Update metadata
     with open(METADATA_PATH, "w") as f:
-        json.dump({"baker_version": BAKER_VERSION, "last_bake": time.ctime(),
+        json.dump({"baker_version": BAKER_VERSION, "texture_version": TEXTURE_VERSION,
+                   "last_bake": time.ctime(),
                    "grid_size": grid_size, "sectors_baked": len(bake_times)}, f)
 
     generate_manifest.generate_manifest()
