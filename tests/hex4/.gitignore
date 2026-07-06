@@ -1,0 +1,4 @@
+fixtures/
+tmp/
+__pycache__/
+*.pyc
