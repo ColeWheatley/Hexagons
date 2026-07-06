@@ -12,6 +12,45 @@ Three new files, all additive (see "Design notes" below for why):
   `stress`) driven by URL param, for reproducible A/B runs.
 - `scripts/compare_perf.py` — stdlib-only CLI that diffs two reports and prints a verdict.
 
+## IMPORTANT: the tab must be genuinely visible/foregrounded
+
+Everything in this harness — the app's own render loop, `PerfProfiler.frame()`, and
+`benchmark.js`'s scenario driver — rides on `requestAnimationFrame`. Chrome fully suspends
+`requestAnimationFrame` for a page whose `document.visibilityState !== 'visible'`, regardless of
+whether the tab has JS-level "focus" (`document.hasFocus()` can be `true` while
+`visibilityState` stays `'hidden'` — they are independent signals; only visibility gates rAF).
+When this happens, `requestAnimationFrame` callbacks stop firing entirely — not slow down, stop
+— for as long as the page stays occluded/backgrounded, then resume once it's actually painted
+on screen again.
+
+**This is not cosmetic.** If you drive the app through a browser-automation path that never
+gives the tab a real, on-screen, composited paint (headless-style extension control, a window
+manager that keeps it behind other windows, a remote/virtual display with no visible surface,
+etc.), tile loading silently stalls forever (tiles finish fetching and sit in
+`instantiateQueue`, never instantiated — `processInstantiationQueue()` is rAF-gated too), and any
+scenario you start will appear to hang. Because `benchmark.js`'s scenarios check elapsed
+wall-clock time (`performance.now()`) rather than counting rendered frames, a stalled scenario
+does NOT throw or hang forever — the moment the tab is ever repainted again (even hours later),
+it immediately fast-forwards to "done" and emits a `[PERF_REPORT]` built almost entirely from
+padding: a handful of real frames, most with frametimes in the tens-to-hundreds-of-**seconds**
+range (a frozen `rAF` gap masquerading as one giant "frame"), and near-zero tile/VRAM samples.
+**That report is not a valid perf measurement — it's an artifact of the tab never actually
+rendering.** Do not save or compare a report whose `frames.total` is in the single digits or
+whose `worst_ms` is absurdly large (seconds, not milliseconds) — treat it as "the capture
+environment was invalid," not as real data.
+
+How to tell you've hit this: `document.hidden === true` / `document.visibilityState ===
+'hidden'` in the page's console, `pistonViewer.profiler.frames.total` not increasing over real
+wall-clock seconds, and `pistonViewer.tiles.size` stuck at 0 while `pistonViewer.instantiateQueue`
+has entries.
+
+**The fix is environmental, not code**: run the scenario in a real Chrome window that is
+actually visible on screen (a normal interactive browser tab you can see is enough — it doesn't
+need to be the OS-focused window on most systems, but it does need to not be minimized,
+occluded by a virtualization layer, or driven through a path that never composites it). This is
+why this branch's own baseline capture is marked **pending** below rather than filled in with
+numbers from a broken run.
+
 ## Running a scenario
 
 1. Serve the app from the repo root (any static server works; the app has no build step):
@@ -93,6 +132,41 @@ The `stress` scenario is the most aggressive (repeated zoom 15km→300m cycles f
 texture upgrades + eviction pressure at multiple locations) — it's the one most likely to
 reproduce the historical OOM crash, so weight it heaviest when judging pass/fail.
 
+## Baseline capture status (this branch, webp pipeline): PENDING
+
+The harness itself is built, committed, and verified working end to end — but a valid real-time
+`perf_reports/baseline_webp_*.json` capture could **not** be completed in this session, for the
+environmental reason documented above (the `claude-in-chrome` MCP browser tool never gave the
+tab a genuinely visible/composited paint, so `requestAnimationFrame` — and therefore the whole
+app, the profiler, and the benchmark driver — stayed frozen).
+
+What was verified, concretely:
+- `frontend/app/index.html` served correctly from `npx http-server frontend/app -p 8125 -c-1`
+  (port 8124 was occupied by an unrelated stray process from a different project on this
+  machine; 8125 was free — use whatever's free on your machine, the harness doesn't care).
+- The app, `perf_profiler.js`, and `benchmark.js` all load with no syntax/import errors —
+  `[HEXAGONS] v0.8.0 — loading...` and `[BENCHMARK] Scenario "traverse" queued — waiting for the
+  viewer's initial tile load...` both logged correctly.
+- The real tile pipeline works: all sectors in the actually-baked cluster near Stubai
+  (q77–80/r248–255) fetched successfully (`fetch('tiles_bin/sector_77_251.bin')` → 200, 345584
+  bytes) and 13/13 candidate tiles landed in `instantiateQueue` — confirmed via direct
+  `pistonViewer.*` introspection over `javascript_tool`, not just console logs.
+- The crash-resilience persistence mechanism fired correctly and produced a well-formed
+  (if data-sparse, for the reason above) `localStorage['hexagons:perfProfiler:lastRun']` entry
+  with `meta.finished: false` while the run was in progress.
+- `scripts/compare_perf.py` was validated against hand-built synthetic reports (a crashed-webp
+  vs. clean-ktx2 pair, plus a degenerate/all-zero pair) and produces correct aligned tables,
+  deltas, and verdicts in all three cases, including the "one run is `crashed: true`" headline
+  path.
+
+What's missing: real `perf_reports/baseline_webp_orbit.json` / `_traverse.json` / `_stress.json`
+files with genuine frame/memory/VRAM data. **To produce them**, run the exact commands in
+"Running a scenario" above from a real, visible, interactive Chrome window (not headless
+automation) — it's a ~5 minute manual task (60+90+120s of scenario time plus load waits) and the
+`.json` files will auto-download; move them into `perf_reports/` and commit them. If a browser
+automation tool is used instead, verify `document.visibilityState === 'visible'` in that tab
+before trusting any report it produces.
+
 ## Crash recovery (the OOM evidence mechanism)
 
 Every ~2 seconds (tied to `animate()`'s rAF cadence, so it costs nothing extra), `PerfProfiler`
@@ -144,17 +218,21 @@ trivial, all new logic lives in the two new files above; `main.js` has exactly f
 (`v?.texStats`) everywhere — the profiler and benchmark harness work identically whether or not
 that field exists, which is how `texturePipeline` auto-detects `'ktx2'` vs `'webp'`.
 
-Scenario paths (`traverse`, `stress`) derive their extents from `viewer.manifest.bounds` and
-`viewer.manifest.tiles` at runtime rather than hardcoding coordinates, so they work for any bake
-size. **Caveat for this repo's current dev dataset**: `tile_manifest.json` lists 257 registered
-sectors spanning a large irregular area, but only 32 of them (a dense 4×8 block near Stubai,
-q77–80/r248–255) currently have `.bin`/`.webp` files on disk in this worktree — the rest 404
-silently. `traverse`'s lawnmower path covers the full registered extent per spec, so a
-significant fraction of its ~90s will pass over registered-but-unbaked sectors with nothing to
-load (idle, not a bug). `stress`'s jump locations are sampled from `manifest.tiles` (real
-registered sector centers, always including the viewer's actual startup location) rather than
-raw bounding-box corners, which biases it toward sectors more likely to have real data. Since
-both the baseline (this branch) and candidate (KTX2 branch) runs read the *same* manifest and
-tile data, this doesn't bias an A/B comparison — it just means the absolute "cache churn" numbers
-for `traverse` are diluted versus a fully-dense bake, so weight `stress` more heavily when judging
-absolute severity.
+Scenario paths (`traverse`, `stress`) derive their extents from `viewer.manifest.tiles` at
+runtime rather than hardcoding coordinates, so they work for any bake size. **Discovered quirk in
+this repo's current dev dataset**: `tile_manifest.json`'s own `bounds` field spans a raw
+51.5km×38.4km box, but that's almost entirely dragged out by 3 far-flung stray sectors (a
+leftover single-tile test area near q121–123) — the real registered ski-area polygon is only
+~12km×12km, of which a dense 4×8 block near Stubai (q77–80/r248–255) currently has `.bin`/`.webp`
+files on disk in this worktree; the rest 404 silently (registered but not yet baked in this
+sandbox). Using raw `manifest.bounds` verbatim for `traverse`'s lawnmower path would have spent
+most of its ~90s flying over that 3x-oversized empty box. `computeLocalBounds()` in
+`benchmark.js` instead trims to the 2nd–98th percentile of actual tile x/y positions, which
+drops the 3 outlier sectors and recovers the true ~12km×12km extent — verified against this
+manifest (`python3` sanity check: raw span 51513×38406m vs. trimmed span 12288×12288m). This is
+a general-purpose fix (robust to a handful of outlier sectors in any manifest), not a hardcoded
+value for this dataset. `stress`'s jump locations are separately sampled from `manifest.tiles`
+sorted by position (real registered sector centers, always including the viewer's actual startup
+location), which also naturally avoids the extreme outliers. Since baseline and candidate runs
+read the *same* manifest/tile data, none of this biases an A/B comparison either way — it only
+affects how representative the absolute numbers are of a "real" traversal.

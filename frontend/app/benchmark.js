@@ -32,11 +32,35 @@ function cartesianToSpherical(pos, target) {
     return { radius, phi, theta };
 }
 
-/** Local (viewer) coordinate extents derived from manifest.bounds — see main.js's initWorld():
- * lx = x - min_x, lz = -(y - min_y). Works for any bake size/shape. */
+function percentile(sortedAsc, p) {
+    const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(p * sortedAsc.length)));
+    return sortedAsc[idx];
+}
+
+/** Local (viewer) coordinate extents derived from the manifest — see main.js's initWorld():
+ * lx = x - min_x, lz = -(y - min_y). Works for any bake size/shape.
+ *
+ * Uses the 2nd/98th percentile of actual tile positions rather than raw manifest.bounds
+ * min/max: a manifest can legitimately contain a handful of far-flung stray sectors (e.g. a
+ * leftover single-tile test area) that blow up the naive bounding box far beyond the real
+ * dense baked region without adding any useful path to traverse. Percentile-trimming is robust
+ * to that without needing to know which sectors are "really" baked. */
 function computeLocalBounds(manifest) {
     const b = manifest.bounds;
-    return { minX: 0, maxX: b.max_x - b.min_x, minZ: -(b.max_y - b.min_y), maxZ: 0 };
+    const tiles = manifest?.tiles;
+    if (!tiles || tiles.length < 20) {
+        return { minX: 0, maxX: b.max_x - b.min_x, minZ: -(b.max_y - b.min_y), maxZ: 0 };
+    }
+    const xs = tiles.map((t) => t.x).sort((a, c) => a - c);
+    const ys = tiles.map((t) => t.y).sort((a, c) => a - c);
+    const minXWorld = percentile(xs, 0.02), maxXWorld = percentile(xs, 0.98);
+    const minYWorld = percentile(ys, 0.02), maxYWorld = percentile(ys, 0.98);
+    return {
+        minX: minXWorld - b.min_x,
+        maxX: maxXWorld - b.min_x,
+        minZ: -(maxYWorld - b.min_y),
+        maxZ: -(minYWorld - b.min_y),
+    };
 }
 
 /** Jump targets for the `stress` scenario: the viewer's actual starting focus point (guaranteed
