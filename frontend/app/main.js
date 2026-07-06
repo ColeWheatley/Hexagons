@@ -4,6 +4,8 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
+import { PerfProfiler } from './perf_profiler.js';
+import { initBenchmark } from './benchmark.js';
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
 const APP_VERSION = 'v0.8.0';
@@ -215,6 +217,7 @@ class PistonViewer {
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
         this.cacheManager = new CacheManager(this.vramLedger);
+        this.profiler = new PerfProfiler(this);
 
         this.initWorld();
         this.animate();
@@ -2039,6 +2042,7 @@ class PistonViewer {
 
         // --- RENDER CHECK ---
         // STATIC state: must NOT render. Early-out if nothing moved and no flags set.
+        this.profiler?.frame(now, this.engineState, moved || this.needsRender);
         if (!moved && !this.needsRender) return;
 
         // ===== BEGIN TIMED RENDER CYCLE =====
@@ -2218,3 +2222,4 @@ class PistonViewer {
 }
 
 new PistonViewer();
+initBenchmark(window.pistonViewer, APP_VERSION);
