@@ -46,7 +46,7 @@ BLACKLIST_DIRS = {
 
 BLACKLIST_EXTS = {
     ".tif", ".pdf", ".json", ".png", ".jpg", ".jpeg", ".lock", ".out", ".log", ".DS_Store",
-    ".bin", ".webp", ".ktx2", ".geojson", ".bak"
+    ".bin", ".ktx2", ".geojson", ".bak"
 }
 
 def is_blacklisted(path: Path) -> bool:
