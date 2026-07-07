@@ -270,7 +270,9 @@ class PistonViewer {
             const w = new Worker('./tile_worker.js');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
-            w.postMessage({ type: 'INIT', support: this.textureSupport });
+            // NB: must use the same {type, data} envelope as every other worker
+            // message — the worker destructures e.data.data.
+            w.postMessage({ type: 'INIT', data: { support: this.textureSupport } });
             this.workers.push(w);
         }
     }
