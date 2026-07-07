@@ -1,8 +1,10 @@
 // @atlas: The 'CoordinateUtility' module. Provides essential math functions to convert between real-world cartesian meters and axial 'Hex' coordinates. It also handles dynamic EPSG:31254 projection calibration, using reference GPS data (e.g., from Kappl and St. Anton ski resorts) to maintain accurate metric scaling across the landscape.
+import './gosper_core.js';
+
 const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
-export const SECTOR_WIDTH_METERS = 819.2; // 4096px
+export const SECTOR_WIDTH_METERS = 819.2; // legacy 4096px sector width (pre-gosper)
 
 export function axialToWorldMeters(q, r) {
     const h = UNIT_HEX_WIDTH_METERS;
@@ -24,6 +26,23 @@ export function worldToSectorID(worldX, worldY) {
         q: Math.floor(worldX / SECTOR_WIDTH_METERS),
         r: Math.floor(worldY / SECTOR_WIDTH_METERS)
     };
+}
+
+// Lattice coords of the Gosper L5 island tile owning a world position.
+export function worldToGosperTile(worldX, worldY) {
+    const G = window.GosperCore;
+    const h = UNIT_HEX_WIDTH_METERS;
+    const fq = worldX / ((Math.sqrt(3) / 2) * h);
+    const fr = (worldY - (fq * 0.5 * h)) / h;
+    // cube-round to the nearest unit cell
+    const fx = fq, fz = fr, fy = -fq - fr;
+    let rx = Math.round(fx), ry = Math.round(fy), rz = Math.round(fz);
+    const dx = Math.abs(rx - fx), dy = Math.abs(ry - fy), dz = Math.abs(rz - fz);
+    if (dx > dy && dx > dz) rx = -ry - rz;
+    else if (dy > dz) ry = -rx - rz;
+    else rz = -rx - ry;
+    const [yq, yr] = G.tileOfUnit(rx, rz);
+    return { yq, yr };
 }
 
 // Projection Calibration

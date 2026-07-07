@@ -166,59 +166,29 @@
                                     style="width: 100%;">
                             </div>
 
-                            <!-- UNIT -->
+                            <!-- GOSPER SCREEN-SPACE LOD -->
                             <div class="hud-item"
                                 style="flex-direction: column; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
-                                <span>UNIT (0 - <span id="lod-unit-end-val">700</span>m)</span>
-                            </div>
-                            <input type="range" id="lod-unit-end" min="0" max="5000" step="50" value="700"
-                                style="width: 100%;">
-
-                            <!-- SMALL -->
-                            <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span>SMALL</span>
+                                <div style="display: flex; justify-content: space-between; width: 100%;">
+                                    <span>HEX SCREEN SIZE</span>
+                                    <span class="value" id="lod-target-px-val">16px</span>
                                 </div>
-                                <div style="display: flex; gap: 5px;">
-                                    <input type="range" id="lod-small-start" min="0" max="5000" step="50" value="600"
-                                        title="Start">
-                                    <input type="range" id="lod-small-end" min="0" max="10000" step="50" value="2100"
-                                        title="End">
-                                </div>
-                                <div
-                                    style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
-                                    <span id="lod-small-start-val">600m</span>
-                                    <span id="lod-small-end-val">2100m</span>
-                                </div>
-                            </div>
-
-                            <!-- MEDIUM -->
-                            <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span>MEDIUM</span>
-                                </div>
-                                <div style="display: flex; gap: 5px;">
-                                    <input type="range" id="lod-medium-start" min="0" max="15000" step="100"
-                                        value="1900" title="Start">
-                                    <input type="range" id="lod-medium-end" min="0" max="25000" step="100" value="5100"
-                                        title="End">
-                                </div>
-                                <div
-                                    style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
-                                    <span id="lod-medium-start-val">1900m</span>
-                                    <span id="lod-medium-end-val">5100m</span>
-                                </div>
-                            </div>
-
-                            <!-- LARGE -->
-                            <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span>LARGE (Start)</span>
-                                </div>
-                                <input type="range" id="lod-large-start" min="0" max="30000" step="100" value="4900"
+                                <input type="range" id="lod-target-px" min="8" max="48" step="1" value="16"
                                     style="width: 100%;">
-                                <div style="display: flex; justify-content: flex-start; font-size: 10px; color: #aaa;">
-                                    <span id="lod-large-start-val">4900m</span>
+                                <div style="font-size: 10px; color: #aaa;">every gosper level swaps in when its caps
+                                    shrink below this apparent size</div>
+                            </div>
+
+                            <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
+                                <div style="display: flex; justify-content: space-between; width: 100%;">
+                                    <span>MOVING COARSENESS</span>
+                                    <span class="value" id="lod-moving-mult-val">×2.65</span>
+                                </div>
+                                <input type="range" id="lod-moving-mult" min="1" max="7" step="0.05" value="2.65"
+                                    style="width: 100%;">
+                                <div style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
+                                    <span>×2.65 = one gosper level coarser in flight</span>
+                                    <span id="lod-quality-val">q ×2.65</span>
                                 </div>
                             </div>
                         </div>

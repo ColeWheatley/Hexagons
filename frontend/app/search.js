@@ -1,5 +1,5 @@
 // @atlas: The 'HexSearch' module. A UI component that lazy-loads GeoJSON data for Tirol peaks and ski resorts, providing an interactive search interface. It translates geographic coordinates to local PistonViewer space and safely rejects flights to destinations lying outside the currently baked map bounds.
-import { initProjection, latLonToWorld, worldToSectorID } from './coordinate_utility.js';
+import { initProjection, latLonToWorld, worldToGosperTile } from './coordinate_utility.js';
 
 export class HexSearch {
     constructor() {
@@ -253,7 +253,7 @@ export class HexSearch {
         if (!manifest || !Array.isArray(manifest.tiles)) return null;
         if (this.manifestTileSource !== manifest) {
             this.manifestTileSource = manifest;
-            this.manifestTileKeys = new Set(manifest.tiles.map(t => `${t.q}_${t.r}`));
+            this.manifestTileKeys = new Set(manifest.tiles.map(t => `${t.yq}_${t.yr}`));
         }
         return this.manifestTileKeys;
     }
@@ -264,8 +264,8 @@ export class HexSearch {
         if (!manifest) return { available: true, label: '', sectorKey: '' };
 
         const worldPos = this.getWorldPosition(item);
-        const sector = worldToSectorID(worldPos.x, worldPos.y);
-        const sectorKey = `${sector.q}_${sector.r}`;
+        const tile = worldToGosperTile(worldPos.x, worldPos.y);
+        const sectorKey = `${tile.yq}_${tile.yr}`;
         const tileIndex = viewer.manifestGrid || this.getManifestTileKeys(manifest);
         const hasTile = tileIndex ? tileIndex.has(sectorKey) : false;
 

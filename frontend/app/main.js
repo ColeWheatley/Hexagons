@@ -1,4 +1,4 @@
-// @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode and inject new 'HEX4' binary terrain tiles.
+// @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation over Gosper-fractal island tiles ('GSP1'). LOD is screen-space driven: each Gosper level k renders as sqrt(7)^k-scaled, k*19.1066deg-rotated hex caps inside a geometric distance band, selected per-instance in the vertex shader by a hierarchical CDLOD cut (self >= R(k), parent < R(k+1)) that is gapless by construction. A manifest-driven horizon mesh renders every baked island's level-5 aggregate cap out to ~60 km for free. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode tiles.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
@@ -6,6 +6,9 @@ import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
 import { PerfProfiler } from './perf_profiler.js';
 import { initBenchmark } from './benchmark.js';
+import './gosper_core.js';
+
+const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
 const APP_VERSION = 'v0.8.0';
@@ -20,25 +23,33 @@ const PERF_STATS_WINDOW = 200; // After verbose cap: accumulate, then flush stat
 // frame-level [PERF_VIOLATION] system inside animate().
 function track(_name, fn) { return fn(); }
 
-// --- HEX COORDINATE SYSTEM (Rectangular Sectors) ---
+// --- HEX COORDINATE SYSTEM (Gosper island tiles) ---
 const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
-const SECTOR_WIDTH_METERS = 819.2; // 4096px
+const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper island
+const TILE_CONTENT_HALF_M = 505.0;          // conservative half-extent of any rendered cap of a tile
+const GRID_BUCKET_M = 1024.0;               // spatial hash bucket for manifest tiles
 
-function worldToSectorID(worldX, worldY) {
-    const sx = Math.floor(worldX / SECTOR_WIDTH_METERS);
-    const sy = Math.floor(worldY / SECTOR_WIDTH_METERS);
-    return { Q: sx, R: sy };
+// Round world meters to the nearest unit axial cell (cube rounding).
+function worldToUnitAxial(x, y) {
+    const h = UNIT_HEX_WIDTH_METERS;
+    const fq = x / ((Math.sqrt(3) / 2) * h);
+    const fr = (y - (fq * 0.5 * h)) / h;
+    const fx = fq, fz = fr, fy = -fq - fr;
+    let rx = Math.round(fx), ry = Math.round(fy), rz = Math.round(fz);
+    const dx = Math.abs(rx - fx), dy = Math.abs(ry - fy), dz = Math.abs(rz - fz);
+    if (dx > dy && dx > dz) rx = -ry - rz;
+    else if (dy > dz) ry = -rx - rz;
+    else rz = -rx - ry;
+    return { q: rx, r: rz };
 }
 
 // --- CONFIG ---
-const TILE_WIDTH_WORLD = SECTOR_WIDTH_METERS;
-const TILE_HEIGHT_WORLD = SECTOR_WIDTH_METERS;
-const SCALE_Z = 1.0;
-// --- DEBUG OVERRIDE ---
-// Default render distance: 20km (configurable via UI slider)
+// Default full-detail radius: tiles stream within this range (configurable
+// via UI slider); the manifest-driven horizon mesh covers everything beyond.
 const DEFAULT_RENDER_DISTANCE = 4000;
+const HORIZON_DISTANCE = 60000;
 const FLOOR_MODE = 'view-min';
 const LOCK_FLOOR_ON_RISE = true;
 const FLOOR_LOCK_THRESHOLD = 0.02;
@@ -117,43 +128,35 @@ class PistonViewer {
         this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         this.log(`Platform: ${this.isMobile ? 'Mobile' : 'Desktop'}`);
 
-        // LOD Configurations
-        this.LOD_CONFIG = {
-            DESKTOP: {
-                MOVING: { unitEnd: 0, smallStart: 0, smallEnd: 0, mediumStart: 0, mediumEnd: 0, largeStart: 0 },
-                TARGET: { unitEnd: 2000, smallStart: 1980, smallEnd: 5000, mediumStart: 4980, mediumEnd: 10000, largeStart: 9980 }
-            },
-            MOBILE: {
-                MOVING: { unitEnd: 0, smallStart: 0, smallEnd: 1000, mediumStart: 980, mediumEnd: 2500, largeStart: 2480 },
-                TARGET: { unitEnd: 400, smallStart: 380, smallEnd: 2000, mediumStart: 1980, mediumEnd: 3500, largeStart: 3480 }
-            }
-        };
-
-        // Initialize with MOVING preset
-        const preset = this.isMobile ? this.LOD_CONFIG.MOBILE.MOVING : this.LOD_CONFIG.DESKTOP.MOVING;
-        this.lodRanges = { ...preset };
+        // --- SCREEN-SPACE GOSPER LOD ---
+        // A level-k cap (flat-to-flat 6.4*sqrt(7)^k m) is shown while its
+        // apparent size >= hexTargetPx: band radius R(k) = size(k)*pxPerRad /
+        // (hexTargetPx * qualityScale). qualityScale animates from
+        // movingCoarseness (while the camera moves) down to 1 (settled) —
+        // one scalar replaces the old four-band antisintering nudges.
+        this.hexTargetPx = this.isMobile ? 20 : 16;
+        this.movingCoarseness = this.isMobile ? 7.0 : Math.sqrt(7); // mobile: two full levels coarser
+        this.qualityScale = this.movingCoarseness;
+        this.lodRadii = new Float32Array(TILE_LEVEL + 2); // R(0)..R(6)
 
         // Antisintering State
         this.lastInteractionTime = performance.now();
         this.isRefining = false;
-        this.refineSpeed = 5000; // Snappy growth: 5km per frame (4 frames for full landscape)
+        this.refineRate = 0.80;  // qualityScale multiplier per refined frame (snappy: ~5 frames)
         this.maxFrameTime = 500; // Allow a 0.5s pause for the "Snap" reward
-
-        // Legacy/Sorting Support
-        this.geoThresholds = [1200, 3500, 8500, 25000];
 
         // Texture High-Res Load Distance
         this.texThreshold = 2000;
 
         window.addEventListener('resize', this.onResize.bind(this));
 
-        // Shared Geometry
+        // Shared Geometry — ONE unit cap + skirt; every gosper level renders
+        // the same cap with sqrt(7)^k scale + rotation baked into instance
+        // matrices by the worker (no per-level geometry variants).
         const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);
         this.hexGeometry = this.createHexGeometry(side);
-        this.flatGeometry = new THREE.PlaneGeometry(TILE_WIDTH_WORLD, TILE_HEIGHT_WORLD);
-        this.flatGeometry.rotateX(-Math.PI / 2);
 
-        this.tiles = new Map(); // Key: "q_r" -> Tile Object
+        this.tiles = new Map(); // Key: "yq_yr" (island lattice) -> Tile Object
         this.manifest = null;
         this.loadingTiles = new Set();
         this.loadQueue = [];
@@ -338,54 +341,29 @@ class PistonViewer {
     }
 
     initLODSliders() {
-        // UNIT END
-        const unitEnd = document.getElementById('lod-unit-end');
-        if (unitEnd) {
-            unitEnd.addEventListener('input', () => {
-                this.lodRanges.unitEnd = parseInt(unitEnd.value);
-                document.getElementById('lod-unit-end-val').textContent = unitEnd.value;
+        // TARGET HEX SIZE (settled screen-space density)
+        const targetPx = document.getElementById('lod-target-px');
+        if (targetPx) {
+            targetPx.value = this.hexTargetPx;
+            const val = document.getElementById('lod-target-px-val');
+            if (val) val.textContent = `${this.hexTargetPx}px`;
+            targetPx.addEventListener('input', () => {
+                this.hexTargetPx = parseInt(targetPx.value);
+                if (val) val.textContent = targetPx.value + 'px';
                 this.needsRender = true;
+                this.needsLODUpdate = true;
             });
         }
 
-        // SMALL
-        const smallStart = document.getElementById('lod-small-start');
-        const smallEnd = document.getElementById('lod-small-end');
-        if (smallStart && smallEnd) {
-            smallStart.addEventListener('input', () => {
-                this.lodRanges.smallStart = parseInt(smallStart.value);
-                document.getElementById('lod-small-start-val').textContent = smallStart.value + 'm';
-                this.needsRender = true;
-            });
-            smallEnd.addEventListener('input', () => {
-                this.lodRanges.smallEnd = parseInt(smallEnd.value);
-                document.getElementById('lod-small-end-val').textContent = smallEnd.value + 'm';
-                this.needsRender = true;
-            });
-        }
-
-        // MEDIUM
-        const medStart = document.getElementById('lod-medium-start');
-        const medEnd = document.getElementById('lod-medium-end');
-        if (medStart && medEnd) {
-            medStart.addEventListener('input', () => {
-                this.lodRanges.mediumStart = parseInt(medStart.value);
-                document.getElementById('lod-medium-start-val').textContent = medStart.value + 'm';
-                this.needsRender = true;
-            });
-            medEnd.addEventListener('input', () => {
-                this.lodRanges.mediumEnd = parseInt(medEnd.value);
-                document.getElementById('lod-medium-end-val').textContent = medEnd.value + 'm';
-                this.needsRender = true;
-            });
-        }
-
-        // LARGE
-        const largeStart = document.getElementById('lod-large-start');
-        if (largeStart) {
-            largeStart.addEventListener('input', () => {
-                this.lodRanges.largeStart = parseInt(largeStart.value);
-                document.getElementById('lod-large-start-val').textContent = largeStart.value + 'm';
+        // MOVING COARSENESS multiplier
+        const movingMult = document.getElementById('lod-moving-mult');
+        if (movingMult) {
+            movingMult.value = this.movingCoarseness;
+            const val = document.getElementById('lod-moving-mult-val');
+            if (val) val.textContent = `×${this.movingCoarseness.toFixed(2)}`;
+            movingMult.addEventListener('input', () => {
+                this.movingCoarseness = parseFloat(movingMult.value);
+                if (val) val.textContent = `×${this.movingCoarseness.toFixed(2)}`;
                 this.needsRender = true;
             });
         }
@@ -455,20 +433,28 @@ class PistonViewer {
     }
 
     syncLODUI() {
-        const r = this.lodRanges;
-        const set = (id, val) => {
-            const el = document.getElementById(id);
-            const valEl = document.getElementById(id + '-val');
-            if (el) el.value = val;
-            if (valEl) valEl.textContent = Math.round(val) + (id.includes('start') || id.includes('end') ? 'm' : '');
-        };
+        const el = document.getElementById('lod-quality-val');
+        if (el) el.textContent = `q ×${this.qualityScale.toFixed(2)}`;
+    }
 
-        set('lod-unit-end', r.unitEnd);
-        set('lod-small-start', r.smallStart);
-        set('lod-small-end', r.smallEnd);
-        set('lod-medium-start', r.mediumStart);
-        set('lod-medium-end', r.mediumEnd);
-        set('lod-large-start', r.largeStart);
+    // --- SCREEN-SPACE LOD BAND RADII ---
+    // lodRadii[k] = FAR edge of level k's band: the camera distance at which
+    // a level-k cap drops below hexTargetPx * qualityScale pixels. A level-k
+    // instance draws iff selfDist > lodRadii[k-1] (anything finer would be
+    // sub-target) AND parentDist <= lodRadii[k] (the parent must refine).
+    // The two conditions evaluate the SAME parent distance the parent itself
+    // uses for its own self-test, so the hierarchical cut partitions the
+    // plane exactly — no holes, no double-draw at ring boundaries.
+    computeLodRadii() {
+        const fovRad = this.camera.fov * Math.PI / 180;
+        const pxPerRad = (this.renderer.domElement.clientHeight || window.innerHeight) / (2 * Math.tan(fovRad / 2));
+        const px = Math.max(4, this.hexTargetPx * this.qualityScale);
+        for (let k = 0; k < TILE_LEVEL; k++) {
+            this.lodRadii[k] = G.levelSize(k) * pxPerRad / px;
+        }
+        // Root caps never expire while their tile is resident — the horizon
+        // instance for a resident tile is hidden, so someone must draw it.
+        this.lodRadii[TILE_LEVEL] = 1e9;
     }
 
     createHexGeometry(radius) {
@@ -584,61 +570,68 @@ class PistonViewer {
         if (!this.scene.fog) this.scene.fog = new THREE.Fog(0x0a0a0a, fogStart, fogEnd); // Match Bg
         this.scene.fog.near = fogStart;
         this.scene.fog.far = fogEnd;
-        this.camera.far = dist + 2000;
+        // Streamed tiles fade into fog at renderDistance; the horizon mesh is
+        // fog-exempt (manual haze) and needs the far plane out past Tirol.
+        this.camera.far = Math.max(dist + 2000, HORIZON_DISTANCE + 5000);
         this.camera.updateProjectionMatrix();
+        // Keep the horizon haze band tied to the fog wall so the transition
+        // from textured tiles to silhouettes reads as one atmosphere.
+        if (this.horizonMesh?.material?.userData?.shader) {
+            this.horizonMesh.material.userData.shader.uniforms.uHazeRange.value.set(dist * 0.8, HORIZON_DISTANCE);
+        }
     }
 
     async initWorld() {
         try {
             const res = await fetch('tile_manifest.json');
             this.manifest = await res.json();
+            if (this.manifest.type !== 'gosper_l5') {
+                throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
+            }
+            this.texWorldSide = this.manifest.tex_world_side_m; // uniform square canvas, world meters
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
 
-            // --- NEW: Spatial Grid Index (The "Phonebook") ---
-            this.manifestGrid = new Map();
+            // --- Spatial Index: lattice-key map + coarse world-space buckets ---
+            this.manifestGrid = new Map();   // "yq_yr" -> manifest tile
+            this.tileBuckets = new Map();    // "bx_bz" -> [manifest tiles]
             for (const t of this.manifest.tiles) {
-                // Post-calc world positions (Match worker's centering logic)
                 t.lx = t.x - this.worldOrigin.x;
                 t.lz = -(t.y - this.worldOrigin.y);
-
-                // Store by "Q_R" for instant lookup
-                this.manifestGrid.set(`${t.q}_${t.r}`, t);
+                this.manifestGrid.set(`${t.yq}_${t.yr}`, t);
+                const bKey = `${Math.floor(t.lx / GRID_BUCKET_M)}_${Math.floor(t.lz / GRID_BUCKET_M)}`;
+                if (!this.tileBuckets.has(bKey)) this.tileBuckets.set(bKey, []);
+                this.tileBuckets.get(bKey).push(t);
             }
 
-            // -----------------------------------------------
+            // Static heap-order lookup: (dq,dr from island center) -> unit index.
+            // Identical for every tile, so it's built exactly once; per-tile
+            // height picking is then unitHeights[map.get(key)].
+            const off = G.offsets(TILE_LEVEL);
+            this.unitIndexMap = new Map();
+            for (let i = 0; i < off.length / 2; i++) {
+                this.unitIndexMap.set(((off[i * 2] + 128) << 8) | (off[i * 2 + 1] + 128), i);
+            }
 
-            // Preferred start: Stubai Ski Area buildings
-            // These coordinates match STUBAI_LAT/LON in waffle_iron.py (sector 73, 252)
-            const stubaiBuildingsX = 59817.9;
-            const stubaiBuildingsY = 206666.2;
-            const stubaiSector = worldToSectorID(stubaiBuildingsX, stubaiBuildingsY);
-            const stubaiKey = `${stubaiSector.Q}_${stubaiSector.R}`;
-
-            // Secondary: Ski tour area near Kühtai (47.1338°N, 11.5965°E)
-            const skiTourX = 95855.9;
-            const skiTourY = 222423.2;
-            const skiTourSector = worldToSectorID(skiTourX, skiTourY);
-            const skiTourKey = `${skiTourSector.Q}_${skiTourSector.R}`;
-
-            let startX, startZ;
-            if (this.manifestGrid.has(stubaiKey)) {
-                // Stubai is in the baked area - use it
-                startX = stubaiBuildingsX - this.worldOrigin.x;
-                startZ = -(stubaiBuildingsY - this.worldOrigin.y);
-
-            } else if (this.manifestGrid.has(skiTourKey)) {
-                // Ski tour area is baked - use it
-                startX = skiTourX - this.worldOrigin.x;
-                startZ = -(skiTourY - this.worldOrigin.y);
-
-            } else {
-                // Fall back to manifest center
+            // Preferred start: Stubai Ski Area buildings (STUBAI_LAT/LON in waffle_iron.py)
+            const starts = [
+                { x: 59817.9, y: 206666.2 },  // Stubai buildings
+                { x: 95855.9, y: 222423.2 },  // Ski tour area near Kühtai
+            ];
+            let startX = null, startZ = null;
+            for (const s of starts) {
+                const tile = this.nearestManifestTile(s.x, s.y);
+                if (tile && Math.hypot(tile.x - s.x, tile.y - s.y) < 2000) {
+                    startX = s.x - this.worldOrigin.x;
+                    startZ = -(s.y - this.worldOrigin.y);
+                    break;
+                }
+            }
+            if (startX === null) {
                 const cenX = (this.manifest.bounds.min_x + this.manifest.bounds.max_x) * 0.5;
                 const cenY = (this.manifest.bounds.min_y + this.manifest.bounds.max_y) * 0.5;
                 startX = cenX - this.worldOrigin.x;
                 startZ = -(cenY - this.worldOrigin.y);
-
             }
 
             this.camera.position.set(startX, 1200, startZ);
@@ -651,11 +644,9 @@ class PistonViewer {
             this.capGeometry = geos.capGeo;
             this.skirtGeometry = geos.skirtGeo;
 
-            this.flatGeometry = new THREE.PlaneGeometry(TILE_WIDTH_WORLD, TILE_HEIGHT_WORLD);
-            this.flatGeometry.rotateX(-Math.PI / 2);
-
             this.essentialTilesTarget = 1;
 
+            this.buildHorizon();
             this.updateLOD();
         } catch (e) {
             console.error("Manifest error: " + e.message);
@@ -663,12 +654,130 @@ class PistonViewer {
         }
     }
 
-    worldToAxialScale(x, y, s) {
-        const h = UNIT_HEX_WIDTH_METERS * s;
-        const A = (Math.sqrt(3) / 2) * h;
-        const q = x / A;
-        const r = (y - (q * 0.5 * h)) / h;
-        return { q, r };
+    nearestManifestTile(worldX, worldY) {
+        let best = null, bestD = Infinity;
+        for (const t of this.manifest.tiles) {
+            const d = (t.x - worldX) ** 2 + (t.y - worldY) ** 2;
+            if (d < bestD) { bestD = d; best = t; }
+        }
+        return best;
+    }
+
+    // ------------------------------------------------------------------
+    // HORIZON MESH — every baked island's level-5 aggregate, rendered as one
+    // InstancedMesh straight from the manifest (no tile fetches). This is the
+    // "query all of Tirol's max-size hexes for free" payoff: distant terrain
+    // stays mountain-shaped out to HORIZON_DISTANCE at ~6 triangles per
+    // 830 m island. Resident tiles hide their horizon instance (zero-scale
+    // matrix) because the tile's own root cap draws the same hex.
+    // ------------------------------------------------------------------
+    buildHorizon() {
+        const tiles = this.manifest.tiles;
+        if (!tiles.length) return;
+        const geo = this.capGeometry.clone();
+
+        const count = tiles.length;
+        const heights = new Float32Array(count);
+        const shades = new Float32Array(count);
+        const xz = G.levelXZ(TILE_LEVEL);
+        this.horizonIndex = new Map(); // tile key -> instance id
+        this._horizonMat4 = new THREE.Matrix4();
+
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        material.fog = false;
+        material.customProgramCacheKey = () => 'piston_horizon_v1';
+        material.onBeforeCompile = (shader) => {
+            material.userData.shader = shader;
+            shader.uniforms.uHeightFactor = { value: 0.0 };
+            shader.uniforms.uFloorOffset = { value: 0.0 };
+            shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
+            shader.uniforms.uHazeColor = { value: new THREE.Color(0x0a0a0a) };
+            shader.uniforms.uHazeRange = { value: new THREE.Vector2(DEFAULT_RENDER_DISTANCE * 0.8, HORIZON_DISTANCE) };
+            shader.vertexShader = shader.vertexShader.replace('#include <common>', `
+                #include <common>
+                uniform float uHeightFactor;
+                uniform float uFloorOffset;
+                attribute float instanceH;
+                attribute float instanceShade;
+                varying float vH;
+                varying float vShade;
+                varying vec3 vWorldPosH;
+            `).replace('#include <begin_vertex>', `
+                #include <begin_vertex>
+                transformed.y += (instanceH - uFloorOffset) * uHeightFactor;
+                vH = instanceH;
+                vShade = instanceShade;
+                #ifdef USE_INSTANCING
+                    vWorldPosH = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+                #else
+                    vWorldPosH = (modelMatrix * vec4(transformed, 1.0)).xyz;
+                #endif
+            `);
+            shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
+                #include <common>
+                uniform vec3 uCameraPos;
+                uniform vec3 uHazeColor;
+                uniform vec2 uHazeRange;
+                varying float vH;
+                varying float vShade;
+                varying vec3 vWorldPosH;
+            `).replace('#include <color_fragment>', `
+                #include <color_fragment>
+                // Hypsometric tint x baked lambert, hazed toward the sky with
+                // distance but never fully erased (mountains stay silhouetted).
+                vec3 lowC = vec3(0.16, 0.22, 0.16);
+                vec3 highC = vec3(0.42, 0.44, 0.47);
+                vec3 terrain = mix(lowC, highC, clamp((vH - 800.0) / 2600.0, 0.0, 1.0)) * (0.55 + 0.45 * vShade);
+                float haze = smoothstep(uHazeRange.x, uHazeRange.y, distance(vWorldPosH, uCameraPos)) * 0.85;
+                diffuseColor.rgb = mix(terrain, uHazeColor, haze);
+            `);
+        };
+
+        const mesh = new THREE.InstancedMesh(geo, material, count);
+        const m = new THREE.Matrix4();
+        tiles.forEach((t, i) => {
+            m.set(
+                xz.a, 0, xz.b, t.lx,
+                0, 1, 0, 0,
+                xz.c, 0, xz.d, t.lz,
+                0, 0, 0, 1
+            );
+            mesh.setMatrixAt(i, m);
+            heights[i] = t.hMean;
+            // Fixed light from the NW-ish, matching the app's jitter aesthetic
+            const nx = (t.nx - 128) / 127, nz = (t.nz - 128) / 127;
+            const ny = Math.sqrt(Math.max(0, 1 - nx * nx - nz * nz));
+            shades[i] = Math.max(0, nx * -0.35 + ny * 0.85 + nz * -0.40);
+            this.horizonIndex.set(`${t.yq}_${t.yr}`, i);
+        });
+        geo.setAttribute('instanceH', new THREE.InstancedBufferAttribute(heights, 1));
+        geo.setAttribute('instanceShade', new THREE.InstancedBufferAttribute(shades, 1));
+        mesh.frustumCulled = false;
+        mesh.instanceMatrix.needsUpdate = true;
+        this.horizonMesh = mesh;
+        this.materialsToUpdate.add(material);
+        material.userData.isHorizon = true;
+        this.scene.add(mesh);
+    }
+
+    setHorizonTileHidden(key, hidden) {
+        if (!this.horizonMesh || !this.horizonIndex?.has(key)) return;
+        const i = this.horizonIndex.get(key);
+        const t = this.manifestGrid.get(key);
+        const m = this._horizonMat4;
+        if (hidden) {
+            m.makeScale(0, 0, 0);
+        } else {
+            const xz = G.levelXZ(TILE_LEVEL);
+            m.set(
+                xz.a, 0, xz.b, t.lx,
+                0, 1, 0, 0,
+                xz.c, 0, xz.d, t.lz,
+                0, 0, 0, 1
+            );
+        }
+        this.horizonMesh.setMatrixAt(i, m);
+        this.horizonMesh.instanceMatrix.needsUpdate = true;
     }
 
     createTileMaterial(lodIdx, hasTexture, texture) {
@@ -690,66 +799,64 @@ class PistonViewer {
 
         const num = lodData.matrix.length / 16;
 
-        // Geometries
+        // Geometry clones are per-mesh because instanced attributes live on
+        // the geometry. Scale + rotation come baked in the instance matrices
+        // (sqrt(7)^k / k*19.1066deg from the worker) — the clones stay unit.
         const capG = this.capGeometry.clone();
         const skirtG = includeSkirts ? this.skirtGeometry.clone() : null;
 
-        return (scale) => {
-            capG.scale(scale, 1, scale);
-            if (skirtG) skirtG.scale(scale, 1, scale);
+        const capMesh = new THREE.InstancedMesh(capG, material, num);
+        const skirtMesh = skirtG ? new THREE.InstancedMesh(skirtG, material, num) : null;
 
-            const capMesh = new THREE.InstancedMesh(capG, material, num);
-            const skirtMesh = skirtG ? new THREE.InstancedMesh(skirtG, material, num) : null;
+        // Assign Attributes from Worker
+        capMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
+        if (skirtMesh) skirtMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
 
-            // Assign Attributes from Worker
-            capMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
-            if (skirtMesh) skirtMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
+        const meshes = [capMesh];
+        if (skirtMesh) meshes.push(skirtMesh);
 
-            const meshes = [capMesh];
-            if (skirtMesh) meshes.push(skirtMesh);
+        meshes.forEach(m => {
+            m.geometry.setAttribute('instanceNZ_1', new THREE.InstancedBufferAttribute(lodData.nz1, 4));
+            m.geometry.setAttribute('instanceNZ_2', new THREE.InstancedBufferAttribute(lodData.nz2, 4));
+            m.geometry.setAttribute('instanceSlopes', new THREE.InstancedBufferAttribute(lodData.slopes, 3));
+            m.geometry.setAttribute('instanceDeltas', new THREE.InstancedBufferAttribute(lodData.deltas, 3));
+            m.geometry.setAttribute('instanceNormal', new THREE.InstancedBufferAttribute(lodData.norms, 2));
+            m.geometry.setAttribute('aParentPos', new THREE.InstancedBufferAttribute(lodData.parentPos, 2));
+        });
 
-            meshes.forEach(m => {
-                m.geometry.setAttribute('instanceNZ_1', new THREE.InstancedBufferAttribute(lodData.nz1, 4));
-                m.geometry.setAttribute('instanceNZ_2', new THREE.InstancedBufferAttribute(lodData.nz2, 4));
-                m.geometry.setAttribute('instanceSlopes', new THREE.InstancedBufferAttribute(lodData.slopes, 3));
-                m.geometry.setAttribute('instanceDeltas', new THREE.InstancedBufferAttribute(lodData.deltas, 3));
-                m.geometry.setAttribute('instanceNormal', new THREE.InstancedBufferAttribute(lodData.norms, 2));
-            });
+        const group = new THREE.Group();
+        group.add(capMesh);
+        if (skirtMesh) group.add(skirtMesh);
 
-            const group = new THREE.Group();
-            group.add(capMesh);
-            if (skirtMesh) group.add(skirtMesh);
-
-            group.userData.activeSkirts = skirtMesh ? lodData.activeSkirts : 0;
-            group.frustumCulled = false;
-            return group;
-        };
+        group.userData.activeSkirts = skirtMesh ? lodData.activeSkirts : 0;
+        group.frustumCulled = false;
+        return group;
     }
 
     setupMaterialShader(material) {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_patch_v2';
+        material.customProgramCacheKey = () => 'piston_hex_gosper_v3';
+
+        const texSide = this.texWorldSide || 980.0;
 
         material.onBeforeCompile = function (shader) {
             this.userData.shader = shader;
             shader.uniforms.uHeightFactor = { value: 0.0 };
             shader.uniforms.uGradientMode = { value: 1.0 };
             shader.uniforms.uFloorOffset = { value: 0.0 }; // Initial fallback
-            shader.uniforms.uTileSize = { value: SECTOR_WIDTH_METERS };
+            shader.uniforms.uTileSize = { value: texSide };
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
-            shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 100000.0) }; // Min, Max
+            shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 1e9) }; // (bandMin for self, bandMax for parent)
+            shader.uniforms.uFinestBuilt = { value: 0.0 }; // 1 = finest level built so far: ignore bandMin
+            shader.uniforms.uCapTint = { value: 0.0 };     // 1 = aggregate cap: slope-class tint in gradient mode
 
-            // UV Padding correction. Texture canvas is locked to 4096px total:
-            // 3360px of sector content + 368px padding per side (89.72m — covers
-            // largest LOD hex circumradius, scale=24 → 88.68m). Must match
-            // TEXTURE_CONTENT_PX / TEXTURE_PADDING_PX in hex_backend/waffle_iron.py.
-            const pad = 368.0;
-            const size = 3360.0;
-            const total = size + pad * 2; // = 4096
-            shader.uniforms.uUvScale = { value: size / total };
-            shader.uniforms.uUvOffset = { value: pad / total };
+            // Gosper island textures are one uniform world-metric square
+            // (tex_world_side_m, canvas-centered on the island) — no padding
+            // split, so the planar mapping is uv = local_xz / side + 0.5.
+            shader.uniforms.uUvScale = { value: 1.0 };
+            shader.uniforms.uUvOffset = { value: 0.0 };
 
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
                 #include <common>
@@ -761,6 +868,7 @@ class PistonViewer {
                 uniform float uUvOffset;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
+                uniform float uFinestBuilt;
 
                 attribute vec4 instanceNZ_1;
                 attribute vec4 instanceNZ_2;
@@ -769,6 +877,7 @@ class PistonViewer {
                 attribute vec3 instanceSlopes;
                 attribute vec3 instanceDeltas;
                 attribute vec2 instanceNormal; // (Nx, Nz)
+                attribute vec2 aParentPos;     // parent gosper node center, tile-local XZ
 
                 attribute float aSideId;
 
@@ -782,15 +891,24 @@ class PistonViewer {
             `).replace('#include <begin_vertex>', `
                 #include <begin_vertex>
 
-                // INSTANCE-LEVEL CULLING (Check distance from instance center, not vertex)
-                // Extract instance position from instanceMatrix (column 3)
+                // HIERARCHICAL CDLOD CUT (per-instance, evaluated on centers)
+                // Draw this level-k node iff:
+                //   selfDist  >  uLodRadii.x  (R(k-1): anything finer would be sub-target px)
+                //   parentDist <= uLodRadii.y (R(k): the parent must refine here)
+                // The parent evaluates the identical distance value for its own
+                // self-test, so parent/child regions partition exactly — no
+                // holes and no double-draw at ring boundaries. uFinestBuilt
+                // relaxes the self test while finer levels aren't built yet.
                 #ifdef USE_INSTANCING
                     vec3 instancePos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
                     vec3 worldInstancePos = (modelMatrix * vec4(instancePos, 1.0)).xyz;
                     float instDist = distance(worldInstancePos, uCameraPos);
+                    vec3 worldParentPos = (modelMatrix * vec4(aParentPos.x, 0.0, aParentPos.y, 1.0)).xyz;
+                    float parentDist = distance(worldParentPos, uCameraPos);
 
-                    // Cull entire instance if outside LOD range
-                    if (instDist < uLodRadii.x || instDist > uLodRadii.y) {
+                    bool selfCoarseEnough = (instDist > uLodRadii.x) || (uFinestBuilt > 0.5);
+                    bool parentRefines = (parentDist <= uLodRadii.y);
+                    if (!(selfCoarseEnough && parentRefines)) {
                         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
                         return;
                     }
@@ -805,7 +923,10 @@ class PistonViewer {
                 if (isCap) {
                     // CAP
                     transformed.y = 0.0 + animH;
-                    vSlope = 0.0; // Caps follow texture color usually, or flat slope
+                    // Aggregate caps carry their subtree's mean slope in
+                    // instanceSlopes.x; the fragment tints with it only when
+                    // uCapTint is set (levels >= 1) and gradient mode is on.
+                    vSlope = instanceSlopes.x;
                     vSkirtY = 0.0;
                     vSideId = -1.0;
 
@@ -869,6 +990,7 @@ class PistonViewer {
                 uniform float uUvScale;
                 uniform float uUvOffset;
                 uniform float uGradientMode;
+                uniform float uCapTint;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
                 varying vec3 vLocalPos;
@@ -915,8 +1037,13 @@ class PistonViewer {
                          } else {
                              baseColor *= 0.6; // Darken skirt
                          }
+                    } else if (uCapTint > 0.5 && uGradientMode > 0.5 && vSlope >= 30.0) {
+                         // Aggregate caps: blend the slope class over the aerial
+                         // texture at half strength — the far-field "is this
+                         // face steep" read the unit-hex skirts provide near.
+                         baseColor = mix(baseColor, gradientColor(vSlope), 0.5);
                     }
-                    
+
                     diffuseColor = vec4(baseColor * lighting, 1.0);
                 #endif
             `);
@@ -1044,63 +1171,30 @@ class PistonViewer {
 
         const camPos = this.camera.position;
         const distLimit = this.renderSettings.renderDistance; // e.g. 4000m
-        const secW = SECTOR_WIDTH_METERS;
 
-        // 1. Where is the camera in UTM space?
-        const utmX = camPos.x + this.worldOrigin.x;
-        const utmY = -camPos.z + this.worldOrigin.y;
-
-        const centerQ = Math.floor(utmX / secW);
-        const centerR = Math.floor(utmY / secW);
-
-        // 2. How many tiles out do we need to check?
-        const radius = Math.ceil((distLimit + 1000) / secW);
-
-        if (Math.random() < 0.01) {
-
-        }
-
-        // 3. Collect ONLY nearby candidates
+        // 1. Collect nearby candidates from the coarse spatial buckets
         const candidates = [];
-
-        for (let q = centerQ - radius; q <= centerQ + radius; q++) {
-            for (let r = centerR - radius; r <= centerR + radius; r++) {
-                const key = `${q}_${r}`;
-                const t = this.manifestGrid.get(key);
-                if (!t) {
-                    // console.log(`Missing tile ${key}`);
-                    continue;
+        const reach = distLimit + 2000;
+        const b0x = Math.floor((camPos.x - reach) / GRID_BUCKET_M);
+        const b1x = Math.floor((camPos.x + reach) / GRID_BUCKET_M);
+        const b0z = Math.floor((camPos.z - reach) / GRID_BUCKET_M);
+        const b1z = Math.floor((camPos.z + reach) / GRID_BUCKET_M);
+        for (let bx = b0x; bx <= b1x; bx++) {
+            for (let bz = b0z; bz <= b1z; bz++) {
+                const bucket = this.tileBuckets.get(`${bx}_${bz}`);
+                if (!bucket) continue;
+                for (const t of bucket) {
+                    const dx = t.lx - camPos.x;
+                    const dz = t.lz - camPos.z;
+                    const dSq = dx * dx + dz * dz;
+                    if (dSq > reach * reach) continue;
+                    t.d = Math.sqrt(dSq);
+                    candidates.push(t);
                 }
-
-                // Fast Distance Check (Squared)
-                const dx = t.lx - camPos.x;
-                const dz = t.lz - camPos.z;
-                const dSq = dx * dx + dz * dz;
-
-                // Hard Limit Check (Render Distance + Buffer)
-                if (dSq > (distLimit + 2000) ** 2) {
-                    // console.log(`Tile ${key} too far: ${Math.sqrt(dSq).toFixed(0)}m`);
-                    continue;
-                }
-
-                t.d = Math.sqrt(dSq);
-                candidates.push(t);
             }
         }
 
-        if (candidates.length === 0 && Math.random() < 0.05) {
-            // No candidates — silent (expected during extreme zoom-out)
-            const t = this.manifestGrid.get(`${centerQ}_${centerR}`);
-            if (t) {
-                const dx = t.lx - camPos.x;
-                const dz = t.lz - camPos.z;
-                void 0; // debug: Center tile distance = Math.sqrt(dx*dx+dz*dz)
-            } else {
-                void 0; // debug: Center tile not in manifest
-            }
-        }
-
-        // 4. Sort ONLY the nearby candidates
+        // 2. Sort ONLY the nearby candidates
         candidates.sort((a, b) => a.d - b.d);
 
         const camDir = new THREE.Vector3();
@@ -1108,37 +1202,27 @@ class PistonViewer {
         camDir.y = 0; camDir.normalize();
 
         const processedKeys = new Set();
+        const loadLimit = distLimit + 1000;
 
         for (const t of candidates) {
-            const key = `${t.q}_${t.r}`;
+            const key = `${t.yq}_${t.yr}`;
             processedKeys.add(key);
 
             const tile = this.tiles.get(key);
 
-            // Direction Check
+            // Direction Check (texture-priority only — geometry level selection
+            // is fully per-instance in the shader now)
             const toTile = new THREE.Vector3(t.lx - camPos.x, 0, t.lz - camPos.z).normalize();
             const dot = camDir.dot(toTile);
-
-            const isBehindGeo = (dot < 0.34);
-            const isEffectivelyFrontTex = ((dot > -0.2) || (t.d < this.texThreshold)) && (t.d < 5000);
-
-            let nominalLOD = 0;
-            if (t.d < this.geoThresholds[0]) nominalLOD = 3;
-            else if (t.d < this.geoThresholds[1]) nominalLOD = 2;
-            else if (t.d < this.geoThresholds[2]) nominalLOD = 1;
-
-            let targetLOD = nominalLOD;
-            if (isBehindGeo) targetLOD = 0;
+            const isEffectivelyFrontTex = ((dot > -0.2) || (t.d < this.texThreshold)) && (t.d < loadLimit);
 
             if (!tile && !this.loadingTiles.has(key)) {
-                if (t.d < 5000) {
+                if (t.d < loadLimit) {
                     this.loadingTiles.add(key);
-
-                    this.loadQueue.push({ t, targetLOD, loadFullTexNow: isEffectivelyFrontTex });
+                    this.loadQueue.push({ t, loadFullTexNow: isEffectivelyFrontTex });
                 }
             } else if (tile) {
-                if (!tile.isTransitioning) this.swapGeometry(tile, targetLOD);
-                // Skip texture upgrades during 3D movement - only LOD0 geometry matters anyway
+                // Skip texture upgrades during 3D movement.
                 // Upgrades will resume once camera settles (not moving3D)
                 if (!this.isMoving3D && isEffectivelyFrontTex && !tile.isFullTex && !tile.loadingTex && !tile.queuedForUpgrade) {
                     tile.queuedForUpgrade = true;
@@ -1172,7 +1256,7 @@ class PistonViewer {
 
     processQueues() {
         const maxConcurrent = this.workers.length;
-        const ESTIMATED_TILE_VRAM = 300 * 1024; // ~300 KB geometry + low-res texture
+        const ESTIMATED_TILE_VRAM = 3 * 1024 * 1024; // ~2.7 MB instance buffers + low-res texture
 
         this.cacheManager.beginTurn();
 
@@ -1182,7 +1266,7 @@ class PistonViewer {
 
         while (this.activeWorkerCount < maxConcurrent && this.loadQueue.length > 0) {
             const task = this.loadQueue.shift();
-            const key = `${task.t.q}_${task.t.r}`;
+            const key = `${task.t.yq}_${task.t.yr}`;
 
             // Hygiene
             if (this.tiles.has(key) || task.t.d > this.renderSettings.renderDistance + 1000) {
@@ -1212,7 +1296,7 @@ class PistonViewer {
                     // this tile can swap either.
                     this.loadingTiles.delete(key);
                     for (const remaining of this.loadQueue) {
-                        this.loadingTiles.delete(`${remaining.t.q}_${remaining.t.r}`);
+                        this.loadingTiles.delete(`${remaining.t.yq}_${remaining.t.yr}`);
                     }
                     this.loadQueue.length = 0;
                     break;
@@ -1239,7 +1323,7 @@ class PistonViewer {
         if (!this.isMoving3D && this.activeWorkerCount < maxConcurrent && this.loadQueue.length === 0 && this.upgradeQueue.length > 0) {
             const tile = this.upgradeQueue.shift();
             tile.queuedForUpgrade = false;
-            const tileKey = `${tile.q}_${tile.r}`;
+            const tileKey = `${tile.yq}_${tile.yr}`;
 
             // Budget check for texture upgrade
             if (!this.cacheManager.canAllocate(ESTIMATED_FULL_TEX_VRAM)) {
@@ -1281,12 +1365,11 @@ class PistonViewer {
     async fetchTileOnWorker(task) {
         try {
             const { t } = task;
-            const lowTexUrl = `aerial_tiles/low/sector_${t.q}_${t.r}.ktx2`;
-            const binUrl = `tiles_bin/sector_${t.q}_${t.r}.bin?v=6`;
+            const lowTexUrl = `aerial_tiles/low/gosper_${t.yq}_${t.yr}.ktx2`;
+            const binUrl = `tiles_bin/gosper_${t.yq}_${t.yr}.bin?v=1`;
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
-                q: t.q, r: t.r,
-                lx: t.lx, lz: t.lz,
+                yq: t.yq, yr: t.yr,
                 texUrl: lowTexUrl,
                 binUrl: binUrl
             });
@@ -1297,7 +1380,7 @@ class PistonViewer {
 
         } catch (e) {
             console.error("Tile Fetch Error", e);
-            this.loadingTiles.delete(`${task.t.q}_${task.t.r}`);
+            this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
             return null;
         }
     }
@@ -1377,7 +1460,7 @@ class PistonViewer {
     // Moved Mesh Creation Logic Here
     instantiateTile(task, workerData) {
         const { t, loadFullTexNow } = task;
-        const key = `${t.q}_${t.r}`;
+        const key = `${t.yq}_${t.yr}`;
 
         // Final Hygiene Check (Camera might have moved while worker was working)
         if (this.tiles.has(key)) return;
@@ -1389,10 +1472,10 @@ class PistonViewer {
 
         try {
             // 1. Texture Strategy (One texture per tile)
-            const tex = (loadFullTexNow && t.fullTex) ? t.fullTex : workerData.texture;
+            const tex = workerData.texture;
 
             // 2. Create ONE material for this entire tile (shared across LODs)
-            // This cuts shader compilation overhead by 75%
+            // This cuts shader compilation overhead
             let initialTex = null;
             if (tex) {
                 initialTex = this.buildCompressedTexture(tex);
@@ -1407,29 +1490,23 @@ class PistonViewer {
             const sharedMaterial = this.createTileMaterial(0, !!tex, initialTex);
             this.materialsToUpdate.add(sharedMaterial);
 
-            const angle = this.controls.getPolarAngle() * 180 / Math.PI;
-            const isVis = (angle >= 5.5);
-
             const meshGroup = new THREE.Group();
 
-            for (let lodIdx = 0; lodIdx < 4; lodIdx++) {
-                const lodData = workerData.lods[lodIdx];
-                if (!lodData) continue;
-                if (this.isMoving3D && lodIdx !== 0) continue;
+            // Coarse levels (5..2, 400 instances) build immediately; fine
+            // levels (1: 2401, 0: 16807) defer to the sinter pass when the
+            // camera is moving — same deferral pattern as before, driven by
+            // the same needsSinteredBuild machinery.
+            const eagerLevels = this.isMoving3D ? [5, 4, 3, 2] : [5, 4, 3, 2, 1, 0];
+            const builtLevels = {};
 
-                // Use the SHARED material, but stamp userData so logic still knows which layer is which
-                // Note: We clone lightly only if we need unique per-LOD uniforms, but currently we don't.
-                // The vertex shader handles the layer logic mostly via attributes.
-                // Only "uLodRadii" is per material... ah wait.
-                // If uLodRadii is per material, we DO need clones or unique materials if we want CPU culling per layer?
-                // Actually, our loop updates uLodRadii per material based on userData.lodIdx.
-                // So we DO need separate material instances if we want independent uniforms.
-                // UNLESS we use "instanced uniforms" or simply clone() which is cheap (shares program).
+            for (const level of eagerLevels) {
+                const lodData = workerData.lods[level];
+                if (!lodData) continue;
 
                 const layerMaterial = sharedMaterial.clone();
                 // Ensure unique userData for each clone so uniform updates don't conflict
                 layerMaterial.userData = { ...sharedMaterial.userData };
-                layerMaterial.userData.lodIdx = lodIdx;
+                layerMaterial.userData.lodIdx = level; // gosper level (0=unit .. 5=island root)
                 layerMaterial.userData.shader = null;
                 // NOTE: Material.clone() does not reliably carry over onBeforeCompile/customProgramCacheKey
                 // across Three.js versions/builds. We must re-attach our shader patch on every clone,
@@ -1437,43 +1514,19 @@ class PistonViewer {
                 this.setupMaterialShader(layerMaterial);
                 this.materialsToUpdate.add(layerMaterial);
 
-                // Setup Geometry
-                // IMPORTANT: LOD ordering must match baker layer order in hex_backend/waffle_iron.py.
-                // lodIdx 0..3 map to scales [24, 6, 3, 1] (large -> unit).
-                // If you change baker order, update tile_worker.js and all LOD ranges here.
-                const includeSkirts = (lodIdx !== 0);
-                const meshScale = [24.0, 6.0, 3.0, 1.0][lodIdx];
-
-                const makeMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
-                if (makeMesh) {
-                    const finalMesh = makeMesh(meshScale);
-                    if (finalMesh) {
-                        // store activeSkirts for debug
-                        finalMesh.userData.activeSkirts = lodData.activeSkirts;
-                        meshGroup.add(finalMesh);
-                    }
+                const includeSkirts = (level === 0); // only unit hexes carry skirts
+                const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
+                if (finalMesh) {
+                    finalMesh.userData.activeSkirts = lodData.activeSkirts;
+                    finalMesh.userData.gosperLevel = level;
+                    meshGroup.add(finalMesh);
+                    builtLevels[level] = true;
                 }
             }
 
             meshGroup.position.set(t.lx, 0, t.lz);
 
-            // Container for both Flat and 3D
             const containerGroup = new THREE.Group();
-
-            // Flat Mesh - Needs its own material clone to avoid sharing LOD culling uniforms
-            const flatMaterial = sharedMaterial.clone();
-            flatMaterial.userData.lodIdx = -1; // -1 means "Always Render" (within frustum)
-            this.setupMaterialShader(flatMaterial);
-            this.materialsToUpdate.add(flatMaterial);
-
-            const flatMesh = new THREE.Mesh(this.flatGeometry, flatMaterial);
-            flatMesh.position.set(t.lx, 0, t.lz);
-            // flatMesh.rotation.x = -Math.PI / 2; // REMOVED: Geometry is likely already XZ or oriented correctly
-            flatMesh.visible = !isVis;
-            t.flatMesh = flatMesh;
-            containerGroup.add(flatMesh); // Add flat mesh to scene container
-
-            meshGroup.visible = isVis;
             t.mesh = meshGroup;
             containerGroup.add(meshGroup);
 
@@ -1483,10 +1536,9 @@ class PistonViewer {
             this.renderer.compile(containerGroup, this.camera);
 
             containerGroup.visible = true;
-            this.scene.add(containerGroup);
             this.needsRender = true;
 
-            const half = TILE_WIDTH_WORLD / 2;
+            const half = (this.texWorldSide || 980) / 2;
             const bounds = new THREE.Box3(
                 new THREE.Vector3(t.lx - half, TILE_BOUNDS_MIN_Y, t.lz - half),
                 new THREE.Vector3(t.lx + half, TILE_BOUNDS_MAX_Y, t.lz + half)
@@ -1499,25 +1551,26 @@ class PistonViewer {
             });
 
             const tileObj = {
-                q: t.q, r: t.r, lx: t.lx, lz: t.lz,
-                mesh: meshGroup,           // 3D LOD content
+                yq: t.yq, yr: t.yr, lx: t.lx, lz: t.lz,
+                mesh: meshGroup,           // stacked per-level LOD content
                 container: containerGroup, // Scene root for this tile
-                flatMesh, material: sharedMaterial, bounds,
-                hexDataLayers: workerData.layers,
+                material: sharedMaterial, bounds,
                 lods: workerData.lods,
-                lodBuilt: [true, !this.isMoving3D, !this.isMoving3D, !this.isMoving3D],
+                builtLevels,
+                finestBuilt: this.isMoving3D ? 2 : 0,
                 needsSinteredBuild: this.isMoving3D,
+                unitHeights: workerData.unitHeights,
                 stats: workerData.stats,
                 center: workerData.center,
-                currentGeoLOD: -1,
                 isFullTex: false,
                 loadingTex: false,
-                queuedForUpgrade: false,
                 queuedForUpgrade: false,
                 isTransitioning: false,
                 clonedMaterials: gatheredMaterials
             };
+            this._markFinestBuilt(tileObj);
             this.tiles.set(key, tileObj);
+            this.setHorizonTileHidden(key, true);
             this.updateGlobalStats(workerData.stats);
 
             // --- LEDGER: Register tile's GPU footprint ---
@@ -1532,7 +1585,7 @@ class PistonViewer {
             }
             this.vramLedger.register(key, {
                 geometryBytes, textureBytes,
-                q: t.q, r: t.r, lx: t.lx, lz: t.lz,
+                q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
 
             if (loadFullTexNow && !tileObj.isFullTex && !tileObj.loadingTex && !tileObj.queuedForUpgrade) {
@@ -1552,34 +1605,35 @@ class PistonViewer {
         if (!tile?.mesh || !tile.lods) return;
         if (!tile.needsSinteredBuild) return;
 
-        const sintStart = performance.now();
-        let lodsBuilt = 0;
-
-        for (let lodIdx = 1; lodIdx < 4; lodIdx++) {
-            if (tile.lodBuilt?.[lodIdx]) continue;
-            const lodData = tile.lods[lodIdx];
+        for (const level of [1, 0]) {
+            if (tile.builtLevels?.[level]) continue;
+            const lodData = tile.lods[level];
             if (!lodData) continue;
 
             const layerMaterial = tile.material.clone();
             layerMaterial.userData = { ...tile.material.userData };
-            layerMaterial.userData.lodIdx = lodIdx;
+            layerMaterial.userData.lodIdx = level;
             layerMaterial.userData.shader = null;
             this.setupMaterialShader(layerMaterial);
             this.materialsToUpdate.add(layerMaterial);
+            tile.clonedMaterials?.push(layerMaterial);
+            // Late-built materials must inherit the tile's current texture,
+            // not the sharedMaterial snapshot from instantiation time.
+            if (tile.material.map) { layerMaterial.map = tile.material.map; layerMaterial.needsUpdate = true; }
 
-            const includeSkirts = (lodIdx !== 0);
-            const meshScale = [24.0, 6.0, 3.0, 1.0][lodIdx];
-            const makeMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
-            if (makeMesh) {
-                const finalMesh = makeMesh(meshScale);
-                if (finalMesh) {
-                    finalMesh.userData.activeSkirts = lodData.activeSkirts;
-                    tile.mesh.add(finalMesh);
-                    lodsBuilt++;
-                }
+            const includeSkirts = (level === 0);
+            const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
+            if (finalMesh) {
+                finalMesh.userData.activeSkirts = lodData.activeSkirts;
+                finalMesh.userData.gosperLevel = level;
+                tile.mesh.add(finalMesh);
+                this.renderer.compile(finalMesh, this.camera);
+                tile.builtLevels[level] = true;
+                tile.finestBuilt = level;
             }
-            if (tile.lodBuilt) tile.lodBuilt[lodIdx] = true;
         }
+
+        this._markFinestBuilt(tile);
 
         // (sintered-build timing captured by aggregate frame violation)
 
@@ -1587,10 +1641,22 @@ class PistonViewer {
         this.needsRender = true;
     }
 
+    // The finest BUILT level of a tile ignores its band's near edge (its
+    // shader draws all the way to the camera) until finer levels exist.
+    _markFinestBuilt(tile) {
+        if (!tile.mesh) return;
+        tile.mesh.traverse(obj => {
+            if (obj.isMesh && obj.material?.userData) {
+                const ud = obj.material.userData;
+                ud.isFinest = (ud.lodIdx === tile.finestBuilt);
+            }
+        });
+    }
+
     async upgradeTexture(tile) {
         tile.loadingTex = true;
-        const key = `${tile.q}_${tile.r}`;
-        const url = `aerial_tiles/full/sector_${tile.q}_${tile.r}.ktx2`;
+        const key = `${tile.yq}_${tile.yr}`;
+        const url = `aerial_tiles/full/gosper_${tile.yq}_${tile.yr}.ktx2`;
         try {
             const texStart = performance.now();
             const result = await this.postWorkerJob('LOAD_TEXTURE', { url });
@@ -1638,7 +1704,7 @@ class PistonViewer {
             tile.isFullTex = true;
 
             // Track for render spike correlation
-            this.recentlyUpgradedTextures.push({ q: tile.q, r: tile.r, time: performance.now() });
+            this.recentlyUpgradedTextures.push({ q: tile.yq, r: tile.yr, time: performance.now() });
 
             // (tex-upgrade timing captured by aggregate frame violation)
 
@@ -1647,7 +1713,7 @@ class PistonViewer {
             this._texErrorCount++;
             this._updateTexBadge();
             if (this._texErrorCount <= 3) {
-                console.warn(`[TEX_FAIL] ${tile.q},${tile.r}: ${e.message}`);
+                console.warn(`[TEX_FAIL] ${tile.yq},${tile.yr}: ${e.message}`);
                 if (this._texErrorCount === 3) console.warn('[TEX_FAIL] Further texture errors suppressed.');
             }
         }
@@ -1655,15 +1721,8 @@ class PistonViewer {
     }
 
     // parseBinaryV3 removed (handled by worker)
-
-    swapGeometry(tile, newLOD) {
-        // Stacked Mode: No need to swap geometry!
-        // The shader handles LOD via uLodRadii.
-        // We just ensure visibility matches camera angle.
-        const angle = this.controls.getPolarAngle() * 180 / Math.PI;
-        const isVis = (angle >= 5.5);
-        if (tile.mesh) tile.mesh.visible = isVis;
-    }
+    // swapGeometry removed — level selection is fully per-instance in the
+    // shader (CDLOD cut), and the flattened-cap look IS the 2D mode.
 
     unloadTile(key) {
         const tile = this.tiles.get(key);
@@ -1677,6 +1736,9 @@ class PistonViewer {
 
         this.tiles.delete(key);
         this.loadingTiles.delete(key);
+
+        // The manifest-driven horizon cap takes over for this island again.
+        this.setHorizonTileHidden(key, false);
     }
 
     /**
@@ -1709,24 +1771,6 @@ class PistonViewer {
             });
         }
 
-        // 3. Flat mesh
-        if (tile.flatMesh) {
-            // NB: flat meshes share this.flatGeometry — disposing it here would
-            // nuke the GL buffer for every other tile's flat mesh and force a
-            // re-upload on their next draw. Only dispose tile-owned geometry.
-            if (tile.flatMesh.geometry && tile.flatMesh.geometry !== this.flatGeometry) {
-                tile.flatMesh.geometry.dispose();
-            }
-            if (tile.flatMesh.material) {
-                if (tile.flatMesh.material.map) {
-                    tile.flatMesh.material.map.dispose();
-                    tile.flatMesh.material.map = null;
-                }
-                this.materialsToUpdate.delete(tile.flatMesh.material);
-                tile.flatMesh.material.dispose();
-            }
-        }
-
         // 4. Shared material (may have its own texture ref)
         if (tile.material) {
             if (tile.material.map) {
@@ -1748,13 +1792,11 @@ class PistonViewer {
 
         // 6. Nullify all references to assist GC
         tile.mesh = null;
-        tile.flatMesh = null;
         tile.material = null;
         tile.clonedMaterials = null;
         tile.container = null;
         tile.lods = null;
-        tile.hexDataLayers = null;
-        tile.hexHeightIndex = null;
+        tile.unitHeights = null;
     }
 
     hideLoader() {
@@ -1795,45 +1837,24 @@ class PistonViewer {
         const wx = target.x + this.worldOrigin.x;
         const wy = this.worldOrigin.y - target.z;
 
-        const q_r = worldToSectorID(wx, wy);
-        const key = `${q_r.Q}_${q_r.R}`;
+        // Which unit hex, and which gosper island owns it?
+        const axial = worldToUnitAxial(wx, wy);
+        const [tq, tr] = G.tileOfUnit(axial.q, axial.r);
+        const key = `${tq}_${tr}`;
         const tile = this.tiles.get(key);
 
         // Update Readouts
-        this._setHudText('sector-val', `${q_r.Q}, ${q_r.R}`);
+        this._setHudText('sector-val', `${tq}, ${tr}`);
         this._setHudText('world-val', `${wx.toFixed(0)}, ${wy.toFixed(0)}`);
+        this._setHudText('hex-val', `${axial.q}, ${axial.r}`);
 
-        // Approximate Hex (Axial)
-        const h_size = UNIT_HEX_WIDTH_METERS;
-        const aq = Math.round(wx / (Math.sqrt(3) / 2 * h_size));
-        const ar = Math.round((wy - (aq * 0.5 * h_size)) / h_size);
-
-        this._setHudText('hex-val', `${aq}, ${ar}`);
-
-        if (tile && tile.center) {
-            // Find specific hex height
-            const dq = aq - tile.center.q;
-            const dr = ar - tile.center.r;
-
-            // O(1) lookup via a lazily-built index. The old per-frame linear
-            // scan walked up to the whole unit layer (~16k hexes) every frame.
-            // Finest layer wins (build order 3 -> 0, first-set wins) — same
-            // semantics as the original finest-first search.
-            if (!tile.hexHeightIndex && tile.hexDataLayers) {
-                const index = new Map();
-                for (let l = 3; l >= 0; l--) {
-                    const layer = tile.hexDataLayers[l];
-                    if (!layer) continue;
-                    for (const hx of layer) {
-                        const k = (hx.dq << 8) + hx.dr; // dq/dr are int8 → injective
-                        if (!index.has(k)) index.set(k, hx.h);
-                    }
-                }
-                tile.hexHeightIndex = index;
-            }
-
-            let groundH = tile.hexHeightIndex ? tile.hexHeightIndex.get((dq << 8) + dr) : undefined;
-            // If not found (maybe gap?), fall back to average, not MAX.
+        if (tile && tile.center && tile.unitHeights) {
+            // O(1) picking: heap-order unit index from the static offset map
+            // (identical for every island), then one Float32Array read.
+            const dq = axial.q - tile.center.q;
+            const dr = axial.r - tile.center.r;
+            const idx = this.unitIndexMap.get(((dq + 128) << 8) | (dr + 128));
+            let groundH = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
             if (groundH === undefined) groundH = tile.stats.avg;
 
             const animatedH = (groundH - this.floorState.value) * h;
@@ -1889,10 +1910,9 @@ class PistonViewer {
     }
 
     resetLODs() {
-        const preset = this.isMobile ? this.LOD_CONFIG.MOBILE.MOVING : this.LOD_CONFIG.DESKTOP.MOVING;
-        // Reset if we deviate from "moving" preset or if we are in the middle of refinement
-        if (this.lodRanges.unitEnd !== preset.unitEnd || this.isRefining) {
-            this.lodRanges = { ...preset };
+        // Snap back to the coarse moving-mode quality scalar.
+        if (this.qualityScale !== this.movingCoarseness || this.isRefining) {
+            this.qualityScale = this.movingCoarseness;
             this.isRefining = false;
             this.needsRender = true;
             this.syncLODUI();
@@ -1900,7 +1920,10 @@ class PistonViewer {
     }
 
     refineLODs() {
-        // Stop if sustained framerate is tanking (use average of last 5 frames)
+        // Antisintering, one scalar edition: walk qualityScale from
+        // movingCoarseness down to 1 — every band sweeps outward in lockstep
+        // (each step multiplies all radii by 1/refineRate). Frametime-capped
+        // exactly like the old four-band version.
         const sampleCount = 5;
         const recentFrames = this.frametimeBuffer.slice(-sampleCount);
         const avgFrameTime = recentFrames.reduce((a, b) => a + b, 0) / recentFrames.length;
@@ -1913,71 +1936,20 @@ class PistonViewer {
             return false;
         }
 
-        const target = this.isMobile ? this.LOD_CONFIG.MOBILE.TARGET : this.LOD_CONFIG.DESKTOP.TARGET;
-        let changed = false;
-
-        // Helper to nudge value
-        const nudge = (current, goal) => {
-            if (current < goal) {
-                return Math.min(current + this.refineSpeed, goal);
-            }
-            return current;
-        };
-
-        const oldUnitEnd = this.lodRanges.unitEnd;
-        const oldSmallEnd = this.lodRanges.smallEnd;
-        const oldMedEnd = this.lodRanges.mediumEnd;
-
-        this.lodRanges.unitEnd = nudge(this.lodRanges.unitEnd, target.unitEnd);
-
-        // BACKGROUND POPULATION: Keep small hexes covering the foreground (0m start) 
-        // until unit hexes have mostly populated.
-        if (this.lodRanges.unitEnd >= target.unitEnd * 0.95) {
-            this.lodRanges.smallStart = Math.max(0, this.lodRanges.unitEnd - 50);
-        } else {
-            this.lodRanges.smallStart = 0;
-        }
-
-        this.lodRanges.smallEnd = nudge(this.lodRanges.smallEnd, target.smallEnd);
-
-        // Similar strategy for medium
-        if (this.lodRanges.smallEnd >= target.smallEnd * 0.95) {
-            this.lodRanges.mediumStart = Math.max(0, this.lodRanges.smallEnd - 50);
-        } else {
-            this.lodRanges.mediumStart = 0;
-        }
-
-        this.lodRanges.mediumEnd = nudge(this.lodRanges.mediumEnd, target.mediumEnd);
-
-        if (this.lodRanges.mediumEnd >= target.mediumEnd * 0.95) {
-            this.lodRanges.largeStart = Math.max(0, this.lodRanges.mediumEnd - 50);
-        } else {
-            this.lodRanges.largeStart = 0;
-        }
-
-        // Check for meaningful changes
-        if (this.lodRanges.unitEnd !== oldUnitEnd ||
-            this.lodRanges.smallEnd !== oldSmallEnd ||
-            this.lodRanges.mediumEnd !== oldMedEnd) {
-            changed = true;
-        }
-
-        // Check if we are fully done/reached targets
-        const isDone = (this.lodRanges.unitEnd >= target.unitEnd &&
-            this.lodRanges.smallEnd >= target.smallEnd &&
-            this.lodRanges.mediumEnd >= target.mediumEnd);
-
-        if (changed) {
+        if (this.qualityScale > 1.0) {
+            this.qualityScale = Math.max(1.0, this.qualityScale * this.refineRate);
             this.isRefining = true;
-            this.needsRender = true; // Force a frame
-            this.needsLODUpdate = true; // FORCE LOD check to recognize new ranges
+            this.needsRender = true;
+            this.needsLODUpdate = true;
             this.syncLODUI();
-        } else if (isDone && this.isRefining) {
+            return this.qualityScale > 1.0;
+        }
+
+        if (this.isRefining) {
             this.log("Antisintering Complete: Maximum Resolution Reached.", "success");
             this.isRefining = false;
         }
-
-        return !isDone;
+        return false;
     }
 
     // --- ENGINE STATE DERIVATION ---
@@ -2174,10 +2146,9 @@ class PistonViewer {
             this.lodTransitionInProgress = false;
             this.lastLodPreset = 'MOVING';
         } else if (wasMoving3D && !flat) {
-            const target = this.isMobile ? this.LOD_CONFIG.MOBILE.TARGET : this.LOD_CONFIG.DESKTOP.TARGET;
-            this.lodRanges = { ...target };
+            // Settling: refineLODs() walks qualityScale down to 1 over the
+            // next frames (frametime-capped) — no preset snap needed.
             this.needsLODUpdate = true;
-            this.syncLODUI();
             this.lodTransitionInProgress = true;
             this.lastLodPreset = 'TARGET';
         }
@@ -2186,30 +2157,11 @@ class PistonViewer {
         this.maintainCameraAltitudeDuringAnimation(h);
 
         // --- VISIBILITY PASS ---
-        let visibilityChanges = 0;
-        for (const t of this.tiles.values()) {
-            if (flat) {
-                if (t.flatMesh && !t.flatMesh.visible) { t.flatMesh.visible = true; visibilityChanges++; }
-                if (t.mesh && t.mesh.visible) { t.mesh.visible = false; visibilityChanges++; }
-            } else {
-                if (t.flatMesh && t.flatMesh.visible) { t.flatMesh.visible = false; visibilityChanges++; }
-                if (t.mesh) {
-                    if (!t.mesh.visible) { t.mesh.visible = true; visibilityChanges++; }
-                    t.mesh.children.forEach(meshGroup => {
-                        const m = meshGroup.children[0]?.material;
-                        if (m && m.userData.lodIdx !== undefined) {
-                            const idx = m.userData.lodIdx;
-                            let active = false;
-                            if (idx === 3) active = (this.lodRanges.unitEnd > 0);
-                            else if (idx === 2) active = (this.lodRanges.smallEnd > 0);
-                            else if (idx === 1) active = (this.lodRanges.mediumEnd > 0);
-                            else if (idx === 0) active = true;
-                            if (meshGroup.visible !== active) { meshGroup.visible = active; visibilityChanges++; }
-                        }
-                    });
-                }
-            }
-        }
+        // Gone: no flat-plane swap (top-down 2D is just the flattened caps —
+        // uHeightFactor already animates height to 0 below 5.5°) and no
+        // per-band group toggling (the CDLOD cut is per-instance in the
+        // vertex shader). Every built level stays visible.
+        const visibilityChanges = 0;
 
         // --- SINTERING (settled 3D) ---
         if (!flat && !this.isMoving3D) {
@@ -2227,35 +2179,30 @@ class PistonViewer {
         this.wasMoving3D = this.isMoving3D;
 
         // --- MATERIAL UNIFORM UPDATE ---
+        this.computeLodRadii();
         let needsUpdateCount = 0;
         for (const m of this.materialsToUpdate) {
             if (m.needsUpdate) needsUpdateCount++;
             if (m.userData.shader) {
                 m.userData.shader.uniforms.uHeightFactor.value = h;
-                m.userData.shader.uniforms.uGradientMode.value = this.gradientMode;
-                if (!m.userData.shader.uniforms.uCameraPos) {
-                    m.userData.shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
-                }
+                m.userData.shader.uniforms.uFloorOffset.value = this.floorState.value;
                 const uCam = m.userData.shader.uniforms.uCameraPos;
-                if (!uCam.value || !uCam.value.copy) {
-                    uCam.value = new THREE.Vector3();
-                }
-                uCam.value.copy(this.camera.position);
+                if (uCam?.value?.copy) uCam.value.copy(this.camera.position);
+
+                if (m.userData.isHorizon) continue; // horizon has no LOD/gradient uniforms
+
+                m.userData.shader.uniforms.uGradientMode.value = this.gradientMode;
 
                 if (m.userData.lodIdx !== undefined) {
-                    const idx = m.userData.lodIdx;
-                    let minD = 0.0, maxD = 100000.0;
-
-                    if (idx === -1) { minD = 0.0; maxD = 100000.0; }
-                    else if (idx === 3) { minD = 0.0; maxD = this.lodRanges.unitEnd; }
-                    else if (idx === 2) { minD = this.lodRanges.smallStart; maxD = this.lodRanges.smallEnd; }
-                    else if (idx === 1) { minD = this.lodRanges.mediumStart; maxD = this.lodRanges.mediumEnd; }
-                    else if (idx === 0) { minD = this.lodRanges.largeStart; maxD = this.renderSettings.renderDistance + 500.0; }
-
-                    if (!m.userData.shader.uniforms.uLodRadii || !m.userData.shader.uniforms.uLodRadii.value || !m.userData.shader.uniforms.uLodRadii.value.set) {
-                        m.userData.shader.uniforms.uLodRadii = { value: new THREE.Vector2(0, 100000.0) };
-                    }
+                    // Gosper level k: band = (R(k-1), R(k)], parent checked
+                    // against R(k). The finest BUILT level ignores the near
+                    // edge so coverage holds before sintering completes.
+                    const k = m.userData.lodIdx;
+                    const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
+                    const maxD = this.lodRadii[k];
                     m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
+                    m.userData.shader.uniforms.uFinestBuilt.value = m.userData.isFinest ? 1.0 : 0.0;
+                    m.userData.shader.uniforms.uCapTint.value = (k >= 1) ? 1.0 : 0.0;
                 }
             }
         }
