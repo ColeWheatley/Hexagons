@@ -231,3 +231,50 @@ def gosper_tile_of_unit(q, r):
 def gosper_level_size(k):
     """Effective flat-to-flat width (m) of a level-k cap."""
     return UNIT_HEX_WIDTH_METERS * (7 ** (k / 2.0))
+
+_GOSPER_GEOM_CACHE = None
+
+def gosper_tile_geometry():
+    """
+    Precomputed L5 tile geometry shared by the baker and manifest generator
+    (the frontend reads the resulting numbers from the manifest — it never
+    recomputes them, so this function is the single source of truth).
+
+    Returns dict:
+      offq, offr:  int32 (16807,) unit-hex axial offsets from island center,
+                   heap order (children of node i are 7i..7i+6)
+      offx, offy:  float64 world-meter offsets from island center
+      tex_half_m:  half-side of the square texture canvas centered on the
+                   island center. Covers every rendered cap at every level
+                   (max node |world coord| + that level's cap circumradius),
+                   rounded up to 10 m so canvases are stable across runs.
+      tile_pitch_m: world distance between adjacent island centers.
+    """
+    global _GOSPER_GEOM_CACHE
+    if _GOSPER_GEOM_CACHE is not None:
+        return _GOSPER_GEOM_CACHE
+    L = GOSPER_TILE_LEVEL
+    offs = generate_gosper_offsets(L)
+    n = len(offs)
+    offq = np.array([o[0] for o in offs], dtype=np.int32)
+    offr = np.array([o[1] for o in offs], dtype=np.int32)
+    h = UNIT_HEX_WIDTH_METERS
+    offx = offq * ((math.sqrt(3) / 2) * h)
+    offy = offr * h + offq * (0.5 * h)
+    half = 0.0
+    for d in range(L + 1):
+        stride = 7 ** (L - d)
+        idx = np.arange(0, n, stride)
+        circ = gosper_level_size(L - d) / math.sqrt(3)
+        half = max(half,
+                   float(np.abs(offx[idx]).max()) + circ,
+                   float(np.abs(offy[idx]).max()) + circ)
+    tex_half_m = math.ceil(half / 10.0) * 10.0
+    pq, pr = gosper_mul_m_pow(1, 0, L)
+    px, py = axial_to_world_meters(pq, pr)
+    _GOSPER_GEOM_CACHE = {
+        "offq": offq, "offr": offr, "offx": offx, "offy": offy,
+        "tex_half_m": tex_half_m,
+        "tile_pitch_m": math.hypot(px, py),
+    }
+    return _GOSPER_GEOM_CACHE
