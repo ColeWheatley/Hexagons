@@ -808,6 +808,13 @@ class PistonViewer {
         const capMesh = new THREE.InstancedMesh(capG, material, num);
         const skirtMesh = skirtG ? new THREE.InstancedMesh(skirtG, material, num) : null;
 
+        // CRITICAL: three culls per-OBJECT against the unit cap geometry's
+        // ~3.7 m bounding sphere at the tile origin — the group-level flag
+        // does not propagate, so any tile whose origin leaves the frustum
+        // would vanish wholesale. Instance visibility is the shader's job.
+        capMesh.frustumCulled = false;
+        if (skirtMesh) skirtMesh.frustumCulled = false;
+
         // Assign Attributes from Worker
         capMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
         if (skirtMesh) skirtMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
