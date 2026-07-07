@@ -4,6 +4,14 @@ importScripts('gosper_core.js');
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5
 
+// Aggregate caps (levels >= 1) are hexagon approximations of fractal Gosper
+// islands: a parent hex never exactly covers its 7 children's union, so ring
+// boundaries between LOD levels show sliver gaps. Overscanning the aggregate
+// caps turns gaps into overlaps — invisible top-down (coplanar, same world-
+// registered texture) and benign in 3D (nearer/higher cap wins, matching the
+// skirtless mosaic look). Units (level 0) stay exact for skirt continuity.
+const CAP_OVERSCAN = 1.15;
+
 // =============================================================================
 // XUASTC KTX2 TRANSCODING (Basis Universal v2 WASM)
 // Ported from ktx2_nonrect_texture_test/BasisV2KTX2Loader.js, minus all DOM
@@ -374,7 +382,8 @@ function buildLevelBuffers(parsed) {
         const deltas = new Float32Array(num * 3);
         const norms = new Float32Array(num * 2);
         const parentPos = new Float32Array(num * 2);
-        const { a, b, c, d: dd } = gd.xz;
+        const over = isUnit ? 1.0 : CAP_OVERSCAN;
+        const a = gd.xz.a * over, b = gd.xz.b * over, c = gd.xz.c * over, dd = gd.xz.d * over;
         const parentStride = gd.stride * 7;
 
         let w = 0;
