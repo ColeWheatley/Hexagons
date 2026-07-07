@@ -171,9 +171,9 @@
                                 style="flex-direction: column; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>HEX SCREEN SIZE</span>
-                                    <span class="value" id="lod-target-px-val">16px</span>
+                                    <span class="value" id="lod-target-px-val">3px</span>
                                 </div>
-                                <input type="range" id="lod-target-px" min="8" max="48" step="1" value="16"
+                                <input type="range" id="lod-target-px" min="2" max="24" step="1" value="3"
                                     style="width: 100%;">
                                 <div style="font-size: 10px; color: #aaa;">every gosper level swaps in when its caps
                                     shrink below this apparent size</div>
@@ -182,13 +182,13 @@
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>MOVING COARSENESS</span>
-                                    <span class="value" id="lod-moving-mult-val">×2.65</span>
+                                    <span class="value" id="lod-moving-mult-val">×7.00</span>
                                 </div>
-                                <input type="range" id="lod-moving-mult" min="1" max="7" step="0.05" value="2.65"
+                                <input type="range" id="lod-moving-mult" min="1" max="14" step="0.05" value="7"
                                     style="width: 100%;">
                                 <div style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
-                                    <span>×2.65 = one gosper level coarser in flight</span>
-                                    <span id="lod-quality-val">q ×2.65</span>
+                                    <span>×7 = two gosper levels coarser in flight</span>
+                                    <span id="lod-quality-val">q ×7.00</span>
                                 </div>
                             </div>
                         </div>

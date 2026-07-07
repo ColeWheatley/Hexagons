@@ -311,18 +311,19 @@ function parseGSP1(buffer, expectYq, expectYr) {
         const valid = new Uint8Array(count);
 
         if (d < TILE_LEVEL) {
+            const relief = new Uint8Array(count); // subtree hMax-hMin, 4 m units
             for (let i = 0; i < count; i++) {
                 const dH = view.getInt16(off, true);
                 slopeMean[i] = view.getUint8(off + 2);
                 // off+3 = slopeMax (unused by the renderer for now)
                 nx[i] = view.getUint8(off + 4);
                 nz[i] = view.getUint8(off + 5);
-                // off+6 = relief (unused by the renderer for now)
+                relief[i] = view.getUint8(off + 6);
                 valid[i] = view.getUint8(off + 7) & 1;
                 h[i] = parentH[(i / 7) | 0] + dH * 0.1;
                 off += 8;
             }
-            depths.push({ h, slopeMean, nx, nz, valid });
+            depths.push({ h, slopeMean, nx, nz, valid, relief });
         } else {
             const d1 = new Int16Array(count), d2 = new Int16Array(count), d3 = new Int16Array(count);
             const s1 = new Uint8Array(count), s2 = new Uint8Array(count), s3 = new Uint8Array(count);
@@ -416,7 +417,16 @@ function buildLevelBuffers(parsed) {
             } else {
                 const sm = pd.slopeMean[i];
                 slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
-                // deltas stay zero — aggregate caps have no skirts
+                if (level === 1) {
+                    // Level-1 caps sit in the most scrutinized ring
+                    // (~400-1100 m); hang relief-depth skirts (subtree
+                    // hMax-hMin + margin) so neighbor height steps don't
+                    // show as black slivers. Deeper levels stay skirtless
+                    // by design — the far mosaic look.
+                    const dDm = (pd.relief[i] * 4 + 12) * 10; // meters -> decimeters
+                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                    activeSkirts++;
+                }
             }
 
             const nIdx = w * 2;

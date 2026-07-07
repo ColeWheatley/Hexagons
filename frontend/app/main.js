@@ -134,8 +134,13 @@ class PistonViewer {
         // (hexTargetPx * qualityScale). qualityScale animates from
         // movingCoarseness (while the camera moves) down to 1 (settled) —
         // one scalar replaces the old four-band antisintering nudges.
-        this.hexTargetPx = this.isMobile ? 20 : 16;
-        this.movingCoarseness = this.isMobile ? 7.0 : Math.sqrt(7); // mobile: two full levels coarser
+        //
+        // Owner contract: STATIC = small skirted hexes (units reach ~1.5 km,
+        // matching the old TARGET unitEnd feel), MOVING = large skirtless
+        // caps only. 3 px settled + x7 coarser in flight (= exactly two
+        // gosper levels) reproduces that split.
+        this.hexTargetPx = this.isMobile ? 4 : 3;
+        this.movingCoarseness = 7.0;
         this.qualityScale = this.movingCoarseness;
         this.lodRadii = new Float32Array(TILE_LEVEL + 2); // R(0)..R(6)
 
@@ -857,7 +862,6 @@ class PistonViewer {
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
             shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 1e9) }; // (bandMin for self, bandMax for parent)
             shader.uniforms.uFinestBuilt = { value: 0.0 }; // 1 = finest level built so far: ignore bandMin
-            shader.uniforms.uCapTint = { value: 0.0 };     // 1 = aggregate cap: slope-class tint in gradient mode
 
             // Gosper island textures are one uniform world-metric square
             // (tex_world_side_m, canvas-centered on the island) — no padding
@@ -928,12 +932,11 @@ class PistonViewer {
                 vIsTop = isCap ? 1.0 : 0.0;
 
                 if (isCap) {
-                    // CAP
+                    // CAP — always pure aerial texture. Slope-class colors
+                    // live on SKIRTS only (owner directive: tops are never
+                    // colored).
                     transformed.y = 0.0 + animH;
-                    // Aggregate caps carry their subtree's mean slope in
-                    // instanceSlopes.x; the fragment tints with it only when
-                    // uCapTint is set (levels >= 1) and gradient mode is on.
-                    vSlope = instanceSlopes.x;
+                    vSlope = 0.0;
                     vSkirtY = 0.0;
                     vSideId = -1.0;
 
@@ -997,7 +1000,6 @@ class PistonViewer {
                 uniform float uUvScale;
                 uniform float uUvOffset;
                 uniform float uGradientMode;
-                uniform float uCapTint;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
                 varying vec3 vLocalPos;
@@ -1036,7 +1038,8 @@ class PistonViewer {
                     if (vIsTop < 0.5) jitter = 0.92 + (vSideId * 0.04); 
                     float lighting = ao * jitter;
 
-                    // COLOR
+                    // COLOR — slope-class gradient on SKIRTS only; caps stay
+                    // pure aerial texture at every level.
                     vec3 baseColor = texColor.rgb;
                     if (vIsTop < 0.5) { // SKIRT
                          if (uGradientMode > 0.5 && vSlope >= 30.0) {
@@ -1044,11 +1047,6 @@ class PistonViewer {
                          } else {
                              baseColor *= 0.6; // Darken skirt
                          }
-                    } else if (uCapTint > 0.5 && uGradientMode > 0.5 && vSlope >= 30.0) {
-                         // Aggregate caps: blend the slope class over the aerial
-                         // texture at half strength — the far-field "is this
-                         // face steep" read the unit-hex skirts provide near.
-                         baseColor = mix(baseColor, gradientColor(vSlope), 0.5);
                     }
 
                     diffuseColor = vec4(baseColor * lighting, 1.0);
@@ -2209,7 +2207,6 @@ class PistonViewer {
                     const maxD = this.lodRadii[k];
                     m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
                     m.userData.shader.uniforms.uFinestBuilt.value = m.userData.isFinest ? 1.0 : 0.0;
-                    m.userData.shader.uniforms.uCapTint.value = (k >= 1) ? 1.0 : 0.0;
                 }
             }
         }
