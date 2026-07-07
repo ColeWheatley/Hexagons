@@ -1,0 +1,3149 @@
+{
+ "meta": {
+  "scenario": "traverse",
+  "texturePipeline": "webp",
+  "appVersion": "v0.8.0",
+  "timestamp": "2026-07-07T13:19:52.694Z",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36",
+  "duration_s": 93.2,
+  "crashed": false,
+  "finished": true,
+  "runId": "1783430300883-y9m0vx"
+ },
+ "frames": {
+  "total": 10612,
+  "rendered": 10574,
+  "skipped": 38,
+  "fps_avg_active": 114.1,
+  "p50_ms": 8.3,
+  "p95_ms": 9.1,
+  "p99_ms": 10.2,
+  "worst_ms": 837.5,
+  "over20": 18,
+  "over33": 17,
+  "over100": 15,
+  "perState": {
+   "MOVING_3D": {
+    "count": 10553,
+    "fps_avg": 116.2,
+    "p50_ms": 8.3,
+    "p95_ms": 9.1,
+    "p99_ms": 10,
+    "worst_ms": 829.5,
+    "over20": 10,
+    "over33": 10,
+    "over100": 10
+   },
+   "SINTERING": {
+    "count": 54,
+    "fps_avg": 25.2,
+    "p50_ms": 8.3,
+    "p95_ms": 200.4,
+    "p99_ms": 837.5,
+    "worst_ms": 837.5,
+    "over20": 8,
+    "over33": 7,
+    "over100": 5
+   }
+  }
+ },
+ "memory": {
+  "jsHeapPeakBytes": 292585650,
+  "jsHeapEndBytes": 236331222,
+  "contextLostCount": 0,
+  "glOutOfMemoryCount": 0
+ },
+ "vram": {
+  "peakLedgerBytes": 1812725760,
+  "endLedgerBytes": 1812725760,
+  "budgetBytes": 5368709120,
+  "peakUtilization": 0.3376
+ },
+ "cache": {
+  "evictions": 0,
+  "evictedBytes": 0,
+  "redownloads": 0
+ },
+ "textures": {
+  "upgrades": 0,
+  "texStats": null
+ },
+ "samples": [
+  {
+   "t": 1.8,
+   "jsHeap": {
+    "used": 292585650,
+    "total": 347334506,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 32,
+    "geometries": 1,
+    "textures": 10,
+    "programs": 3
+   },
+   "vram": {
+    "totalBytes": 810549248,
+    "budgetBytes": 5368709120,
+    "utilization": 0.151
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 6,
+    "sinterQueue": 0,
+    "activeWorkers": 6
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 2.8,
+   "jsHeap": {
+    "used": 261302841,
+    "total": 316649017,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 10,
+    "triangles": 1938,
+    "geometries": 11,
+    "textures": 16,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 3,
+   "jsHeap": {
+    "used": 264379324,
+    "total": 317175356,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 11,
+    "triangles": 2124,
+    "geometries": 12,
+    "textures": 17,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 4.1,
+   "jsHeap": {
+    "used": 232126264,
+    "total": 278902592,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 5,
+   "jsHeap": {
+    "used": 237788462,
+    "total": 279675370,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 6,
+   "jsHeap": {
+    "used": 241351398,
+    "total": 282296810,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 7,
+   "jsHeap": {
+    "used": 245148222,
+    "total": 286228970,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 8,
+   "jsHeap": {
+    "used": 248281897,
+    "total": 289116497,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 9,
+   "jsHeap": {
+    "used": 250989013,
+    "total": 291475793,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 10,
+   "jsHeap": {
+    "used": 228775713,
+    "total": 292479965,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 11,
+   "jsHeap": {
+    "used": 232157525,
+    "total": 292742109,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 12,
+   "jsHeap": {
+    "used": 235284819,
+    "total": 292747671,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 12,
+    "triangles": 2322,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 13,
+   "jsHeap": {
+    "used": 238804435,
+    "total": 292747671,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 11,
+    "triangles": 2124,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 14,
+   "jsHeap": {
+    "used": 241337910,
+    "total": 293016194,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 11,
+    "triangles": 2124,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 15,
+   "jsHeap": {
+    "used": 245994882,
+    "total": 293786242,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 10,
+    "triangles": 1938,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 16,
+   "jsHeap": {
+    "used": 248493903,
+    "total": 293793435,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 10,
+    "triangles": 1938,
+    "geometries": 13,
+    "textures": 18,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 17,
+   "jsHeap": {
+    "used": 252880963,
+    "total": 294563879,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 13,
+    "triangles": 2532,
+    "geometries": 16,
+    "textures": 19,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 18,
+   "jsHeap": {
+    "used": 229330578,
+    "total": 293687146,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2718,
+    "geometries": 16,
+    "textures": 19,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 19,
+   "jsHeap": {
+    "used": 232699894,
+    "total": 293687146,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2718,
+    "geometries": 16,
+    "textures": 19,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 20,
+   "jsHeap": {
+    "used": 237051011,
+    "total": 294416859,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2916,
+    "geometries": 16,
+    "textures": 19,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 21,
+   "jsHeap": {
+    "used": 240729155,
+    "total": 294416991,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 22,
+   "jsHeap": {
+    "used": 244342118,
+    "total": 294426622,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 23,
+   "jsHeap": {
+    "used": 248798710,
+    "total": 294688766,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 24,
+   "jsHeap": {
+    "used": 252469209,
+    "total": 294699209,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 25,
+   "jsHeap": {
+    "used": 231993649,
+    "total": 295977161,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 26,
+   "jsHeap": {
+    "used": 235090998,
+    "total": 295988414,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 27,
+   "jsHeap": {
+    "used": 239163022,
+    "total": 295988414,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 28,
+   "jsHeap": {
+    "used": 242342485,
+    "total": 296000481,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 29,
+   "jsHeap": {
+    "used": 246649753,
+    "total": 296000481,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3114,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 30,
+   "jsHeap": {
+    "used": 251530032,
+    "total": 296734256,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2916,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 31,
+   "jsHeap": {
+    "used": 229083393,
+    "total": 234549713,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2916,
+    "geometries": 17,
+    "textures": 20,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 32,
+   "jsHeap": {
+    "used": 230353596,
+    "total": 236349656,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2862,
+    "geometries": 20,
+    "textures": 21,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 33,
+   "jsHeap": {
+    "used": 230289004,
+    "total": 236415192,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2862,
+    "geometries": 20,
+    "textures": 21,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 34,
+   "jsHeap": {
+    "used": 230371336,
+    "total": 236462596,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 35,
+   "jsHeap": {
+    "used": 232047972,
+    "total": 236954116,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 36,
+   "jsHeap": {
+    "used": 232946706,
+    "total": 239082966,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 37,
+   "jsHeap": {
+    "used": 230723802,
+    "total": 240557526,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 38,
+   "jsHeap": {
+    "used": 231075210,
+    "total": 240606422,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 39,
+   "jsHeap": {
+    "used": 232126730,
+    "total": 241442006,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 40,
+   "jsHeap": {
+    "used": 232549626,
+    "total": 241622786,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 41,
+   "jsHeap": {
+    "used": 231196798,
+    "total": 241737474,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 42,
+   "jsHeap": {
+    "used": 231651634,
+    "total": 241755226,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3042,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 43,
+   "jsHeap": {
+    "used": 233149166,
+    "total": 241755226,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2862,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 44,
+   "jsHeap": {
+    "used": 232955654,
+    "total": 241773790,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2862,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 45,
+   "jsHeap": {
+    "used": 232661518,
+    "total": 242248926,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2862,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 46,
+   "jsHeap": {
+    "used": 233425764,
+    "total": 242268300,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2664,
+    "geometries": 21,
+    "textures": 22,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 47,
+   "jsHeap": {
+    "used": 233479440,
+    "total": 242989592,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2718,
+    "geometries": 24,
+    "textures": 23,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 48,
+   "jsHeap": {
+    "used": 234702264,
+    "total": 243140852,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2718,
+    "geometries": 24,
+    "textures": 23,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 49,
+   "jsHeap": {
+    "used": 234216576,
+    "total": 243140852,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2898,
+    "geometries": 24,
+    "textures": 23,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 50,
+   "jsHeap": {
+    "used": 236681936,
+    "total": 243882748,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2898,
+    "geometries": 24,
+    "textures": 23,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 51,
+   "jsHeap": {
+    "used": 235351700,
+    "total": 243882880,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 52,
+   "jsHeap": {
+    "used": 235984389,
+    "total": 243904693,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 53,
+   "jsHeap": {
+    "used": 235016561,
+    "total": 244691125,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 54,
+   "jsHeap": {
+    "used": 235955752,
+    "total": 244713752,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 55,
+   "jsHeap": {
+    "used": 236024772,
+    "total": 245188888,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 56,
+   "jsHeap": {
+    "used": 240336713,
+    "total": 246785189,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 57,
+   "jsHeap": {
+    "used": 239320933,
+    "total": 249406629,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 58,
+   "jsHeap": {
+    "used": 234561381,
+    "total": 251000305,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 59,
+   "jsHeap": {
+    "used": 233980489,
+    "total": 252048881,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 60,
+   "jsHeap": {
+    "used": 239657092,
+    "total": 252794836,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 61,
+   "jsHeap": {
+    "used": 238398552,
+    "total": 252811220,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2898,
+    "geometries": 25,
+    "textures": 24,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 62,
+   "jsHeap": {
+    "used": 236989678,
+    "total": 253558386,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2898,
+    "geometries": 28,
+    "textures": 27,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 63,
+   "jsHeap": {
+    "used": 235858698,
+    "total": 253312758,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 64,
+   "jsHeap": {
+    "used": 240578902,
+    "total": 253339442,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 65,
+   "jsHeap": {
+    "used": 241169438,
+    "total": 254584626,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 66,
+   "jsHeap": {
+    "used": 237708874,
+    "total": 254628506,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 67,
+   "jsHeap": {
+    "used": 237113842,
+    "total": 254628506,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 68,
+   "jsHeap": {
+    "used": 241966042,
+    "total": 254656814,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 69,
+   "jsHeap": {
+    "used": 241586570,
+    "total": 254918958,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 70,
+   "jsHeap": {
+    "used": 239474622,
+    "total": 256193262,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 71,
+   "jsHeap": {
+    "used": 239321006,
+    "total": 256209646,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 72,
+   "jsHeap": {
+    "used": 237896840,
+    "total": 256239576,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 73,
+   "jsHeap": {
+    "used": 237950044,
+    "total": 256239576,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 74,
+   "jsHeap": {
+    "used": 243013138,
+    "total": 256270318,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3096,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 75,
+   "jsHeap": {
+    "used": 244168110,
+    "total": 256991214,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2898,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 76,
+   "jsHeap": {
+    "used": 241181962,
+    "total": 256777010,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2700,
+    "geometries": 29,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211629568,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2257
+   },
+   "tiles": {
+    "loaded": 32,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 77,
+   "jsHeap": {
+    "used": 244983782,
+    "total": 257498302,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 14,
+    "triangles": 2646,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 78,
+   "jsHeap": {
+    "used": 243186966,
+    "total": 257547054,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2844,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 79,
+   "jsHeap": {
+    "used": 245021214,
+    "total": 257809198,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2844,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 80,
+   "jsHeap": {
+    "used": 237702616,
+    "total": 258013704,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 81,
+   "jsHeap": {
+    "used": 234205992,
+    "total": 263010824,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 82,
+   "jsHeap": {
+    "used": 240026264,
+    "total": 263044816,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 83,
+   "jsHeap": {
+    "used": 235453148,
+    "total": 269074128,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 84,
+   "jsHeap": {
+    "used": 241440491,
+    "total": 269108931,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 85,
+   "jsHeap": {
+    "used": 236066915,
+    "total": 272467651,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 86,
+   "jsHeap": {
+    "used": 241653588,
+    "total": 272503268,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 87,
+   "jsHeap": {
+    "used": 236279824,
+    "total": 273027556,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 88,
+   "jsHeap": {
+    "used": 241941642,
+    "total": 273063982,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 32,
+    "textures": 31,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211367424,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 31,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 89,
+   "jsHeap": {
+    "used": 236505786,
+    "total": 273063982,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211105280,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 90,
+   "jsHeap": {
+    "used": 243817098,
+    "total": 273822122,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 16,
+    "triangles": 3024,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211105280,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 91,
+   "jsHeap": {
+    "used": 237333282,
+    "total": 274887082,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2844,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211105280,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 92,
+   "jsHeap": {
+    "used": 246741748,
+    "total": 274925224,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 15,
+    "triangles": 2844,
+    "geometries": 31,
+    "textures": 30,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1211105280,
+    "budgetBytes": 5368709120,
+    "utilization": 0.2256
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "upgradeQueue": 3,
+    "sinterQueue": 0,
+    "activeWorkers": 6
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 93.2,
+   "jsHeap": {
+    "used": 236331222,
+    "total": 272850618,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 105,
+    "triangles": 3883572,
+    "geometries": 121,
+    "textures": 28,
+    "programs": 4
+   },
+   "vram": {
+    "totalBytes": 1812725760,
+    "budgetBytes": 5368709120,
+    "utilization": 0.3376
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "upgradeQueue": 0,
+    "sinterQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "glOutOfMemoryCount": 0
+  }
+ ],
+ "headlessGL": {
+  "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
+  "astc": true,
+  "bptc": true,
+  "s3tc": true,
+  "etc": true
+ }
+}
