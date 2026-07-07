@@ -1,17 +1,8 @@
-// @atlas: Asynchronous background Web Worker dedicated to parsing 'HEX4' binary tiles and transcoding XUASTC LDR 6x6 KTX2 aerial textures. It handles network fetching, decodes the 16-byte packed structs (heights, slopes, deltas, packed normals), transcodes compressed textures via the vendored Basis Universal v2 WASM transcoder to whatever GPU format the main thread's capability handshake selected, constructs Float32Array mesh buffers for instanced rendering, and passes everything back via zero-copy transferables.
-const SECTOR_WIDTH_METERS = 819.2;
-const UNIT_HEX_PX = 32.0;
-const METERS_PER_PIXEL = 0.2;
-const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4
+// @atlas: Asynchronous background Web Worker dedicated to parsing 'GSP1' Gosper-island binary tiles and transcoding XUASTC LDR 6x6 KTX2 aerial textures. Decodes the hierarchical offset-coded height tree (level-5 island root + per-depth decimeter deltas), reconstructs absolute heights, and builds per-level instanced mesh buffers whose matrices bake in each Gosper level's sqrt(7)^k scale and k*19.1066deg rotation, plus the parent-center attribute the CDLOD shader cut needs. Textures transcode via the vendored Basis Universal v2 WASM transcoder to whatever GPU format the main thread's capability handshake selected; everything returns via zero-copy transferables.
+importScripts('gosper_core.js');
 
-// Helper: Axial conversion for parsing
-function worldToAxialScale(x, y, s) {
-    const h = UNIT_HEX_WIDTH_METERS * s;
-    const A = (Math.sqrt(3) / 2) * h;
-    const q = x / A;
-    const r = (y - (q * 0.5 * h)) / h;
-    return { q, r };
-}
+const G = self.GosperCore;
+const TILE_LEVEL = G.TILE_LEVEL; // 5
 
 // =============================================================================
 // XUASTC KTX2 TRANSCODING (Basis Universal v2 WASM)
@@ -127,6 +118,38 @@ async function transcodeKTX2(arrayBuffer) {
     }
 }
 
+// =============================================================================
+// GOSPER TILE GEOMETRY (computed once per worker)
+// Scene-local convention: x = worldX - islandCenterX, z = -(worldY - centerY).
+// =============================================================================
+let GEOM = null;
+function tileGeometry() {
+    if (GEOM) return GEOM;
+    const off = G.offsets(TILE_LEVEL); // Int32Array, 2 * 16807, heap order
+    const n = off.length / 2;
+    const px = new Float32Array(n);
+    const pz = new Float32Array(n);
+    const h = G.UNIT_HEX_WIDTH_METERS;
+    const A = (Math.sqrt(3) / 2) * h;
+    for (let i = 0; i < n; i++) {
+        const q = off[i * 2], r = off[i * 2 + 1];
+        px[i] = q * A;
+        pz[i] = -(r * h + q * 0.5 * h);
+    }
+    const depths = [];
+    for (let d = 0; d <= TILE_LEVEL; d++) {
+        const level = TILE_LEVEL - d;
+        depths.push({
+            level,
+            count: Math.pow(7, d),
+            stride: Math.pow(7, level),      // unit index of node i = i * stride
+            xz: G.levelXZ(level),            // {a,b,c,d}: x' = a x + b z ; z' = c x + d z
+        });
+    }
+    GEOM = { n, px, pz, depths };
+    return GEOM;
+}
+
 self.onmessage = async function (e) {
     const { id, type, data } = e.data;
 
@@ -142,7 +165,6 @@ self.onmessage = async function (e) {
             // Transfer buffers to avoid copy
             const transferables = [];
 
-            // Collect buffers from all LODs
             Object.values(result.lods).forEach(lod => {
                 if (lod) {
                     transferables.push(lod.matrix.buffer);
@@ -151,8 +173,10 @@ self.onmessage = async function (e) {
                     transferables.push(lod.slopes.buffer);
                     transferables.push(lod.deltas.buffer);
                     transferables.push(lod.norms.buffer);
+                    transferables.push(lod.parentPos.buffer);
                 }
             });
+            transferables.push(result.unitHeights.buffer);
 
             // Transfer transcoded mip buffers if a texture was decoded
             if (result.texture) {
@@ -172,7 +196,7 @@ self.onmessage = async function (e) {
     }
 };
 
-async function loadTile({ q, r, lx, lz, texUrl, binUrl }) {
+async function loadTile({ yq, yr, texUrl, binUrl }) {
     // Parallel Fetch: Bin + LowTexture
     const [binRes, texRes] = await Promise.all([
         fetch(binUrl),
@@ -200,13 +224,15 @@ async function loadTile({ q, r, lx, lz, texUrl, binUrl }) {
         }
     }
 
-    // Parse & Generate Buffers
-    const parsed = parseBinaryV3(binBuf);
-    const lods = {};
+    const parsed = parseGSP1(binBuf, yq, yr);
+    const lods = buildLevelBuffers(parsed);
 
-    // Generate buffers for all 4 levels (0=Large .. 3=Unit)
-    [0, 1, 2, 3].forEach(level => {
-        lods[level] = generateMeshBuffers(parsed.layers, level, parsed.sx, parsed.sy);
+    let geometryBytes = 0;
+    Object.values(lods).forEach(lod => {
+        if (!lod) return;
+        geometryBytes += lod.matrix.byteLength + lod.nz1.byteLength + lod.nz2.byteLength
+            + lod.slopes.byteLength + lod.deltas.byteLength + lod.norms.byteLength
+            + lod.parentPos.byteLength;
     });
 
     return {
@@ -214,8 +240,8 @@ async function loadTile({ q, r, lx, lz, texUrl, binUrl }) {
         texture,
         stats: parsed.stats,
         center: parsed.center,
-        layers: parsed.layers, // Return raw data too for height picking if needed?
-        // Main thread needs raw layers for camera height collision
+        unitHeights: parsed.unitHeights, // Float32Array(16807), heap order — main keeps ONE static (dq,dr)->index map
+        geometryBytes,
         networkBytes: { bin: binBuf.byteLength, tex: texBytes },
     };
 }
@@ -230,129 +256,176 @@ async function loadTextureOnly({ url }) {
     return { ...texture, networkBytes: buf.byteLength };
 }
 
-function parseBinaryV3(buffer) {
+// =============================================================================
+// GSP1 PARSER — see hex_backend/waffle_iron.py for the authoring side and
+// CODEX_GOAL byte tables. Heights are offset-coded against the parent's
+// reconstructed value: recon(node) = recon(parent) + dH * 0.1.
+// =============================================================================
+function parseGSP1(buffer, expectYq, expectYr) {
     const view = new DataView(buffer);
     const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (sig !== 'HEX4') throw new Error("Invalid Sig");
+    if (sig !== 'GSP1') throw new Error(`Invalid signature '${sig}' (want GSP1)`);
+    const version = view.getUint16(4, true);
+    const tileLevel = view.getUint16(6, true);
+    if (version !== 1 || tileLevel !== TILE_LEVEL) {
+        throw new Error(`Unsupported GSP1 version ${version} / tileLevel ${tileLevel}`);
+    }
+    const centerQ = view.getInt32(8, true);
+    const centerR = view.getInt32(12, true);
+    const latQ = view.getInt32(16, true);
+    const latR = view.getInt32(20, true);
+    if (expectYq !== undefined && (latQ !== expectYq || latR !== expectYr)) {
+        throw new Error(`GSP1 lattice mismatch: file (${latQ},${latR}) vs requested (${expectYq},${expectYr})`);
+    }
+    const hMean = view.getFloat32(24, true);
+    const hMin = view.getFloat32(28, true);
+    const hMax = view.getFloat32(32, true);
 
-    const sx = view.getInt32(4, true);
-    const sy = view.getInt32(8, true);
-    const minZ = view.getFloat32(12, true);
-    const maxZ = view.getFloat32(16, true);
-    const scale = view.getFloat32(20, true);
+    // Per-depth decoded arrays. Depth 0 = the header root node.
+    const depths = [{
+        h: new Float32Array([hMean]),
+        slopeMean: new Uint8Array([view.getUint8(36)]),
+        nx: new Uint8Array([view.getUint8(38)]),
+        nz: new Uint8Array([view.getUint8(39)]),
+        valid: new Uint8Array([view.getUint8(40) & 1]),
+    }];
 
-    let offset = 32;
-    const layers = [];
-    const scales = [24.0, 6.0, 3.0, 1.0];
+    let off = 48;
+    let unit = null;
+    for (let d = 1; d <= TILE_LEVEL; d++) {
+        const count = view.getUint32(off, true); off += 4;
+        if (count !== Math.pow(7, d)) throw new Error(`GSP1 depth ${d} count ${count}`);
+        const parentH = depths[d - 1].h;
+        const h = new Float32Array(count);
+        const slopeMean = new Uint8Array(count);
+        const nx = new Uint8Array(count);
+        const nz = new Uint8Array(count);
+        const valid = new Uint8Array(count);
 
-    const minX = sx * SECTOR_WIDTH_METERS;
-    const minY = sy * SECTOR_WIDTH_METERS;
-    const cenX = minX + SECTOR_WIDTH_METERS * 0.5;
-    const cenY = minY + SECTOR_WIDTH_METERS * 0.5;
-
-    for (let l = 0; l < 4; l++) {
-        const count = view.getUint32(offset, true);
-        offset += 4;
-        const layer = [];
-        const sc = scales[l];
-        const rawC = worldToAxialScale(cenX, cenY, sc);
-        const lcq = Math.round(rawC.q);
-        const lcr = Math.round(rawC.r);
-
-        for (let i = 0; i < count; i++) {
-            const dq = view.getInt8(offset);
-            const dr = view.getInt8(offset + 1);
-            const hn = view.getUint16(offset + 2, true);
-            const d1 = view.getInt16(offset + 4, true);
-            const d2 = view.getInt16(offset + 6, true);
-            const d3 = view.getInt16(offset + 8, true);
-            const s1 = view.getUint8(offset + 10);
-            const s2 = view.getUint8(offset + 11);
-            const s3 = view.getUint8(offset + 12);
-            const nx = view.getUint8(offset + 13);
-            const nz = view.getUint8(offset + 14);
-            offset += 16;
-
-            layer.push({
-                dq, dr,
-                q: lcq + dq, r: lcr + dr,
-                h: minZ + (hn / scale),
-                deltas: [d1, d2, d3],
-                slopes: [s1, s2, s3], // Array of 3
-                norm: [nx, nz]
-            });
+        if (d < TILE_LEVEL) {
+            for (let i = 0; i < count; i++) {
+                const dH = view.getInt16(off, true);
+                slopeMean[i] = view.getUint8(off + 2);
+                // off+3 = slopeMax (unused by the renderer for now)
+                nx[i] = view.getUint8(off + 4);
+                nz[i] = view.getUint8(off + 5);
+                // off+6 = relief (unused by the renderer for now)
+                valid[i] = view.getUint8(off + 7) & 1;
+                h[i] = parentH[(i / 7) | 0] + dH * 0.1;
+                off += 8;
+            }
+            depths.push({ h, slopeMean, nx, nz, valid });
+        } else {
+            const d1 = new Int16Array(count), d2 = new Int16Array(count), d3 = new Int16Array(count);
+            const s1 = new Uint8Array(count), s2 = new Uint8Array(count), s3 = new Uint8Array(count);
+            for (let i = 0; i < count; i++) {
+                const dH = view.getInt16(off, true);
+                d1[i] = view.getInt16(off + 2, true);
+                d2[i] = view.getInt16(off + 4, true);
+                d3[i] = view.getInt16(off + 6, true);
+                s1[i] = view.getUint8(off + 8);
+                s2[i] = view.getUint8(off + 9);
+                s3[i] = view.getUint8(off + 10);
+                nx[i] = view.getUint8(off + 11);
+                nz[i] = view.getUint8(off + 12);
+                valid[i] = view.getUint8(off + 13) & 1;
+                h[i] = parentH[(i / 7) | 0] + dH * 0.1;
+                off += 14;
+            }
+            unit = { d1, d2, d3, s1, s2, s3 };
+            depths.push({ h, slopeMean, nx, nz, valid });
         }
-        layers.push(layer);
     }
 
-    return { layers, sx, sy, stats: { min: minZ, max: maxZ, avg: (minZ + maxZ) / 2, base: minZ }, center: { q: 0, r: 0 } };
+    return {
+        depths, unit,
+        unitHeights: depths[TILE_LEVEL].h,
+        stats: { min: hMin, max: hMax, avg: hMean, base: hMin },
+        center: { q: centerQ, r: centerR, latQ, latR },
+    };
 }
 
-function generateMeshBuffers(allLayers, lodIndex, sx, sy) {
-    // IMPORTANT: LOD ordering must match baker layer order in hex_backend/waffle_iron.py.
-    // Baker writes layers as [24, 6, 3, 1] (large -> unit). We keep that order here.
-    // If you ever change baker order, update this mapping and main.js LOD ranges together.
-    const layerIdx = Math.min(3, Math.max(0, lodIndex));
-    const hexes = allLayers[layerIdx];
-    if (!hexes || hexes.length === 0) return null;
+// =============================================================================
+// INSTANCE BUFFER BUILDER — one buffer set per gosper level k (5..0).
+// Matrix = T(node) * Ry(k * 19.1066deg) * Sxz(sqrt(7)^k), baked into the 4x4.
+// aParentPos carries the parent node's tile-local XZ so the vertex shader can
+// evaluate the hierarchical CDLOD cut (draw iff selfDist >= R(k) AND
+// parentDist < R(k+1)) without gaps or double-draw at ring boundaries.
+// =============================================================================
+function buildLevelBuffers(parsed) {
+    const { n, px, pz, depths: geomDepths } = tileGeometry();
+    const lods = {};
 
-    const scaleTable = [24.0, 6.0, 3.0, 1.0];
-    const scale = scaleTable[layerIdx];
-    const num = hexes.length;
+    for (let d = 0; d <= TILE_LEVEL; d++) {
+        const gd = geomDepths[d];
+        const pd = parsed.depths[d];
+        const level = gd.level;
+        const isUnit = (level === 0);
 
-    const h_eff = UNIT_HEX_WIDTH_METERS * scale;
-    const dx = (Math.sqrt(3) / 2) * h_eff;
-    const dy = h_eff;
-    const dy_q = 0.5 * h_eff;
+        // Count valid instances first (invalid = off-DEM, never rendered)
+        let num = 0;
+        for (let i = 0; i < pd.valid.length; i++) num += pd.valid[i];
+        if (num === 0) { lods[level] = null; continue; }
 
-    const sectorMinX = sx * SECTOR_WIDTH_METERS;
-    const sectorMaxY = (sy + 1) * SECTOR_WIDTH_METERS;
+        const matrix = new Float32Array(num * 16);
+        const nz1 = new Float32Array(num * 4);
+        const nz2 = new Float32Array(num * 4);
+        const slopes = new Float32Array(num * 3);
+        const deltas = new Float32Array(num * 3);
+        const norms = new Float32Array(num * 2);
+        const parentPos = new Float32Array(num * 2);
+        const { a, b, c, d: dd } = gd.xz;
+        const parentStride = gd.stride * 7;
 
-    // Buffers
-    const matrix = new Float32Array(num * 16);
-    const nz1 = new Float32Array(num * 4);
-    const nz2 = new Float32Array(num * 4);
-    const slopes = new Float32Array(num * 3);
-    const deltas = new Float32Array(num * 3);
-    const norms = new Float32Array(num * 2);
+        let w = 0;
+        let activeSkirts = 0;
+        for (let i = 0; i < pd.valid.length; i++) {
+            if (!pd.valid[i]) continue;
+            const u = i * gd.stride;         // unit index of this node's center
+            const lx = px[u], lz = pz[u];
 
-    let activeSkirts = 0;
+            const mIdx = w * 16;
+            matrix[mIdx + 0] = a; matrix[mIdx + 4] = 0; matrix[mIdx + 8] = b; matrix[mIdx + 12] = lx;
+            matrix[mIdx + 1] = 0; matrix[mIdx + 5] = 1; matrix[mIdx + 9] = 0; matrix[mIdx + 13] = 0;
+            matrix[mIdx + 2] = c; matrix[mIdx + 6] = 0; matrix[mIdx + 10] = dd; matrix[mIdx + 14] = lz;
+            matrix[mIdx + 3] = 0; matrix[mIdx + 7] = 0; matrix[mIdx + 11] = 0; matrix[mIdx + 15] = 1;
 
-    for (let i = 0; i < num; i++) {
-        const hx = hexes[i];
+            const hh = parsed.depths[d].h[i];
+            const n1 = w * 4;
+            nz1[n1] = hh; nz1[n1 + 1] = hh; nz1[n1 + 2] = hh; nz1[n1 + 3] = hh;
+            nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh; nz2[n1 + 3] = 0.0;
 
-        // 1. Matrix (Translation)
-        const gx = hx.q * dx;
-        const gy = hx.r * dy + hx.q * dy_q;
+            const sIdx = w * 3;
+            if (isUnit) {
+                slopes[sIdx] = parsed.unit.s1[i];
+                slopes[sIdx + 1] = parsed.unit.s2[i];
+                slopes[sIdx + 2] = parsed.unit.s3[i];
+                deltas[sIdx] = parsed.unit.d1[i];
+                deltas[sIdx + 1] = parsed.unit.d2[i];
+                deltas[sIdx + 2] = parsed.unit.d3[i];
+                if (parsed.unit.d1[i] !== 0 || parsed.unit.d2[i] !== 0 || parsed.unit.d3[i] !== 0) activeSkirts++;
+            } else {
+                const sm = pd.slopeMean[i];
+                slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
+                // deltas stay zero — aggregate caps have no skirts
+            }
 
-        // Revised Local Pos centering logic to match user's latest fix
-        const lx = (gx - sectorMinX) - SECTOR_WIDTH_METERS * 0.5;
-        const lz = (sectorMaxY - gy) - SECTOR_WIDTH_METERS * 0.5;
+            const nIdx = w * 2;
+            norms[nIdx] = pd.nx[i] / 255.0;
+            norms[nIdx + 1] = pd.nz[i] / 255.0;
 
-        // Identity with translation
-        const mIdx = i * 16;
-        matrix[mIdx + 0] = 1; matrix[mIdx + 4] = 0; matrix[mIdx + 8] = 0; matrix[mIdx + 12] = lx;
-        matrix[mIdx + 1] = 0; matrix[mIdx + 5] = 1; matrix[mIdx + 9] = 0; matrix[mIdx + 13] = 0;
-        matrix[mIdx + 2] = 0; matrix[mIdx + 6] = 0; matrix[mIdx + 10] = 1; matrix[mIdx + 14] = lz;
-        matrix[mIdx + 3] = 0; matrix[mIdx + 7] = 0; matrix[mIdx + 11] = 0; matrix[mIdx + 15] = 1;
+            // Parent center (tile-local). Root (d=0) points at itself, and its
+            // material's uLodRadii.y is effectively infinite, so it always draws
+            // when the tile is resident and beyond R(5).
+            const pu = (d === 0) ? u : ((i / 7) | 0) * parentStride;
+            parentPos[nIdx] = px[pu];
+            parentPos[nIdx + 1] = pz[pu];
 
-        // 2. Attributes
-        const hh = hx.h;
-        const n1 = i * 4;
-        nz1[n1] = hh; nz1[n1 + 1] = hh; nz1[n1 + 2] = hh; nz1[n1 + 3] = hh;
-        nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh; nz2[n1 + 3] = 0.0;
+            w++;
+        }
 
-        const sIdx = i * 3;
-        slopes[sIdx] = hx.slopes[0]; slopes[sIdx + 1] = hx.slopes[1]; slopes[sIdx + 2] = hx.slopes[2];
-
-        const dIdx = i * 3;
-        deltas[dIdx] = hx.deltas[0]; deltas[dIdx + 1] = hx.deltas[1]; deltas[dIdx + 2] = hx.deltas[2];
-
-        const nIdx = i * 2;
-        norms[nIdx] = hx.norm[0] / 255.0; norms[nIdx + 1] = hx.norm[1] / 255.0;
-
-        if (hx.deltas.some(v => v !== 0)) activeSkirts++;
+        lods[level] = { matrix, nz1, nz2, slopes, deltas, norms, parentPos, activeSkirts, count: num, level };
     }
 
-    return { matrix, nz1, nz2, slopes, deltas, norms, activeSkirts };
+    return lods;
 }
