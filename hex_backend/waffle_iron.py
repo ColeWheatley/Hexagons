@@ -1,14 +1,14 @@
-# @atlas: The central terrain baking pipeline ('Waffle Iron' v4.1). Ingests large EPSG:31254 DEMs and high-res orthophotos (TIFs). It processes these into a proprietary 16-byte 'Uber-Hex' binary structure (.bin) featuring delta compression, 'Diamond' slope area sampling, and packed lighting normals. Simultaneously generates and uploads padded XUASTC LDR 6x6 KTX2 tiles (full and low-res LODs) to S3, using incremental caching to prevent redundant bakes.
-# 🧇 Waffle Iron v4.1 - Incremental Bake Edition
+# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v5.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP1 binary tiles plus island-centered XUASTC LDR 6x6 KTX2 textures with incremental caching.
+# 🧇 Waffle Iron v5.0 - Gosper Island Bake Edition
 # =============================================================================
 # FEATURES:
-#   - 16-Byte "Uber-Hex" Layout (Power-of-Two aligned)
+#   - GSP1 per-island binary layout (locked frontend contract)
 #   - Gapless "Partial Skirt" Topology (SE, S, SW ownership)
 #   - "Diamond" Area Sampling for faithful edge slopes
 #   - Baked-in Center Normals (Nx, Nz) for smooth Cap lighting
 #   - Int16 Vertical Deltas (Decimeter precision)
 #   - Incremental baking with BAKER_VERSION skip logic
-#   - Configurable grid size (--grid 1..16) and center (--center Q,R)
+#   - Configurable region size (--grid 1..16) and island center (--center yq,yr)
 #   - Regional DEM/gradient cache for mini-bake (memory-efficient)
 #
 # DATA SPECS (files NOT in git — too large):
@@ -20,17 +20,15 @@
 #                    14 GB on disk, 38.78 GB uncompressed (53224×91076, 2 bands float32)
 #                    Generated on first run from the DEM (2× upsampled dx/dy gradients)
 #
-# OUTPUT FORMATS (baked per-sector, also NOT in git):
-#   .bin:   HEX4 header + 4 LOD layers of packed 16-byte records
-#           Each record: dq(b) dr(b) h(H) d1(h) d2(h) d3(h) s1(B) s2(B) s3(B) nx(B) nz(B) pad(x)
+# OUTPUT FORMATS (baked per Gosper L5 island, also NOT in git):
+#   .bin:   GSP1 header + 5 heap-ordered Gosper depth blocks
 #   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
-#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). 4096px canvas = 3360px sector
-#           content + 368px padding per side (covers scale-24 LOD hex overhang for
-#           seamless tile blending). Saved at full res + 1/16 "low" res for LOD streaming.
+#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). 4096px canvas = 980m square
+#           centered on the island. Saved at full res + 1/16 "low" res for LOD streaming.
 #
 # HARDWARE PROFILE (reference machine):
 #   MacBook M1, 16 GB shared memory
-#   Mini-bake 12×12 (144 sectors): ~11 min  |  avg 4.6s/sector
+#   Mini-bake 4×4 region: roughly 12–25 intersecting Gosper islands
 #   Mini-bake regional cache: ~19 MB DEM + ~149 MB gradient (vs 1.1 GB + 14 GB full)
 # =============================================================================
 
@@ -72,15 +70,10 @@ S3_PREFIX = "powfinder/app"
 # =============================================================================
 # CONSTANTS & CONFIGURATION
 # =============================================================================
-# Texture canvas is locked to 4096px total (GPU MAX_TEXTURE_SIZE floor, PoT mips)
-# instead of growing to 4992px for padding. The 819.2m sector content is rendered
-# at 3360px (0.2438 m/px, unit hex = 26.25px instead of 32px) leaving 368px of
-# padding per side = 89.72m, which covers the largest LOD hex circumradius
-# (scale=24 → 6.4·24/√3 = 88.68m) with margin. World geometry is unaffected —
-# this only changes texture-space density. uUvScale = 3360/4096 exact.
+# Texture canvas is locked to 4096px total (GPU MAX_TEXTURE_SIZE floor, PoT mips).
+# Gosper islands use one uniform world-metric square; the shader maps
+# uv = local_xz / 980 + 0.5.
 TEXTURE_CANVAS_PX = 4096
-TEXTURE_CONTENT_PX = 3360
-TEXTURE_PADDING_PX = (TEXTURE_CANVAS_PX - TEXTURE_CONTENT_PX) // 2  # 368
 XUASTC_QUALITY = 75  # basisu -quality (0-100); tradeoff vs bitrate — never reduce this for speed
 # basisu -effort (0-10); tradeoff vs encode speed. Benchmarked full-res (4096x4096)
 # single-file encodes on the reference M1: effort=4 -> ~45s, effort=2 -> ~23s,
@@ -99,8 +92,8 @@ DEBUG_MODE = False
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "4.1.0"  # bump this when you change .bin baking logic to trigger re-bake
-TEXTURE_VERSION = "1.0.0"  # bump this when you change texture encoding to trigger re-bake
+BAKER_VERSION = "5.0.0"  # bump this when you change .bin baking logic to trigger re-bake
+TEXTURE_VERSION = "2.0.0"  # bump this when you change texture encoding to trigger re-bake
 
 DEFAULT_GRID_SIZE = 12  # 12×12 grid for mini-bake (configurable via --grid)
 
@@ -113,6 +106,22 @@ METADATA_PATH = "frontend/app/tiles_bin/metadata.json"
 # either has a working XUASTC-capable basisu binary or it fails loudly before
 # baking anything.
 BASISU_BINARY = None
+
+GSP1_HEADER_STRUCT = struct.Struct("<4sHHiiiifffBBBBBxxxI")
+GSP1_AGG_STRUCT = struct.Struct("<hBBBBBB")
+GSP1_UNIT_STRUCT = struct.Struct("<hhhhBBBBBB")
+GSP1_MAGIC = b"GSP1"
+GSP1_VERSION = 1
+GSP1_TILE_LEVEL = coord_util.GOSPER_TILE_LEVEL
+GSP1_UNIT_DTYPE = np.dtype([
+    ("dH", "<i2"), ("d1", "<i2"), ("d2", "<i2"), ("d3", "<i2"),
+    ("s1", "u1"), ("s2", "u1"), ("s3", "u1"),
+    ("nx", "u1"), ("nz", "u1"), ("flags", "u1"),
+])
+GSP1_AGG_DTYPE = np.dtype([
+    ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
+    ("nx", "u1"), ("nz", "u1"), ("relief", "u1"), ("flags", "u1"),
+])
 
 
 def resolve_basisu_binary():
@@ -195,7 +204,7 @@ def upload_to_s3(local_path):
     local_path = os.path.normpath(local_path)
     
     # Find relative path from the app root
-    # local_path is like /Users/.../frontend/hexagons/app/tiles_bin/sector_1_2.bin
+    # local_path is like /Users/.../frontend/hexagons/app/tiles_bin/gosper_1_2.bin
     # We want the part after 'hexagons/app/'
     parts = local_path.split(os.sep)
     try:
@@ -430,58 +439,187 @@ def load_tif_bounds(tif_list):
             pass  # cache is an optimization; never fail the bake over it
     return out
 
-def bake_sector_textures(SX, SY, valid_tifs, output_dir="frontend/app/aerial_tiles"):
+def _clipped_window(ds, bounds, pixel_aligned=False):
+    try:
+        window = rasterio.windows.from_bounds(*bounds, ds.transform)
+        if pixel_aligned:
+            col0 = max(0, math.floor(window.col_off))
+            row0 = max(0, math.floor(window.row_off))
+            col1 = min(ds.width, math.ceil(window.col_off + window.width))
+            row1 = min(ds.height, math.ceil(window.row_off + window.height))
+            if col1 <= col0 or row1 <= row0:
+                return None
+            return rasterio.windows.Window(col0, row0, col1 - col0, row1 - row0)
+        return window.intersection(rasterio.windows.Window(0, 0, ds.width, ds.height))
+    except Exception:
+        return None
+
+
+def _window_has_pixels(window):
+    return window is not None and window.width >= 1 and window.height >= 1
+
+
+def make_fast_rowcol(transform):
+    # rasterio.transform.rowcol wraps every lookup in array coercion plus a
+    # 2x2 linalg solve. Our rasters are axis-aligned north-up, so this is the
+    # same floor semantics with much less per-edge overhead.
+    if transform.b != 0 or transform.d != 0:
+        return lambda x, y: rasterio.transform.rowcol(transform, x, y)
+    inv_a, inv_e = 1.0 / transform.a, 1.0 / transform.e
+    c0, f0 = transform.c, transform.f
+
+    def _rowcol(x, y):
+        return math.floor((y - f0) * inv_e), math.floor((x - c0) * inv_a)
+
+    return _rowcol
+
+
+def make_fast_rowcol_arrays(transform):
+    if transform.b != 0 or transform.d != 0:
+        def _rowcol(xs, ys):
+            rows, cols = rasterio.transform.rowcol(transform, xs, ys)
+            return np.asarray(rows, dtype=np.int64), np.asarray(cols, dtype=np.int64)
+        return _rowcol
+    inv_a, inv_e = 1.0 / transform.a, 1.0 / transform.e
+    c0, f0 = transform.c, transform.f
+
+    def _rowcol(xs, ys):
+        return (
+            np.floor((ys - f0) * inv_e).astype(np.int64),
+            np.floor((xs - c0) * inv_a).astype(np.int64),
+        )
+
+    return _rowcol
+
+
+def _pack_u8_round(values):
+    return np.clip(np.rint(values), 0, 255).astype(np.uint8)
+
+
+def _pack_i16_dm(values):
+    return np.clip(np.rint(values), -32767, 32767).astype(np.int16)
+
+
+def _pack_normals_round(nx, nz):
+    return (
+        _pack_u8_round(nx * 127.0 + 128.0),
+        _pack_u8_round(nz * 127.0 + 128.0),
+    )
+
+
+def _pack_normals_trunc(nx, nz):
+    return (
+        np.clip((nx * 127.0 + 128.0).astype(np.int16), 0, 255).astype(np.uint8),
+        np.clip((nz * 127.0 + 128.0).astype(np.int16), 0, 255).astype(np.uint8),
+    )
+
+
+def _unpack_normals(px, pz):
+    nx = (px.astype(np.float64) - 128.0) / 127.0
+    nz = (pz.astype(np.float64) - 128.0) / 127.0
+    ny = np.sqrt(np.maximum(0.0, 1.0 - nx * nx - nz * nz))
+    return nx, ny, nz
+
+
+def _aggregate_normals(child_nx, child_nz, child_valid):
+    px = child_nx.reshape(-1, 7)
+    pz = child_nz.reshape(-1, 7)
+    valid = child_valid.reshape(-1, 7)
+    nx, ny, nz = _unpack_normals(px, pz)
+    weights = valid.astype(np.float64)
+    counts = weights.sum(axis=1)
+    out_nx = np.full(len(counts), 128, dtype=np.uint8)
+    out_nz = np.full(len(counts), 128, dtype=np.uint8)
+    has_data = counts > 0
+    if not np.any(has_data):
+        return out_nx, out_nz
+
+    avg_x = np.zeros(len(counts), dtype=np.float64)
+    avg_y = np.ones(len(counts), dtype=np.float64)
+    avg_z = np.zeros(len(counts), dtype=np.float64)
+    avg_x[has_data] = (nx * weights).sum(axis=1)[has_data] / counts[has_data]
+    avg_y[has_data] = (ny * weights).sum(axis=1)[has_data] / counts[has_data]
+    avg_z[has_data] = (nz * weights).sum(axis=1)[has_data] / counts[has_data]
+    length = np.sqrt(avg_x * avg_x + avg_y * avg_y + avg_z * avg_z)
+    length = np.where(length > 0, length, 1.0)
+    packed_x, packed_z = _pack_normals_round(avg_x / length, avg_z / length)
+    out_nx[has_data] = packed_x[has_data]
+    out_nz[has_data] = packed_z[has_data]
+    return out_nx, out_nz
+
+
+def _float32(value):
+    return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+
+
+def gosper_island_info(latQ, latR):
+    geom = coord_util.gosper_tile_geometry()
+    centerQ, centerR = coord_util.gosper_lattice_to_center(latQ, latR)
+    center_x, center_y = coord_util.axial_to_world_meters(centerQ, centerR)
+    half = float(geom["tex_half_m"])
+    return {
+        "latQ": int(latQ),
+        "latR": int(latR),
+        "centerQ": int(centerQ),
+        "centerR": int(centerR),
+        "centerX": float(center_x),
+        "centerY": float(center_y),
+        "bounds": (center_x - half, center_y - half, center_x + half, center_y + half),
+        "poly": box(center_x - half, center_y - half, center_x + half, center_y + half),
+    }
+
+
+def gosper_asset_name(latQ, latR, ext):
+    return f"gosper_{latQ}_{latR}.{ext}"
+
+
+def bake_gosper_textures(latQ, latR, valid_tifs, output_dir="frontend/app/aerial_tiles"):
     import PIL.Image as Image
     from rasterio.windows import from_bounds
     if not os.path.exists(output_dir): os.makedirs(output_dir)
 
-    min_x, min_y, max_x, max_y = coord_util.sector_id_to_bounds_meters(SX, SY)
-    # Texture density is decoupled from the world 0.2 m/px constant: the sector's
-    # 819.2m are rendered into TEXTURE_CONTENT_PX so the padded canvas stays 4096.
-    tex_mpp = coord_util.SECTOR_SIZE_METERS / TEXTURE_CONTENT_PX  # 0.24381 m/px
-    padding_m = TEXTURE_PADDING_PX * tex_mpp
-    padded_min_x, padded_max_x = min_x - padding_m, max_x + padding_m
-    padded_min_y, padded_max_y = min_y - padding_m, max_y + padding_m
+    info = gosper_island_info(latQ, latR)
+    min_x, min_y, max_x, max_y = info["bounds"]
+    tex_world_side_m = max_x - min_x
+    tex_mpp = tex_world_side_m / TEXTURE_CANVAS_PX
+    target_poly = info["poly"]
 
-    total_size_px = TEXTURE_CANVAS_PX
-    target_poly = box(padded_min_x, padded_min_y, padded_max_x, padded_max_y)
-
-    canvas = Image.new("RGB", (total_size_px, total_size_px), (0, 0, 0))
+    canvas = Image.new("RGB", (TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), (0, 0, 0))
     intersecting = [t for t in valid_tifs if t["poly"].intersects(target_poly)]
 
     for t in intersecting:
         with rasterio.open(t["path"]) as src:
-            ix_min_x, ix_max_x = max(padded_min_x, src.bounds.left), min(padded_max_x, src.bounds.right)
-            ix_min_y, ix_max_y = max(padded_min_y, src.bounds.bottom), min(padded_max_y, src.bounds.top)
-            if ix_min_x >= ix_max_x or ix_min_y >= ix_max_y: continue
+            ix_min_x, ix_max_x = max(min_x, src.bounds.left), min(max_x, src.bounds.right)
+            ix_min_y, ix_max_y = max(min_y, src.bounds.bottom), min(max_y, src.bounds.top)
+            if ix_min_x >= ix_max_x or ix_min_y >= ix_max_y:
+                continue
 
             window = from_bounds(ix_min_x, ix_min_y, ix_max_x, ix_max_y, src.transform)
-            # Round canvas-space *edges* (not widths) so adjacent TIF patches share
-            # the exact same rounded seam — at non-integer texel alignment (tex_mpp
-            # no longer divides TIF bounds evenly) truncating widths would leave
-            # 1px black gaps between source tiles.
-            px0 = round((ix_min_x - padded_min_x) / tex_mpp)
-            px1 = round((ix_max_x - padded_min_x) / tex_mpp)
-            py0 = round((padded_max_y - ix_max_y) / tex_mpp)
-            py1 = round((padded_max_y - ix_min_y) / tex_mpp)
+            # Round canvas-space edges so adjacent TIF patches share the same seam.
+            px0 = round((ix_min_x - min_x) / tex_mpp)
+            px1 = round((ix_max_x - min_x) / tex_mpp)
+            py0 = round((max_y - ix_max_y) / tex_mpp)
+            py1 = round((max_y - ix_min_y) / tex_mpp)
             w_px, h_px = px1 - px0, py1 - py0
-            if w_px <= 0 or h_px <= 0: continue
+            if w_px <= 0 or h_px <= 0:
+                continue
 
             try:
                 data = src.read(window=window, out_shape=(src.count, h_px, w_px), resampling=rasterio.enums.Resampling.lanczos)
                 patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8"), "RGB")
                 canvas.paste(patch, (px0, py0))
-            except: pass
+            except Exception:
+                pass
 
-    res_dirs = { k: os.path.join(output_dir, k) for k in ["full", "low"] }
+    res_dirs = {k: os.path.join(output_dir, k) for k in ["full", "low"]}
     for d in res_dirs.values():
         if not os.path.exists(d): os.makedirs(d)
 
-    f_name = f"sector_{SX}_{SY}.ktx2"
+    f_name = gosper_asset_name(latQ, latR, "ktx2")
     full_path = os.path.join(res_dirs["full"], f_name)
     low_path = os.path.join(res_dirs["low"], f_name)
 
-    c_low = canvas.resize((total_size_px // 16, total_size_px // 16), Image.LANCZOS)
+    c_low = canvas.resize((TEXTURE_CANVAS_PX // 16, TEXTURE_CANVAS_PX // 16), Image.LANCZOS)
 
     with tempfile.TemporaryDirectory(prefix="waffle_ktx2_") as tmp_dir:
         full_png = os.path.join(tmp_dir, "full.png")
@@ -495,309 +633,324 @@ def bake_sector_textures(SX, SY, valid_tifs, output_dir="frontend/app/aerial_til
     upload_to_s3(full_path)
     upload_to_s3(low_path)
 
-def get_diamond_stats(grad_ds, p1, p2):
-    """
-    Samples the gradient map in the bounding box of the edge (p1 to p2).
-    Returns averaged slope (deg).
-    p1, p2 are tuples (wx, wy).
-    """
-    min_x, max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
-    min_y, max_y = min(p1[1], p2[1]), max(p1[1], p2[1])
-    
-    # Add minimal buffer to ensure we catch a pixel
-    min_x -= 1.0; max_x += 1.0
-    min_y -= 1.0; max_y += 1.0
-    
-    window = rasterio.windows.from_bounds(min_x, min_y, max_x, max_y, grad_ds.transform)
-    
-    # Read Band 1 (dx) and Band 2 (dy)
-    # Clip window to image
-    window = window.intersection(rasterio.windows.Window(0, 0, grad_ds.width, grad_ds.height))
-    
-    if window.width < 1 or window.height < 1: return 0
-    
-    dx_vals = grad_ds.read(1, window=window)
-    dy_vals = grad_ds.read(2, window=window)
-    
-    if dx_vals.size == 0: return 0
-    
-    # Average Gradient Vector
-    avg_dx = np.mean(dx_vals)
-    avg_dy = np.mean(dy_vals)
-    
-    # Convert to Slope
-    slope_rad = math.atan(math.sqrt(avg_dx*avg_dx + avg_dy*avg_dy))
-    slope_deg = math.degrees(slope_rad)
-    return slope_deg
 
-def bake_sector_binary(SX, SY, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin"):
-    if not os.path.exists(output_dir): os.makedirs(output_dir)
-    min_x, min_y, max_x, max_y = coord_util.sector_id_to_bounds_meters(SX, SY)
+def _read_unit_dem_samples(latQ, latR, dem_ds):
+    geom = coord_util.gosper_tile_geometry()
+    info = gosper_island_info(latQ, latR)
+    center_x, center_y = info["centerX"], info["centerY"]
+    unit_x = center_x + geom["offx"]
+    unit_y = center_y + geom["offy"]
 
-    scales = [{"id": 3, "s": 24.0}, {"id": 2, "s": 6.0}, {"id": 1, "s": 3.0}, {"id": 0, "s": 1.0}]
-    layers_data, min_z, max_z = [], 9999, -9999
-    
-    center_wx, center_wy = coord_util.get_sector_center(SX, SY)
-    cq, cr = [int(round(v)) for v in coord_util.world_meters_to_axial_approx(center_wx, center_wy)]
+    min_x, min_y, max_x, max_y = info["bounds"]
+    dem_window = _clipped_window(
+        dem_ds,
+        (min_x - 40.0, min_y - 40.0, max_x + 40.0, max_y + 40.0),
+        pixel_aligned=True,
+    )
+    if not _window_has_pixels(dem_window):
+        return None
 
-    # --- READ DEM WINDOW for this sector ---
-    padding_m = 200.0  # meters of padding for neighbor height samples
-    dem_window = rasterio.windows.from_bounds(
-        min_x - padding_m, min_y - padding_m,
-        max_x + padding_m, max_y + padding_m, dem_ds.transform)
-    dem_window = dem_window.intersection(rasterio.windows.Window(0, 0, dem_ds.width, dem_ds.height))
     dem_data = dem_ds.read(1, window=dem_window)
+    if dem_data.size == 0:
+        return None
     dem_transform = dem_ds.window_transform(dem_window)
+    rowcol_arrays = make_fast_rowcol_arrays(dem_transform)
+    rows, cols = rowcol_arrays(unit_x, unit_y)
+    inside = (rows >= 0) & (rows < dem_data.shape[0]) & (cols >= 0) & (cols < dem_data.shape[1])
 
-    # --- READ GRADIENT WINDOW for this sector ---
-    padding_g = 200.0
-    g_window = rasterio.windows.from_bounds(min_x-padding_g, min_y-padding_g, max_x+padding_g, max_y+padding_g, grad_ds.transform)
-    g_window = g_window.intersection(rasterio.windows.Window(0,0,grad_ds.width, grad_ds.height))
-    
-    # We will read this into memory: (2, H, W)
-    sector_grads = grad_ds.read(window=g_window)
-    sector_grad_transform = grad_ds.window_transform(g_window)
-    
-    # Pre-calculate center slopes/normals for the block?
-    # Actually, let's keep the diamond stats lightweight by indexing into this array
+    h = np.full(len(unit_x), np.nan, dtype=np.float64)
+    h[inside] = dem_data[rows[inside], cols[inside]].astype(np.float64)
+    valid = inside & np.isfinite(h)
+    if dem_ds.nodata is not None:
+        valid &= h != dem_ds.nodata
+    valid &= (h > -500.0) & (h < 9000.0)
+    if not np.any(valid):
+        return None
 
-    # --- FAST INVERSE AFFINE ---
-    # rasterio.transform.rowcol wraps every lookup in array coercion plus a
-    # 2x2 linalg solve; profiled at ~5s/sector across ~217k calls (10 per hex).
-    # Our window transforms are axis-aligned north-up (b == d == 0), so the
-    # inverse is two multiplications and a floor — same semantics as rowcol's
-    # default op=math.floor.
-    def make_fast_rowcol(transform):
-        if transform.b != 0 or transform.d != 0:  # rotated raster: keep the safe path
-            return lambda x, y: rasterio.transform.rowcol(transform, x, y)
-        inv_a, inv_e = 1.0 / transform.a, 1.0 / transform.e
-        c0, f0 = transform.c, transform.f
-        def _rowcol(x, y):
-            return math.floor((y - f0) * inv_e), math.floor((x - c0) * inv_a)
-        return _rowcol
+    mean_valid = float(np.mean(h[valid], dtype=np.float64))
+    h_filled = h.copy()
+    h_filled[~valid] = mean_valid
+    return info, unit_x, unit_y, dem_data, dem_transform, h_filled, valid
 
-    dem_rowcol = make_fast_rowcol(dem_transform)
-    grad_rowcol = make_fast_rowcol(sector_grad_transform)
+
+def _sample_unit_edges_and_normals(unit_x, unit_y, h_filled, valid, dem_data, dem_transform, grad_ds, island_bounds):
+    count = len(unit_x)
+    unit_deltas = np.zeros((count, 3), dtype=np.int16)
+    unit_slopes = np.zeros((count, 3), dtype=np.uint8)
+    unit_nx = np.full(count, 128, dtype=np.uint8)
+    unit_nz = np.full(count, 128, dtype=np.uint8)
+
+    rowcol_arrays = make_fast_rowcol_arrays(dem_transform)
+    hex_w = coord_util.UNIT_HEX_WIDTH_METERS
+    dx_dq = (math.sqrt(3) / 2.0) * hex_w
+    dy_dq = 0.5 * hex_w
+    dy_dr = hex_w
+    owned_offsets = [(1, -1), (0, -1), (-1, 0)]
+
+    for edge_idx, (dq, dr) in enumerate(owned_offsets):
+        nwx = unit_x + dq * dx_dq
+        nwy = unit_y + dr * dy_dr + dq * dy_dq
+        n_rows, n_cols = rowcol_arrays(nwx, nwy)
+        n_rows = np.clip(n_rows, 0, dem_data.shape[0] - 1)
+        n_cols = np.clip(n_cols, 0, dem_data.shape[1] - 1)
+        nh = dem_data[n_rows, n_cols].astype(np.float64)
+        d_m = h_filled - nh
+        ok = valid & np.isfinite(d_m) & (np.abs(d_m) <= 400.0)
+        edge_delta = np.zeros(count, dtype=np.int16)
+        edge_delta[ok] = _pack_i16_dm(d_m[ok] * 10.0)
+        unit_deltas[:, edge_idx] = edge_delta
+
+    min_x, min_y, max_x, max_y = island_bounds
+    g_window = _clipped_window(grad_ds, (min_x - 40.0, min_y - 40.0, max_x + 40.0, max_y + 40.0))
+    if not _window_has_pixels(g_window):
+        return unit_deltas, unit_slopes, unit_nx, unit_nz
+
+    island_grads = grad_ds.read(window=g_window)
+    if island_grads.size == 0:
+        return unit_deltas, unit_slopes, unit_nx, unit_nz
+    grad_transform = grad_ds.window_transform(g_window)
+    grad_rowcol = make_fast_rowcol(grad_transform)
+    grad_rowcol_arrays = make_fast_rowcol_arrays(grad_transform)
 
     def fast_diamond_slope(wx1, wy1, wx2, wy2):
-        # Map to array indices
         r1, c1 = grad_rowcol(wx1, wy1)
         r2, c2 = grad_rowcol(wx2, wy2)
-        
         r_min, r_max = min(r1, r2), max(r1, r2)
         c_min, c_max = min(c1, c2), max(c1, c2)
-        
-        # Ensure slice is valid
-        r_min = max(0, r_min); r_max = min(sector_grads.shape[1], r_max + 1)
-        c_min = max(0, c_min); c_max = min(sector_grads.shape[2], c_max + 1)
-        
-        if r_max <= r_min or c_max <= c_min: return 0
-        
-        sub_dx = sector_grads[0, r_min:r_max, c_min:c_max]
-        sub_dy = sector_grads[1, r_min:r_max, c_min:c_max]
-        
+        r_min = max(0, r_min); r_max = min(island_grads.shape[1], r_max + 1)
+        c_min = max(0, c_min); c_max = min(island_grads.shape[2], c_max + 1)
+        if r_max <= r_min or c_max <= c_min:
+            return 0.0
+        sub_dx = island_grads[0, r_min:r_max, c_min:c_max]
+        sub_dy = island_grads[1, r_min:r_max, c_min:c_max]
         mdx = np.mean(sub_dx)
         mdy = np.mean(sub_dy)
-        return math.degrees(math.atan(math.sqrt(mdx*mdx + mdy*mdy)))
+        if not np.isfinite(mdx) or not np.isfinite(mdy):
+            return 0.0
+        return math.degrees(math.atan(math.sqrt(mdx * mdx + mdy * mdy)))
 
-    def get_center_normal_packed(wx, wy):
-        r, c = grad_rowcol(wx, wy)
-        r = max(0, min(sector_grads.shape[1]-1, r))
-        c = max(0, min(sector_grads.shape[2]-1, c))
-        dx = sector_grads[0, r, c]
-        dy = sector_grads[1, r, c]
-        
-        # Normal = (-dx, -dy, 1) normalized
-        length = math.sqrt(dx*dx + dy*dy + 1)
-        nx = -dx / length
-        nz = -dy / length
-        # ny = 1 / length (implicit)
-        
-        # Pack to 0-255 (range -1 to 1)
-        # 128 is 0. 
-        px = int((nx * 127.0) + 128.0)
-        pz = int((nz * 127.0) + 128.0)
-        return max(0, min(255, px)), max(0, min(255, pz))
+    valid_indices = np.flatnonzero(valid)
+    for edge_idx, (dq, dr) in enumerate(owned_offsets):
+        nwx = unit_x + dq * dx_dq
+        nwy = unit_y + dr * dy_dr + dq * dy_dq
+        for i in valid_indices:
+            slope = fast_diamond_slope(float(unit_x[i]), float(unit_y[i]), float(nwx[i]), float(nwy[i]))
+            unit_slopes[i, edge_idx] = int(np.clip(round(slope), 0, 255))
+
+    g_rows, g_cols = grad_rowcol_arrays(unit_x, unit_y)
+    g_rows = np.clip(g_rows, 0, island_grads.shape[1] - 1)
+    g_cols = np.clip(g_cols, 0, island_grads.shape[2] - 1)
+    dx = island_grads[0, g_rows, g_cols].astype(np.float64)
+    dy = island_grads[1, g_rows, g_cols].astype(np.float64)
+    length = np.sqrt(dx * dx + dy * dy + 1.0)
+    normal_ok = valid & np.isfinite(length) & (length > 0)
+    px, pz = _pack_normals_trunc(-dx[normal_ok] / length[normal_ok], -dy[normal_ok] / length[normal_ok])
+    unit_nx[normal_ok] = px
+    unit_nz[normal_ok] = pz
+    return unit_deltas, unit_slopes, unit_nx, unit_nz
 
 
-    for l in scales:
-        S = l["s"]
-        lcq, lcr = [int(round(v)) for v in coord_util.world_meters_to_axial_scale(center_wx, center_wy, S)]
-        hx = coord_util.get_lod_grid_hexes_in_bbox(min_x, max_x, min_y, max_y, S)
-        
-        if hx:
-            # 1. Gather Heights (Vectorized)
-            w_h = coord_util.UNIT_HEX_WIDTH_METERS * S
-            dx_dq = (math.sqrt(3)/2) * w_h
-            dy_dq = 0.5 * w_h
-            dy_dr = w_h 
-            
-            c_wx = np.array([h[2] for h in hx])
-            c_wy = np.array([h[3] for h in hx])
-            
-            # Neighbors for Delta Calculation
-            # 2=SE, 3=S, 4=SW (Axial Deltas: SE(1, -1), S(0, -1), SW(-1, 0))
-            # Also for Skirts we need to know WHERE the neighbor center is.
-            offsets = [
-                (1, -1), # SE
-                (0, -1), # S
-                (-1, 0)  # SW
-            ]
-            
-            # Sample Center Heights
-            rows, cols = rasterio.transform.rowcol(dem_transform, c_wx, c_wy)
-            rows = np.clip(rows, 0, dem_data.shape[0]-1)
-            cols = np.clip(cols, 0, dem_data.shape[1]-1)
-            c_h = dem_data[rows, cols]
-            
-            min_z, max_z = min(min_z, c_h.min()), max(max_z, c_h.max())
-            
-            layer = []
-            
-            for i in range(len(hx)):
-                q, r = hx[i][0], hx[i][1]
-                wx, wy = c_wx[i], c_wy[i]
-                h_val = c_h[i]
-                
-                # Sample Normal (Center)
-                nx_p, nz_p = get_center_normal_packed(wx, wy)
-                
-                # --- PROCESS OWNED EDGES ---
-                deltas = []
-                slopes = []
-                
-                for (dq_o, dr_o) in offsets:
-                    # Neighbor Coord
-                    nq, nr = q + dq_o, r + dr_o
-                    
-                    # Neighbor World Pos
-                    nwx = wx + (dq_o * dx_dq) # Rough approx for grid, accurate for relative
-                    # Recalculate exact world pos to be safe
-                    # Actually, c_wx + (offset) is cleaner.
-                    # SE offset: dq=1, dr=-1.
-                    odx = dq_o * dx_dq
-                    ody = dr_o * dy_dr + dq_o * dy_dq
-                    nwx = wx + odx
-                    nwy = wy + ody
-                    
-                    # Sample Neighbor Height
-                    nr_r, nc_c = dem_rowcol(nwx, nwy)
-                    nr_r = max(0, min(dem_data.shape[0]-1, nr_r))
-                    nc_c = max(0, min(dem_data.shape[1]-1, nc_c))
-                    nh_val = dem_data[nr_r, nc_c]
-                    
-                    # Delta (Decimeters)
-                    d_m = h_val - nh_val
-                    
-                    # SANITY CHECK: If neighbor is >400m away vertically, it's likely NODATA/Edge of Map.
-                    # Clamp to 0 (Flat Skirt) to avoid visual spikes.
-                    if abs(d_m) > 400.0: d_m = 0.0
-                    
-                    deltas.append(int(round(d_m * 10.0)))
-                    
-                    # Diamond Slope (Between wx,wy and nwx,nwy)
-                    # Use fast lookup in memory
-                    s_edge = fast_diamond_slope(wx, wy, nwx, nwy)
-                    slopes.append(int(round(s_edge)))
-                
-                layer.append({
-                    'q': q, 'r': r,
-                    'deltas': deltas, # [SE, S, SW] in Decimeters
-                    'slopes': slopes, # [SE, S, SW] in Degrees
-                    'h': h_val,
-                    'lcq': lcq, 'lcr': lcr,
-                    'pnx': nx_p, 'pnz': nz_p
-                })
-            
-            layers_data.append(layer)
-        else: layers_data.append([])
+def _build_gsp1_nodes(h_unit, valid_unit, unit_slopes, unit_nx, unit_nz):
+    mean_valid = float(np.mean(h_unit[valid_unit], dtype=np.float64))
+    nodes = {
+        5: {
+            "count": valid_unit.astype(np.int32),
+            "h_sum": np.where(valid_unit, h_unit, 0.0).astype(np.float64),
+            "h_true": h_unit.astype(np.float64),
+            "h_min": np.where(valid_unit, h_unit, np.inf).astype(np.float64),
+            "h_max": np.where(valid_unit, h_unit, -np.inf).astype(np.float64),
+            "slope_sum": np.where(valid_unit, unit_slopes.mean(axis=1), 0.0).astype(np.float64),
+            "slope_mean": unit_slopes.mean(axis=1).astype(np.float64),
+            "slope_max": unit_slopes.max(axis=1).astype(np.uint8),
+            "nx": unit_nx.astype(np.uint8),
+            "nz": unit_nz.astype(np.uint8),
+            "flags": valid_unit.astype(np.uint8),
+        }
+    }
 
-    scale_f = 65535.0 / (max_z - min_z + 20) if max_z > min_z else 1.0
-    # Signature HEX4 denotes new 16-byte layout
-    blob = struct.pack("<4siifffii", b"HEX4", int(SX), int(SY), float(min_z-10), float(max_z+10), float(scale_f), cq, cr)
-    
-    for l_idx, ld in enumerate(layers_data):
-        blob += struct.pack("<I", len(ld))
-        buf = bytearray(len(ld) * 16) # 16 BYTES!
-        
-        for i, item in enumerate(ld):
-            dq = max(-127, min(127, int(item['q'] - item['lcq'])))
-            dr = max(-127, min(127, int(item['r'] - item['lcr'])))
-            h_scaled = max(0, min(65535, int((item['h'] - (min_z-10)) * scale_f)))
-            
-            d1, d2, d3 = item['deltas']
-            d1 = max(-32767, min(32767, d1))
-            d2 = max(-32767, min(32767, d2))
-            d3 = max(-32767, min(32767, d3))
-            
-            s1, s2, s3 = item['slopes']
-            s1 = max(0, min(255, s1))
-            s2 = max(0, min(255, s2))
-            s3 = max(0, min(255, s3))
-            
-            pnx = item['pnx']
-            pnz = item['pnz']
-            
-            # STRUCT:
-            # 0: dq (b)
-            # 1: dr (b)
-            # 2: h (H)
-            # 4: d1 (h)
-            # 6: d2 (h)
-            # 8: d3 (h)
-            # 10: s1 (B)
-            # 11: s2 (B)
-            # 12: s3 (B)
-            # 13: pnx (B)
-            # 14: pnz (B)
-            # 15: pad (x)
-            
-            struct.pack_into("<bbHhhhBBBBBx", buf, i*16, 
-                             dq, dr, h_scaled, 
-                             d1, d2, d3, 
-                             s1, s2, s3, 
-                             pnx, pnz)
-            
-            # Note: format string `<bbHhhhBBBxB` 
-            # b=1, b=1, H=2 (4), h=2 (6), h=2 (8), h=2 (10), B=1 (11), B=1 (12), B=1 (13), x=1 (14), B=1 (15)? 
-            # Wait. 
-            # offset 0: b
-            # offset 1: b
-            # offset 2: H -> Ends at 4.
-            # offset 4: h -> Ends at 6.
-            # offset 6: h -> Ends at 8.
-            # offset 8: h -> Ends at 10.
-            # offset 10: B -> 11
-            # offset 11: B -> 12
-            # offset 12: B -> 13
-            # offset 13: B (nx) -> 14
-            # offset 14: B (nz) -> 15
-            # offset 15: pad
-            
-            # Format: 'bbHhhhBBBBBx' ?
-            # Python struct: x is pad byte.
-            # Let's be explicit with B.
-            struct.pack_into("<bbHhhhBBBBBx", buf, i*16,
-                             dq, dr, h_scaled,
-                             d1, d2, d3,
-                             s1, s2, s3,
-                             pnx, pnz) # Last byte is 'x' (pad), no arg needed.
+    for depth in range(4, -1, -1):
+        child = nodes[depth + 1]
+        child_count = child["count"].reshape(-1, 7)
+        count = child_count.sum(axis=1).astype(np.int32)
+        flags = (count > 0).astype(np.uint8)
 
-        blob += buf
-    
-    bin_path = os.path.join(output_dir, f"sector_{SX}_{SY}.bin")
-    with open(bin_path, "wb") as f: 
+        h_sum = child["h_sum"].reshape(-1, 7).sum(axis=1)
+        h_true = np.full(len(count), mean_valid, dtype=np.float64)
+        has_data = count > 0
+        h_true[has_data] = h_sum[has_data] / count[has_data]
+
+        h_min = child["h_min"].reshape(-1, 7).min(axis=1)
+        h_max = child["h_max"].reshape(-1, 7).max(axis=1)
+        h_min[~has_data] = mean_valid
+        h_max[~has_data] = mean_valid
+
+        slope_sum = child["slope_sum"].reshape(-1, 7).sum(axis=1)
+        slope_mean = np.zeros(len(count), dtype=np.float64)
+        slope_mean[has_data] = slope_sum[has_data] / count[has_data]
+        slope_max = child["slope_max"].reshape(-1, 7).max(axis=1).astype(np.uint8)
+        nx, nz = _aggregate_normals(child["nx"], child["nz"], child["flags"].astype(bool))
+
+        nodes[depth] = {
+            "count": count,
+            "h_sum": h_sum,
+            "h_true": h_true,
+            "h_min": h_min,
+            "h_max": h_max,
+            "slope_sum": slope_sum,
+            "slope_mean": slope_mean,
+            "slope_max": slope_max,
+            "nx": nx,
+            "nz": nz,
+            "flags": flags,
+        }
+    return nodes
+
+
+def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid):
+    root_h = _float32(nodes[0]["h_true"][0])
+    h_min = _float32(nodes[0]["h_min"][0])
+    h_max = _float32(nodes[0]["h_max"][0])
+    root_slope_mean = int(_pack_u8_round(nodes[0]["slope_mean"])[0])
+    root_slope_max = int(nodes[0]["slope_max"][0])
+    root_nx = int(nodes[0]["nx"][0])
+    root_nz = int(nodes[0]["nz"][0])
+    root_flags = int(nodes[0]["flags"][0])
+
+    dH_by_depth = {}
+    recon = {0: np.array([root_h], dtype=np.float64)}
+    for depth in range(1, GSP1_TILE_LEVEL + 1):
+        parent_recon = np.repeat(recon[depth - 1], 7)
+        dH = _pack_i16_dm((nodes[depth]["h_true"] - parent_recon) * 10.0)
+        dH_by_depth[depth] = dH
+        recon[depth] = parent_recon + dH.astype(np.float64) * 0.1
+
+    blob = bytearray(GSP1_HEADER_STRUCT.pack(
+        GSP1_MAGIC,
+        GSP1_VERSION,
+        GSP1_TILE_LEVEL,
+        info["centerQ"],
+        info["centerR"],
+        info["latQ"],
+        info["latR"],
+        root_h,
+        h_min,
+        h_max,
+        root_slope_mean,
+        root_slope_max,
+        root_nx,
+        root_nz,
+        root_flags,
+        0,
+    ))
+
+    for depth in range(1, GSP1_TILE_LEVEL):
+        node = nodes[depth]
+        count = 7 ** depth
+        records = np.empty(count, dtype=GSP1_AGG_DTYPE)
+        records["dH"] = dH_by_depth[depth]
+        records["slopeMean"] = _pack_u8_round(node["slope_mean"])
+        records["slopeMax"] = node["slope_max"]
+        records["nx"] = node["nx"]
+        records["nz"] = node["nz"]
+        relief = np.where(node["flags"].astype(bool), (node["h_max"] - node["h_min"]) / 4.0, 0.0)
+        records["relief"] = _pack_u8_round(relief)
+        records["flags"] = node["flags"]
+        blob.extend(struct.pack("<I", count))
+        blob.extend(records.tobytes())
+
+    count = 7 ** GSP1_TILE_LEVEL
+    records = np.empty(count, dtype=GSP1_UNIT_DTYPE)
+    records["dH"] = dH_by_depth[GSP1_TILE_LEVEL]
+    records["d1"] = unit_deltas[:, 0]
+    records["d2"] = unit_deltas[:, 1]
+    records["d3"] = unit_deltas[:, 2]
+    records["s1"] = unit_slopes[:, 0]
+    records["s2"] = unit_slopes[:, 1]
+    records["s3"] = unit_slopes[:, 2]
+    records["nx"] = unit_nx
+    records["nz"] = unit_nz
+    records["flags"] = unit_valid.astype(np.uint8)
+    blob.extend(struct.pack("<I", count))
+    blob.extend(records.tobytes())
+    return blob
+
+
+def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin"):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    dem_sample = _read_unit_dem_samples(latQ, latR, dem_ds)
+    if dem_sample is None:
+        return False
+
+    info, unit_x, unit_y, dem_data, dem_transform, h_unit, unit_valid = dem_sample
+    unit_deltas, unit_slopes, unit_nx, unit_nz = _sample_unit_edges_and_normals(
+        unit_x, unit_y, h_unit, unit_valid, dem_data, dem_transform, grad_ds, info["bounds"])
+    nodes = _build_gsp1_nodes(h_unit, unit_valid, unit_slopes, unit_nx, unit_nz)
+    blob = _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
+
+    bin_path = os.path.join(output_dir, gosper_asset_name(latQ, latR, "bin"))
+    with open(bin_path, "wb") as f:
         f.write(blob)
     upload_to_s3(bin_path)
+    return True
+
+
+def _lattice_world_basis():
+    qx, qr = coord_util.gosper_lattice_to_center(1, 0)
+    rx, rr = coord_util.gosper_lattice_to_center(0, 1)
+    bq_x, bq_y = coord_util.axial_to_world_meters(qx, qr)
+    br_x, br_y = coord_util.axial_to_world_meters(rx, rr)
+    return np.array([[bq_x, br_x], [bq_y, br_y]], dtype=np.float64)
+
+
+def enumerate_gosper_islands_for_bbox(region_bounds):
+    min_x, min_y, max_x, max_y = region_bounds
+    geom = coord_util.gosper_tile_geometry()
+    half = float(geom["tex_half_m"])
+    basis_inv = np.linalg.inv(_lattice_world_basis())
+    search_corners = np.array([
+        [min_x - half, min_y - half],
+        [max_x + half, min_y - half],
+        [max_x + half, max_y + half],
+        [min_x - half, max_y + half],
+    ], dtype=np.float64)
+    lattice = (basis_inv @ search_corners.T).T
+    min_yq = math.floor(float(lattice[:, 0].min())) - 2
+    max_yq = math.ceil(float(lattice[:, 0].max())) + 2
+    min_yr = math.floor(float(lattice[:, 1].min())) - 2
+    max_yr = math.ceil(float(lattice[:, 1].max())) + 2
+
+    islands = []
+    for yq in range(min_yq, max_yq + 1):
+        for yr in range(min_yr, max_yr + 1):
+            info = gosper_island_info(yq, yr)
+            ix0, iy0, ix1, iy1 = info["bounds"]
+            intersects = ix1 >= min_x and ix0 <= max_x and iy1 >= min_y and iy0 <= max_y
+            if intersects:
+                islands.append(info)
+    islands.sort(key=lambda t: (t["latQ"], t["latR"]))
+    return islands
+
+
+def _bounds_union(bounds_iter):
+    bounds = list(bounds_iter)
+    if not bounds:
+        return None
+    min_x = min(b[0] for b in bounds)
+    min_y = min(b[1] for b in bounds)
+    max_x = max(b[2] for b in bounds)
+    max_y = max(b[3] for b in bounds)
+    return (min_x, min_y, max_x, max_y)
 
 def main():
     global S3_ENABLED, BASISU_BINARY
-    parser = argparse.ArgumentParser(description="🧇 Waffle Iron v4.1 — Incremental Bake")
+    parser = argparse.ArgumentParser(description="🧇 Waffle Iron v5.0 — Gosper Island Incremental Bake")
     parser.add_argument("--full", action="store_true", help="Run full global bake (defaults to Mini-Bake)")
-    parser.add_argument("--center", type=str, help="Center sector as 'Q,R' (e.g. 73,252)")
+    parser.add_argument("--center", type=str, help="Center island lattice coords as 'yq,yr' (e.g. 0,0)")
     parser.add_argument("--grid", type=int, default=DEFAULT_GRID_SIZE,
-                        help=f"Grid size NxN around center (1-16, default {DEFAULT_GRID_SIZE})")
-    parser.add_argument("--force", action="store_true", help="Force re-bake of all sectors in range")
+                        help=f"Region side in sector units, N*819.2 meters (1-16, default {DEFAULT_GRID_SIZE})")
+    parser.add_argument("--force", action="store_true", help="Force re-bake of all islands in range")
     args = parser.parse_args()
 
     # Validate grid size
@@ -870,6 +1023,8 @@ def main():
     grad_ds = None
 
     valid_tifs = []
+    geom = coord_util.gosper_tile_geometry()
+    tex_half_m = float(geom["tex_half_m"])
 
     # Calculate Bounds
     if args.full:
@@ -882,32 +1037,26 @@ def main():
             b = t["poly"].bounds
             all_min_x, all_min_y = min(all_min_x, b[0]), min(all_min_y, b[1])
             all_max_x, all_max_y = max(all_max_x, b[2]), max(all_max_y, b[3])
-        
-        min_sx, min_sy = coord_util.world_to_sector_id(all_min_x, all_min_y)
-        max_sx, max_sy = coord_util.world_to_sector_id(all_max_x, all_max_y)
+        region_bounds = (all_min_x, all_min_y, all_max_x, all_max_y)
     else:
         # Mini-Bake Range
         if args.center:
             try:
-                csx, csy = map(int, args.center.split(","))
-                print(f"📍 Using custom center sector: ({csx}, {csy})")
-            except:
-                print(f"⚠️  Invalid center format '{args.center}'. Expected 'Q,R'. Falling back to Stubai.")
+                center_yq, center_yr = map(int, args.center.split(","))
+                center_info = gosper_island_info(center_yq, center_yr)
+                cx, cy = center_info["centerX"], center_info["centerY"]
+                print(f"📍 Using custom center island: ({center_yq}, {center_yr})")
+            except Exception:
+                print(f"⚠️  Invalid center format '{args.center}'. Expected 'yq,yr'. Falling back to Stubai.")
                 cx, cy = latlon_to_world_meters(STUBAI_LAT, STUBAI_LON)
-                csx, csy = coord_util.world_to_sector_id(cx, cy)
         else:
             cx, cy = latlon_to_world_meters(STUBAI_LAT, STUBAI_LON)
-            csx, csy = coord_util.world_to_sector_id(cx, cy)
-            print(f"📍 Using default Stubai center: ({csx}, {csy})")
+            print(f"📍 Using default Stubai center point ({cx:.1f}, {cy:.1f}m)")
 
-        half = grid_size // 2
-        min_sx, max_sx = csx - half, csx + half - 1
-        min_sy, max_sy = csy - half, csy + half - 1
-        
-        # Proper Bounding Box for the entire Mini-Bake Area
-        m_x1, m_y1, _, _ = coord_util.sector_id_to_bounds_meters(min_sx, min_sy)
-        _, _, m_x2, m_y2 = coord_util.sector_id_to_bounds_meters(max_sx, max_sy)
-        mini_box = box(m_x1, m_y1, m_x2, m_y2)
+        half_side = (grid_size * coord_util.SECTOR_SIZE_METERS) * 0.5
+        m_x1, m_y1, m_x2, m_y2 = cx - half_side, cy - half_side, cx + half_side, cy + half_side
+        region_bounds = (m_x1, m_y1, m_x2, m_y2)
+        mini_box = box(m_x1 - tex_half_m, m_y1 - tex_half_m, m_x2 + tex_half_m, m_y2 + tex_half_m)
 
         # Only load intersecting TIFs
         print("Filtering TIFs for Mini-Bake area (cached bounds)...")
@@ -915,75 +1064,90 @@ def main():
         valid_tifs = [t for t in load_tif_bounds(tif_list) if t["poly"].intersects(mini_box)]
         print(f"✅ Found {len(valid_tifs)} intersecting TIFs (of {len(tif_list)} total).")
 
-        # Generate a lightweight regional gradient (~150MB vs 14GB full cache)
-        grad_ds = generate_regional_gradient(
-            dem, (m_x1, m_y1, m_x2, m_y2), upsample_factor=upsample)
+    islands = enumerate_gosper_islands_for_bbox(region_bounds)
+    print(f"Island candidates intersecting region: {len(islands)}")
+
+    if not args.full:
+        # Generate a lightweight regional gradient over every candidate island,
+        # not just the center region, because border island squares intentionally
+        # extend outside the requested bbox.
+        gradient_bounds = _bounds_union(info["bounds"] for info in islands) or region_bounds
+        grad_ds = generate_regional_gradient(dem, gradient_bounds, upsample_factor=upsample)
 
     # For full bake, use the pre-computed full gradient cache
     if grad_ds is None:
         grad_ds = get_or_create_gradient_map(DEM_PATH, GRADIENT_PATH, upsample_factor=upsample)
 
-    total_sectors = (max_sx - min_sx + 1) * (max_sy - min_sy + 1)
-    print(f"Sector Range: SX[{min_sx}..{max_sx}], SY[{min_sy}..{max_sy}] ({total_sectors} sectors)")
+    print(f"Region bounds: X[{region_bounds[0]:.1f}..{region_bounds[2]:.1f}], "
+          f"Y[{region_bounds[1]:.1f}..{region_bounds[3]:.1f}]")
 
     bake_times = []
     skipped = 0
     skipped_no_dem = 0
     skipped_no_imagery = 0
+    skipped_no_unit_data = 0
     total_bake_start = time.time()
 
-    for sx in range(min_sx, max_sx + 1):
-        for sy in range(min_sy, max_sy + 1):
-            sector_box = box(*coord_util.sector_id_to_bounds_meters(sx, sy))
-            if not dem_poly.intersects(sector_box):
-                skipped_no_dem += 1
-                continue
-            has_imagery = any(t["poly"].intersects(sector_box) for t in valid_tifs)
-            if not has_imagery:
-                skipped_no_imagery += 1
-                continue
-            # Skip logic (already baked) — .bin and textures are versioned/skipped
-            # independently, so a sector can re-bake one without the other.
-            bin_file = f"frontend/app/tiles_bin/sector_{sx}_{sy}.bin"
-            tex_full_file = f"frontend/app/aerial_tiles/full/sector_{sx}_{sy}.ktx2"
-            tex_low_file = f"frontend/app/aerial_tiles/low/sector_{sx}_{sy}.ktx2"
-            skip_bin = can_skip_bin and os.path.exists(bin_file)
-            skip_tex = can_skip_tex and os.path.exists(tex_full_file) and os.path.exists(tex_low_file)
-            if skip_bin and skip_tex:
-                skipped += 1
-                continue
+    for info in islands:
+        yq, yr = info["latQ"], info["latR"]
+        island_poly = info["poly"]
+        if not dem_poly.intersects(island_poly):
+            skipped_no_dem += 1
+            continue
+        has_imagery = any(t["poly"].intersects(island_poly) for t in valid_tifs)
+        if not has_imagery:
+            skipped_no_imagery += 1
+            continue
 
-            t0 = time.time()
-            print(f"Cooking Sector {sx}, {sy}...")
-            if not skip_tex:
-                bake_sector_textures(sx, sy, valid_tifs)
-            if not skip_bin:
-                bake_sector_binary(sx, sy, dem, grad_ds)
-            elapsed = time.time() - t0
-            bake_times.append(elapsed)
-            print(f"   ⏱️  {elapsed:.1f}s")
-            gc.collect()
+        # Skip logic (already baked) — .bin and textures are versioned/skipped
+        # independently, so an island can re-bake one without the other.
+        bin_file = f"frontend/app/tiles_bin/{gosper_asset_name(yq, yr, 'bin')}"
+        tex_full_file = f"frontend/app/aerial_tiles/full/{gosper_asset_name(yq, yr, 'ktx2')}"
+        tex_low_file = f"frontend/app/aerial_tiles/low/{gosper_asset_name(yq, yr, 'ktx2')}"
+        skip_bin = can_skip_bin and os.path.exists(bin_file)
+        skip_tex = can_skip_tex and os.path.exists(tex_full_file) and os.path.exists(tex_low_file)
+        if skip_bin and skip_tex:
+            skipped += 1
+            continue
+
+        t0 = time.time()
+        print(f"Cooking Gosper island {yq}, {yr}...")
+        if not skip_bin:
+            wrote_bin = bake_gosper_binary(yq, yr, dem, grad_ds)
+            if not wrote_bin:
+                skipped_no_unit_data += 1
+                print("   ⏭️  no valid DEM unit samples")
+                continue
+        if not skip_tex:
+            bake_gosper_textures(yq, yr, valid_tifs)
+        elapsed = time.time() - t0
+        bake_times.append(elapsed)
+        print(f"   ⏱️  {elapsed:.1f}s")
+        gc.collect()
 
     total_elapsed = time.time() - total_bake_start
     skip_parts = []
     if skipped: skip_parts.append(f"{skipped} cached")
     if skipped_no_dem: skip_parts.append(f"{skipped_no_dem} no-DEM")
     if skipped_no_imagery: skip_parts.append(f"{skipped_no_imagery} no-imagery")
+    if skipped_no_unit_data: skip_parts.append(f"{skipped_no_unit_data} no-unit-data")
     skip_summary = f"  ⏭️  Skipped: {', '.join(skip_parts)}" if skip_parts else ""
     if bake_times:
         avg = sum(bake_times) / len(bake_times)
-        print(f"\n📊 Bake Stats: {len(bake_times)} sectors in {total_elapsed:.1f}s "
-              f"(avg {avg:.1f}s/sector){skip_summary}")
+        print(f"\n📊 Bake Stats: {len(bake_times)} islands in {total_elapsed:.1f}s "
+              f"(avg {avg:.1f}s/island){skip_summary}")
     elif skip_parts:
         print(f"\n⏩ Nothing to bake.{skip_summary}")
 
+    if grad_ds is not None:
+        grad_ds.close()
     dem.close()
 
     # Update metadata
     with open(METADATA_PATH, "w") as f:
         json.dump({"baker_version": BAKER_VERSION, "texture_version": TEXTURE_VERSION,
                    "last_bake": time.ctime(),
-                   "grid_size": grid_size, "sectors_baked": len(bake_times)}, f)
+                   "grid_size": grid_size, "islands_baked": len(bake_times)}, f)
 
     generate_manifest.generate_manifest()
     # Upload manifest last
