@@ -2,7 +2,7 @@
 const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
-const SECTOR_WIDTH_METERS = 819.2; // 4096px
+export const SECTOR_WIDTH_METERS = 819.2; // 4096px
 
 export function axialToWorldMeters(q, r) {
     const h = UNIT_HEX_WIDTH_METERS;
@@ -17,6 +17,13 @@ export function worldMetersToAxial(x, y) {
     const q = x / A;
     const r = (y - (q * 0.5 * h)) / h;
     return { q: Math.round(q), r: Math.round(r) };
+}
+
+export function worldToSectorID(worldX, worldY) {
+    return {
+        q: Math.floor(worldX / SECTOR_WIDTH_METERS),
+        r: Math.floor(worldY / SECTOR_WIDTH_METERS)
+    };
 }
 
 // Projection Calibration
