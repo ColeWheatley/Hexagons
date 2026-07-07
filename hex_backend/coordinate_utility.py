@@ -147,3 +147,87 @@ def get_lod_grid_hexes_in_bbox(min_x, max_x, min_y, max_y, scale_factor, padding
 def dx_dq_scaled(s): return (math.sqrt(3)/2) * (UNIT_HEX_WIDTH_METERS * s)
 def dy_dq_scaled(s): return 0.5 * (UNIT_HEX_WIDTH_METERS * s)
 def dy_dr_scaled(s): return UNIT_HEX_WIDTH_METERS * s
+
+# =============================================================================
+# GOSPER FRACTAL MATH — 1:1 mirror of frontend/app/gosper_core.js.
+# Any change here MUST be reflected there; tests/gosper/run_parity.sh diffs
+# the two implementations' full level-5 output.
+#
+# M(q,r) = (2q - r, q + 3r) is multiplication by the Eisenstein integer
+# (2 + w): area x7 and, under THIS module's axial->world mapping, an exact
+# similarity (scale sqrt(7), rotation +19.10660535 deg CCW, north-up).
+# The older diagnostic matrix (2q + r, -q + 3r) is a similarity only for a
+# mirrored axial convention — under ours it shears. Do not resurrect it.
+# =============================================================================
+GOSPER_TILE_LEVEL = 5              # streaming tile = level-5 island, 7^5 unit hexes
+GOSPER_ROT_PER_LEVEL = math.atan2(math.sqrt(3) / 2, 5 / 2)  # radians, +19.1066 deg
+GOSPER_DEPTH_COUNTS = [1, 7, 49, 343, 2401, 16807]
+
+# Child order everywhere: Center, N, NE, SE, S, SW, NW (+r = north).
+GOSPER_NEIGHBORS = [
+    (0, 0), (0, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1),
+]
+
+def gosper_mul_m(q, r):
+    return (2 * q - r, q + 3 * r)
+
+def gosper_mul_m_inv_exact(q, r):
+    nq, nr = 3 * q + r, -q + 2 * r
+    if nq % 7 != 0 or nr % 7 != 0:
+        raise ValueError(f"({q},{r}) is not on the M lattice")
+    return (nq // 7, nr // 7)
+
+def gosper_mul_m_pow(q, r, k):
+    for _ in range(k):
+        q, r = gosper_mul_m(q, r)
+    return (q, r)
+
+def generate_gosper_offsets(level, debug=False):
+    """
+    Heap-ordered unit-hex offsets of a level-`level` island from its center.
+    Index digits are big-endian base-7: node (depth d, index i) has children
+    (d+1, 7i..7i+6); child 0 is concentric with its parent.
+    """
+    cur = [(0, 0)]
+    for l in range(1, level + 1):
+        nxt = []
+        for j, (nq, nr) in enumerate(GOSPER_NEIGHBORS):
+            sq, sr = gosper_mul_m_pow(nq, nr, l - 1)
+            if debug and l == level:
+                print(f"Level {l}, child {j}: base({nq},{nr}) -> shift({sq},{sr})")
+            nxt.extend((p[0] + sq, p[1] + sr) for p in cur)
+        cur = nxt
+    return cur
+
+def gosper_parent(q, r):
+    """Flower center (on the M lattice) whose 7-cell covers cell (q, r).
+    Returns (parent_q, parent_r, child_index, lattice_q, lattice_r)."""
+    fq, fr = (3 * q + r) / 7, (-q + 2 * r) / 7
+    cq, cr = round_axial(fq, fr)
+    for dq, dr in GOSPER_NEIGHBORS:
+        yq, yr = cq + dq, cr + dr
+        pq, pr = gosper_mul_m(yq, yr)
+        d = (q - pq, r - pr)
+        if d in GOSPER_NEIGHBORS:
+            return (pq, pr, GOSPER_NEIGHBORS.index(d), yq, yr)
+    raise RuntimeError(f"gosper_parent({q},{r}): no flower found (impossible)")
+
+def gosper_lattice_to_center(yq, yr):
+    return gosper_mul_m_pow(yq, yr, GOSPER_TILE_LEVEL)
+
+def gosper_center_to_lattice(q, r):
+    for _ in range(GOSPER_TILE_LEVEL):
+        q, r = gosper_mul_m_inv_exact(q, r)
+    return (q, r)
+
+def gosper_tile_of_unit(q, r):
+    """Lattice coords of the L5 tile owning unit cell (q, r). Each
+    gosper_parent step descends into lattice coordinates (the flower's
+    address), where the next-level grouping is the same flower pattern."""
+    for _ in range(GOSPER_TILE_LEVEL):
+        _, _, _, q, r = gosper_parent(q, r)
+    return (q, r)
+
+def gosper_level_size(k):
+    """Effective flat-to-flat width (m) of a level-k cap."""
+    return UNIT_HEX_WIDTH_METERS * (7 ** (k / 2.0))

@@ -1,58 +1,23 @@
-// @atlas: Node.js diagnostic script that mirrors the Python backend's recursive Gosper curve generator. Simulates the specific 7-neighbor matrix shifting algorithms up to Level 5, allowing developers to diff the generated offsets against the Python output and ensure the hex rendering grid aligns flawlessly.
-// Quick test to verify JavaScript Gosper offsets match Python
+// @atlas: Node.js diagnostic script that prints Gosper curve offsets from the canonical frontend implementation (frontend/app/gosper_core.js) for eyeball comparison with hex_backend/test_gosper.py. The full byte-exact cross-language gate lives in tests/gosper/run_parity.sh — this is just the quick human-readable spot check.
+// NOTE: the original inline matrix here, (2q + r, -q + 3r), was NOT a
+// similarity under the app's axial->world convention (it sheared islands).
+// The canonical conformal matrix is M(q,r) = (2q - r, q + 3r), defined once
+// in gosper_core.js / coordinate_utility.py.
+import '../frontend/app/gosper_core.js';
 
-function generateGosperOffsets(level) {
-    if (level === 0) return [{ q: 0, r: 0 }];
+const G = globalThis.GosperCore;
 
-    const prevOffsets = generateGosperOffsets(level - 1);
-
-    const applyMatrixPower = (q, r, power) => {
-        for (let i = 0; i < power; i++) {
-            const nq = 2 * q + 1 * r;
-            const nr = -1 * q + 3 * r;
-            q = nq;
-            r = nr;
-        }
-        return { q, r };
-    };
-
-    // MUST match Python exactly
-    const neighbors = [
-        { q: 0, r: 0 },
-        { q: 1, r: 0 },
-        { q: 1, r: -1 },
-        { q: 0, r: -1 },
-        { q: -1, r: 0 },
-        { q: -1, r: 1 },
-        { q: 0, r: 1 }
-    ];
-
-    const finalList = [];
-
-    for (let i = 0; i < 7; i++) {
-        const baseShift = neighbors[i];
-        const shift = applyMatrixPower(baseShift.q, baseShift.r, level - 1);
-
-        if (level === 5) {
-            console.log(`Level ${level}, neighbor ${i}: base(${baseShift.q},${baseShift.r}) -> shift(${shift.q},${shift.r})`);
-        }
-
-        for (const p of prevOffsets) {
-            finalList.push({
-                q: p.q + shift.q,
-                r: p.r + shift.r
-            });
-        }
-    }
-
-    return finalList;
+console.log('=== JAVASCRIPT GOSPER OFFSET TEST (canonical gosper_core.js) ===\n');
+for (let j = 0; j < 7; j++) {
+    const [sq, sr] = G.mulMPow(G.NEIGHBORS[j][0], G.NEIGHBORS[j][1], 4);
+    console.log(`Level 5, child ${j}: base(${G.NEIGHBORS[j][0]},${G.NEIGHBORS[j][1]}) -> shift(${sq},${sr})`);
 }
 
-console.log("=== JAVASCRIPT GOSPER OFFSET TEST ===\n");
-const offsets = generateGosperOffsets(5);
+const off = G.offsets(5);
+const fmt = (i) => `(${off[i * 2]},${off[i * 2 + 1]})`;
+const range = (a, b) => Array.from({ length: b - a }, (_, k) => fmt(a + k)).join(', ');
 
-console.log("\n=== JAVASCRIPT GOSPER OFFSET DEBUG ===");
-console.log("First 7 offsets:", offsets.slice(0, 7).map(o => `(${o.q},${o.r})`).join(", "));
-console.log("Offsets 2401-2407:", offsets.slice(2401, 2408).map(o => `(${o.q},${o.r})`).join(", "));
-console.log("Last 7 offsets:", offsets.slice(-7).map(o => `(${o.q},${o.r})`).join(", "));
-console.log("Total offsets:", offsets.length);
+console.log('\nFirst 7 offsets:', range(0, 7));
+console.log('Offsets 2401-2407:', range(2401, 2408));
+console.log('Last 7 offsets:', range(16800, 16807));
+console.log('Total offsets:', off.length / 2);
