@@ -236,6 +236,7 @@ class PistonViewer {
         // Dumb counters for the perf harness — updated on every texture arrival
         // (low-res on tile instantiation, full-res on upgrade). No logging loop.
         this.texStats = { count: 0, totalTranscodeMs: 0, maxTranscodeMs: 0, formatKey: null, totalGpuBytes: 0 };
+        this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
@@ -1329,6 +1330,33 @@ class PistonViewer {
         this.texStats.maxTranscodeMs = Math.max(this.texStats.maxTranscodeMs, texResult.transcodeMs || 0);
         this.texStats.formatKey = texResult.formatKey;
         this.texStats.totalGpuBytes += texResult.gpuBytes || 0;
+        this._updateTexBadge();
+    }
+
+    // On-screen debug badge (bottom-left, always visible without opening the
+    // HUD panel) confirming KTX2 transcode is actually succeeding on-device —
+    // written for verifying real hardware (phones) where devtools aren't handy.
+    _updateTexBadge() {
+        if (!this._texBadgeEl) {
+            const el = document.createElement('div');
+            el.id = 'tex-debug-badge';
+            el.style.cssText = [
+                'position:fixed', 'bottom:10px', 'left:10px',
+                'background:rgba(10,10,10,0.75)', 'color:#7ee787',
+                "font:11px/1.4 'Courier New',monospace",
+                'padding:6px 10px', 'border-radius:6px', 'border:1px solid rgba(255,255,255,0.15)',
+                'z-index:9999', 'pointer-events:none', 'white-space:pre',
+            ].join(';');
+            document.body.appendChild(el);
+            this._texBadgeEl = el;
+        }
+        const s = this.texStats;
+        const fails = this._texErrorCount;
+        const ok = s.count > 0 && fails === 0;
+        this._texBadgeEl.style.color = fails > 0 ? '#ff7675' : (s.count > 0 ? '#7ee787' : '#aaa');
+        this._texBadgeEl.textContent = s.count > 0
+            ? `TEX ${s.formatKey || '?'} · ${s.count} ok / ${fails} fail`
+            : (fails > 0 ? `TEX · 0 ok / ${fails} fail` : 'TEX · loading...');
     }
 
     processInstantiationQueue() {
@@ -1369,6 +1397,12 @@ class PistonViewer {
             if (tex) {
                 initialTex = this.buildCompressedTexture(tex);
                 this.updateTexStats(tex);
+            } else {
+                // Worker treats a low-res transcode failure as non-fatal (tile
+                // still renders, magenta material) — count it in the debug
+                // badge anyway so an on-device failure isn't invisible.
+                this._texErrorCount++;
+                this._updateTexBadge();
             }
             const sharedMaterial = this.createTileMaterial(0, !!tex, initialTex);
             this.materialsToUpdate.add(sharedMaterial);
@@ -1611,6 +1645,7 @@ class PistonViewer {
             this.needsRender = true;
         } catch (e) {
             this._texErrorCount++;
+            this._updateTexBadge();
             if (this._texErrorCount <= 3) {
                 console.warn(`[TEX_FAIL] ${tile.q},${tile.r}: ${e.message}`);
                 if (this._texErrorCount === 3) console.warn('[TEX_FAIL] Further texture errors suppressed.');
