@@ -87,14 +87,18 @@ structure — requirement (A), "it's fucking cool," is a spec.
 
 ### D5 — One LOD rule instead of four sliders: screen-space hex size
 `R(k) = size(k) · pxPerRad / (hexTargetPx · qualityScale)`; level k lives in
-the distance band (R(k−1), R(k)]. This directly implements "hexes should
-appear a similar ~5 mm–1 cm on screen": every visible hex is ≥ hexTargetPx
-(default 16 px) across, at every distance. It fixes the two standing visual
-complaints at once — no more 2.5 px unit-hex *blur* at 2 km, and no more
-'flat wall of undifferentiated color' at distance — and it bounds work:
-hex density per steradian is constant, so instance count scales with screen
-area, not render distance. Bands are geometric (ratio √7), which is exactly
-the gosper tree — the data structure and the LOD policy are the same object.
+the distance band (R(k−1), R(k)]. Every visible hex stays ≥ hexTargetPx on
+screen at every distance, which bounds work: hex density per steradian is
+constant, so instance count scales with screen area, not render distance.
+Bands are geometric (ratio √7), which is exactly the gosper tree — the data
+structure and the LOD policy are the same object.
+
+Default settled target is **3 px** (owner directive: STATIC = small skirted
+hexes; units reach ~1.45 km, the familiar TARGET-unitEnd feel). NB instance
+distance includes camera *altitude*, so a "1 cm hexes" target like 16 px
+means a hovering camera never enters the unit band at all — that default
+was tried and rejected on sight. The slider (2–24 px) makes the trade
+explicit; raising it is the single knob for weaker GPUs.
 
 ### D6 — Hierarchical CDLOD cut in the vertex shader (no holes, no stacking)
 Per instance: `draw ⟺ selfDist > R(k−1) AND parentDist ≤ R(k)`, with the
@@ -107,12 +111,12 @@ aren't built yet, the finest *built* level gets `uFinestBuilt=1` and ignores
 its near edge, so coverage holds mid-stream.
 
 ### D7 — Two states, one scalar
-MOVING vs SETTLED is now `qualityScale`: `movingCoarseness` (default √7 —
-exactly one gosper level coarser; 7 on mobile = two levels) animating to 1
-on settle, frametime-capped like the old antisintering. Levels 5..2 build
-eagerly (400 instances/tile); levels 1..0 (19,208 instances) build in the
-existing sinter pass. Freeze-frame-at-full-detail behavior is preserved;
-STATIC still never renders.
+MOVING vs SETTLED is now `qualityScale`: `movingCoarseness` (default ×7 —
+exactly two gosper levels coarser) animating to 1 on settle, frametime-
+capped like the old antisintering. Levels 5..2 build eagerly (400
+instances/tile); levels 1..0 (19,208 instances) build in the existing
+sinter pass. Freeze-frame-at-full-detail behavior is preserved; STATIC
+still never renders.
 
 ### D8 — Textures: square per-island KTX2, planar world UVs
 `TEXTURE_CONTAINER_FINDINGS.md` stands: rectangular containers, hexes
@@ -167,6 +171,45 @@ drops from ~16 k objects to one typed array (~67 KB).
   (late-built materials register in `clonedMaterials` and inherit the
   current map).
 
+## Post-review changes (owner feedback, 2026-07-07 night)
+
+Watching an early build, Cole set three contract points that overruled or
+sharpened first-pass decisions:
+
+1. **"The top of hexagons should NEVER be colored."** The experimental 50 %
+   slope-class tint on aggregate caps is deleted (uniform and all). Slope
+   colors live exclusively on skirts.
+2. **"When static there are small skirted hexes."** Settled target dropped
+   16 px → 3 px, and every aggregate level now hangs relief-depth skirts
+   (subtree hMax−hMin) so the settled field is sealed at all rings: level 1
+   keeps the slope-class gradient at half relief (it inherits the old unit
+   ring's role out to ~4 km); levels 2+ seal at full relief but stay
+   texture-toned — full-relief colored banners visually drowned the far
+   field when tried.
+3. **"When panning there are large skirtless hexes."** Aggregate skirt
+   meshes toggle hidden while MOVING — coarse panning stays the cheap
+   skirtless mosaic; movingCoarseness ×7 ≈ the old MOVING preset.
+
+Plus two fixes the review flushed out:
+- Ring-contour steps: a neighbor across an LOD contour renders at subtree
+  MEAN height, below the DEM height a unit skirt was baked against — skirts
+  get up to 12 m of distance-scaled slack beyond 1.2 km, and skirt
+  darkening fades out with distance (sub-8 px dark skirts striped the far
+  field into exactly the "blur" the old renderer had).
+- `InstancedMesh.frustumCulled = false` is load-bearing: three culls whole
+  objects against the unit cap's ~3.7 m bounding sphere at the tile origin,
+  so tiles vanished wholesale when their origin left the frustum.
+
+Known follow-ups (non-blocking):
+- ~50 worker KTX2 transcode failures appear only under artificial mass
+  churn (150-tile unload/reload storms); every encoded file validates with
+  `basisu -info`, ordinary sessions show 0, and a failed full-res upgrade
+  gracefully keeps the low-res. Suspected WASM heap pressure across the
+  worker pool.
+- Initial cold load enqueues every tile inside renderDistance+1 km at once
+  (~150 tiles); instantiation is time-sliced at one tile/frame like before,
+  but a distance-staggered trickle would smooth first paint.
+
 ## Numbers
 
 - Payload: 257,766 B/tile fixed (192 KB gzipped) vs HEX4 346,112 B
@@ -176,8 +219,9 @@ drops from ~16 k objects to one typed array (~67 KB).
 - Baked geometry integrity: `tests/gosper/validate_gsp1.py` — structure,
   dH-chain reconstruction, re-aggregation, relief, flags, plus 200-sample
   direct DEM cross-check per tile: all green over the full bake.
-- Instance budget (settled, 16 px, 900 px viewport): R = [157, 417, 1102,
-  2916, 7715] m — units to ~160 m, whole-tile caps beyond 7.7 km. Instances
-  per band are ~constant by construction; total visible work is bounded by
-  screen area regardless of render distance.
+- Band radii (settled, 3 px, 900 px viewport): R = [1448, 3832, 10141,
+  26834, 71013] m — units to ~1.45 km, L1 to ~3.8 km, whole-tile caps by
+  ~10 km (capped by renderDistance + horizon). Instances per band are
+  ~constant by construction; total visible work is bounded by screen area
+  regardless of render distance.
 - Bench A/B vs master: _see PERF section appended after the headless runs._
