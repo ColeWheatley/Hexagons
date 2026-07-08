@@ -289,13 +289,15 @@ function parseGSP1(buffer, expectYq, expectYr) {
     const hMin = view.getFloat32(28, true);
     const hMax = view.getFloat32(32, true);
 
-    // Per-depth decoded arrays. Depth 0 = the header root node.
+    // Per-depth decoded arrays. Depth 0 = the header root node (its relief
+    // comes from the header's exact hMin/hMax, same 4 m quantization).
     const depths = [{
         h: new Float32Array([hMean]),
         slopeMean: new Uint8Array([view.getUint8(36)]),
         nx: new Uint8Array([view.getUint8(38)]),
         nz: new Uint8Array([view.getUint8(39)]),
         valid: new Uint8Array([view.getUint8(40) & 1]),
+        relief: new Uint8Array([Math.min(255, Math.round((hMax - hMin) / 4))]),
     }];
 
     let off = 48;
