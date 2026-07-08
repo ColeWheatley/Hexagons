@@ -417,16 +417,14 @@ function buildLevelBuffers(parsed) {
             } else {
                 const sm = pd.slopeMean[i];
                 slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
-                if (level === 1) {
-                    // Level-1 caps sit in the most scrutinized ring
-                    // (~400-1100 m); hang relief-depth skirts (subtree
-                    // hMax-hMin + margin) so neighbor height steps don't
-                    // show as black slivers. Deeper levels stay skirtless
-                    // by design — the far mosaic look.
-                    const dDm = (pd.relief[i] * 4 + 12) * 10; // meters -> decimeters
-                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
-                    activeSkirts++;
-                }
+                // Aggregate caps hang relief-depth skirts (subtree hMax-hMin
+                // + margin) so neighbor height steps don't read as black
+                // sliver stripes when SETTLED. While MOVING the main thread
+                // hides aggregate skirt meshes — large skirtless caps, the
+                // fast panning mode.
+                const dDm = (pd.relief[i] * 4 + 12) * 10; // meters -> decimeters
+                deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                activeSkirts++;
             }
 
             const nIdx = w * 2;

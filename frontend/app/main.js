@@ -1519,11 +1519,15 @@ class PistonViewer {
                 this.setupMaterialShader(layerMaterial);
                 this.materialsToUpdate.add(layerMaterial);
 
-                const includeSkirts = (level === 0); // only unit hexes carry skirts
-                const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
+                const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, true);
                 if (finalMesh) {
                     finalMesh.userData.activeSkirts = lodData.activeSkirts;
                     finalMesh.userData.gosperLevel = level;
+                    // Aggregate skirts only render when settled — moving mode
+                    // is large SKIRTLESS caps (fast) by owner contract.
+                    if (level >= 1 && finalMesh.children[1]) {
+                        finalMesh.children[1].visible = !this.isMoving3D;
+                    }
                     meshGroup.add(finalMesh);
                     builtLevels[level] = true;
                 }
@@ -1626,11 +1630,13 @@ class PistonViewer {
             // not the sharedMaterial snapshot from instantiation time.
             if (tile.material.map) { layerMaterial.map = tile.material.map; layerMaterial.needsUpdate = true; }
 
-            const includeSkirts = (level === 0);
-            const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, includeSkirts);
+            const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, true);
             if (finalMesh) {
                 finalMesh.userData.activeSkirts = lodData.activeSkirts;
                 finalMesh.userData.gosperLevel = level;
+                if (level >= 1 && finalMesh.children[1]) {
+                    finalMesh.children[1].visible = !this.isMoving3D;
+                }
                 tile.mesh.add(finalMesh);
                 this.renderer.compile(finalMesh, this.camera);
                 tile.builtLevels[level] = true;
@@ -2162,11 +2168,24 @@ class PistonViewer {
         this.maintainCameraAltitudeDuringAnimation(h);
 
         // --- VISIBILITY PASS ---
-        // Gone: no flat-plane swap (top-down 2D is just the flattened caps —
-        // uHeightFactor already animates height to 0 below 5.5°) and no
-        // per-band group toggling (the CDLOD cut is per-instance in the
-        // vertex shader). Every built level stays visible.
-        const visibilityChanges = 0;
+        // No flat-plane swap (top-down 2D is just the flattened caps via
+        // uHeightFactor) and no per-band group toggling (the CDLOD cut is
+        // per-instance in the vertex shader). The only toggle left: aggregate
+        // skirts render when settled, hide while moving (large skirtless
+        // caps = the fast panning mode).
+        let visibilityChanges = 0;
+        if (wasMoving3D !== this.isMoving3D) {
+            const showAggSkirts = !this.isMoving3D;
+            for (const t of this.tiles.values()) {
+                if (!t.mesh) continue;
+                for (const g of t.mesh.children) {
+                    if (g.userData.gosperLevel >= 1 && g.children[1] && g.children[1].visible !== showAggSkirts) {
+                        g.children[1].visible = showAggSkirts;
+                        visibilityChanges++;
+                    }
+                }
+            }
+        }
 
         // --- SINTERING (settled 3D) ---
         if (!flat && !this.isMoving3D) {
