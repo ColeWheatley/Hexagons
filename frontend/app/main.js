@@ -898,6 +898,7 @@ class PistonViewer {
                 varying float vIsTop;
                 varying float vSkirtY;
                 varying float vSideId;
+                varying float vInstDist;
                 varying vec3 vMyNormal;
             `).replace('#include <begin_vertex>', `
                 #include <begin_vertex>
@@ -923,6 +924,9 @@ class PistonViewer {
                         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
                         return;
                     }
+                    vInstDist = instDist;
+                #else
+                    vInstDist = 0.0;
                 #endif
 
                 float myH = instanceNZ_2.z - uFloorOffset;
@@ -1008,6 +1012,7 @@ class PistonViewer {
                 varying float vIsTop;
                 varying float vSkirtY;
                 varying float vSideId;
+                varying float vInstDist;
 
                 vec3 gradientColor(float s) {
                     // Green: 30-35
@@ -1045,7 +1050,11 @@ class PistonViewer {
                          if (uGradientMode > 0.5 && vSlope >= 30.0) {
                              baseColor = gradientColor(vSlope);
                          } else {
-                             baseColor *= 0.6; // Darken skirt
+                             // Darken skirts near the camera (the bestagon
+                             // relief cue) but fade the darkening out with
+                             // distance — sub-8px skirts otherwise stripe
+                             // the far field into a dark blur.
+                             baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
                          }
                     }
 
