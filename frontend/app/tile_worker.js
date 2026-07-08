@@ -417,15 +417,26 @@ function buildLevelBuffers(parsed) {
                 deltas[sIdx + 2] = parsed.unit.d3[i];
                 if (parsed.unit.d1[i] !== 0 || parsed.unit.d2[i] !== 0 || parsed.unit.d3[i] !== 0) activeSkirts++;
             } else {
-                const sm = pd.slopeMean[i];
-                slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
                 // Aggregate caps hang relief-depth skirts (subtree hMax-hMin
                 // + margin) so neighbor height steps don't read as black
                 // sliver stripes when SETTLED. While MOVING the main thread
                 // hides aggregate skirt meshes — large skirtless caps, the
                 // fast panning mode.
-                const dDm = (pd.relief[i] * 4 + 12) * 10; // meters -> decimeters
-                deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                //
+                // Level 1 keeps the slope-class gradient (it inherits the
+                // old unit-ring look out to ~4 km) at half relief depth;
+                // deeper levels seal at full relief but stay texture-toned —
+                // full-relief colored banners drowned the far field.
+                if (level === 1) {
+                    const sm = pd.slopeMean[i];
+                    slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
+                    const dDm = (pd.relief[i] * 2 + 6) * 10; // meters -> decimeters
+                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                } else {
+                    // slopes stay 0 -> gradient never triggers (<30 deg)
+                    const dDm = (pd.relief[i] * 4 + 12) * 10;
+                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                }
                 activeSkirts++;
             }
 

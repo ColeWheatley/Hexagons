@@ -967,6 +967,13 @@ class PistonViewer {
                          // Fix: Convert Decimeters (Int16) to Meters (Float)
                          dVal *= 0.1;
 
+                         // Distance-scaled extra drop: at LOD ring contours a
+                         // neighbor may render at its subtree MEAN height,
+                         // below the DEM height this skirt was baked against.
+                         // Up to 12 m of slack beyond 1.2 km seals those
+                         // steps; near skirts stay exactly DEM-deep.
+                         dVal += clamp((vInstDist - 1200.0) / 3000.0, 0.0, 1.0) * 12.0;
+
                          transformed.y = animH - (dVal * uHeightFactor);
                     }
 
