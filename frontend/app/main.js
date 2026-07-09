@@ -144,6 +144,16 @@ class PistonViewer {
         this.qualityScale = this.movingCoarseness;
         this.lodRadii = new Float32Array(TILE_LEVEL + 2); // R(0)..R(6)
 
+        // Per-tile per-level submission gate. The CDLOD cut degenerates
+        // out-of-band instances in the vertex shader, but they are still
+        // fully vertex-shaded — a tile 3 km out was submitting its entire
+        // 16,807-instance level-0 buffer every frame for zero visible caps.
+        // updateLevelVisibility() hides a level's mesh group whenever the
+        // tile's distance band cannot intersect that level's radius band, so
+        // distant tiles stop submitting fine levels entirely. Margin covers
+        // the ~415 m unit half-footprint plus overscan/rotation slack.
+        this.lodTileMargin = 650;
+
         // Antisintering State
         this.lastInteractionTime = performance.now();
         this.isRefining = false;
@@ -460,6 +470,48 @@ class PistonViewer {
         // Root caps never expire while their tile is resident — the horizon
         // instance for a resident tile is hidden, so someone must draw it.
         this.lodRadii[TILE_LEVEL] = 1e9;
+    }
+
+    // Per-tile per-level submission gate (runs every frame after
+    // computeLodRadii). A level-k mesh only needs submitting if the tile's
+    // distance band [d-margin, d+margin] overlaps level k's radius band
+    // (R(k-1), R(k)]. Far tiles thus stop submitting fine levels whose
+    // instances would all degenerate-cull in the shader anyway; near tiles
+    // keep them. Coverage is preserved: a level is hidden only when the whole
+    // tile is beyond that band, in which case a coarser level (always the
+    // root at minimum) covers the footprint. This is the biggest single
+    // frametime lever — it restores the old per-band residency the CDLOD
+    // shader cut alone does not provide.
+    updateLevelVisibility() {
+        const camX = this.camera.position.x;
+        const camZ = this.camera.position.z;
+        const margin = this.lodTileMargin;
+        const R = this.lodRadii;
+        for (const t of this.tiles.values()) {
+            const mesh = t.mesh;
+            if (!mesh) continue;
+            const dx = t.lx - camX;
+            const dz = t.lz - camZ;
+            const d = Math.sqrt(dx * dx + dz * dz);
+            const near = d - margin;
+            const far = d + margin;
+            // Finest built level ignores its near edge so the closest tile is
+            // always covered down to the camera (matches uFinestBuilt).
+            const finest = t.finestBuilt ?? 0;
+            for (const g of mesh.children) {
+                const k = g.userData.gosperLevel;
+                if (k === undefined) continue;
+                let visible;
+                if (k >= TILE_LEVEL) {
+                    visible = true; // root: 1 instance, always the coverage floor
+                } else {
+                    const nearEdge = (k <= finest) ? 0 : (k <= 0 ? 0 : R[k - 1]);
+                    const farEdge = R[k];
+                    visible = (near < farEdge) && (far > nearEdge);
+                }
+                if (g.visible !== visible) g.visible = visible;
+            }
+        }
     }
 
     createHexGeometry(radius) {
@@ -1095,7 +1147,7 @@ class PistonViewer {
                 // Caps are always first child, skirts second
                 // Iterate through all children, as each LOD is a group of cap/skirt
                 t.mesh.children.forEach(lodGroup => {
-                    if (lodGroup.isGroup) {
+                    if (lodGroup.isGroup && lodGroup.visible) {
                         const capMesh = lodGroup.children[0];
                         const skirtMesh = lodGroup.children[1];
                         if (capMesh && capMesh.visible) capCount += capMesh.count;
@@ -2220,6 +2272,7 @@ class PistonViewer {
 
         // --- MATERIAL UNIFORM UPDATE ---
         this.computeLodRadii();
+        this.updateLevelVisibility();
         let needsUpdateCount = 0;
         for (const m of this.materialsToUpdate) {
             if (m.needsUpdate) needsUpdateCount++;
