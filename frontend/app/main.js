@@ -141,6 +141,12 @@ class PistonViewer {
         // gosper levels) reproduces that split.
         this.hexTargetPx = this.isMobile ? 4 : 3;
         this.movingCoarseness = 7.0;
+        // While panning in 3D we do NOT run the per-distance CDLOD selection:
+        // the whole view is a single uniform gosper level — identically sized
+        // large skirtless hexes at every distance (fastest, and the intended
+        // look). movingLevel picks that size (2 ~45 m, 3 ~118 m, 4 ~314 m
+        // flat-to-flat). Settled mode reverts to the multi-level CDLOD.
+        this.movingLevel = 3;
         this.qualityScale = this.movingCoarseness;
         this.lodRadii = new Float32Array(TILE_LEVEL + 2); // R(0)..R(6)
 
@@ -483,6 +489,27 @@ class PistonViewer {
     // frametime lever — it restores the old per-band residency the CDLOD
     // shader cut alone does not provide.
     updateLevelVisibility() {
+        // Panning: one uniform level across the whole view (all distances),
+        // skirtless. No distance-based selection — every tile shows exactly
+        // movingLevel, and that level draws ALL its instances (the material
+        // uniform pass forces its CDLOD cut open). This is the intended fast
+        // look; it also avoids the mixed-size "disjointed plates" that a
+        // per-distance cut produces mid-pan.
+        if (this.isMoving3D) {
+            const ml = this.movingLevel;
+            for (const t of this.tiles.values()) {
+                const mesh = t.mesh;
+                if (!mesh) continue;
+                for (const g of mesh.children) {
+                    const k = g.userData.gosperLevel;
+                    if (k === undefined) continue;
+                    const vis = (k === ml);
+                    if (g.visible !== vis) g.visible = vis;
+                }
+            }
+            return;
+        }
+
         const camX = this.camera.position.x;
         const camZ = this.camera.position.z;
         const margin = this.lodTileMargin;
@@ -2287,14 +2314,21 @@ class PistonViewer {
                 m.userData.shader.uniforms.uGradientMode.value = this.gradientMode;
 
                 if (m.userData.lodIdx !== undefined) {
-                    // Gosper level k: band = (R(k-1), R(k)], parent checked
-                    // against R(k). The finest BUILT level ignores the near
-                    // edge so coverage holds before sintering completes.
                     const k = m.userData.lodIdx;
-                    const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
-                    const maxD = this.lodRadii[k];
-                    m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
-                    m.userData.shader.uniforms.uFinestBuilt.value = m.userData.isFinest ? 1.0 : 0.0;
+                    if (this.isMoving3D && k === this.movingLevel) {
+                        // Uniform panning level: force the cut fully open so
+                        // every instance of this level draws at all distances.
+                        m.userData.shader.uniforms.uLodRadii.value.set(0.0, 1e12);
+                        m.userData.shader.uniforms.uFinestBuilt.value = 1.0;
+                    } else {
+                        // Gosper level k: band = (R(k-1), R(k)], parent checked
+                        // against R(k). The finest BUILT level ignores the near
+                        // edge so coverage holds before sintering completes.
+                        const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
+                        const maxD = this.lodRadii[k];
+                        m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
+                        m.userData.shader.uniforms.uFinestBuilt.value = m.userData.isFinest ? 1.0 : 0.0;
+                    }
                 }
             }
         }
