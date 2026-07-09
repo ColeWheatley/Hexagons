@@ -511,15 +511,28 @@ class PistonViewer {
         }
 
         const camX = this.camera.position.x;
+        const camY = this.camera.position.y;
         const camZ = this.camera.position.z;
         const margin = this.lodTileMargin;
         const R = this.lodRadii;
         for (const t of this.tiles.values()) {
             const mesh = t.mesh;
             if (!mesh) continue;
+            // MUST match the shader's instDist metric exactly: every instance's
+            // baked translation.y is 0 (see tile_worker.js buildLevelBuffers and
+            // meshGroup.position.set(t.lx, 0, t.lz)) — height is applied later,
+            // post-LOD-test, via the vertex shader's animH offset. So the
+            // shader computes distance((x,0,z), trueCameraPos), which folds in
+            // the camera's full altitude. A horizontal-only (dx,dz) distance
+            // here silently drops that term: for any oblique/top-down view
+            // (camera meaningfully above the terrain) it systematically
+            // UNDERESTIMATES distance for tiles near the camera's XZ footprint,
+            // which incorrectly hid mid LOD bands the shader would still draw
+            // — the "missing intermediate ring" bug. camY must be included.
             const dx = t.lx - camX;
+            const dy = -camY;
             const dz = t.lz - camZ;
-            const d = Math.sqrt(dx * dx + dz * dz);
+            const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
             const near = d - margin;
             const far = d + margin;
             // Finest built level ignores its near edge so the closest tile is
