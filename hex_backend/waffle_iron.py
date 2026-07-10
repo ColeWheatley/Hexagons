@@ -44,6 +44,7 @@ import rasterio.windows
 import gc
 import re
 from shapely.geometry import Polygon, box
+from shapely.ops import unary_union
 import argparse
 import shutil
 import sys
@@ -93,7 +94,7 @@ STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "5.0.0"  # bump this when you change .bin baking logic to trigger re-bake
-TEXTURE_VERSION = "2.0.0"  # clean production texture recipe/cache version
+TEXTURE_VERSION = "2.1.0"  # candidate-union source selection + geometry coverage validation
 TEXTURE_TATTOO_VERSION = "1"  # diagnostic recipe version; deliberately separate from clean textures
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
@@ -263,6 +264,68 @@ def prepare_texture_variants(canvas, bounds, tattoos_enabled=False):
         apply_texture_tattoo(canvas, bounds, "full")
         apply_texture_tattoo(low, bounds, "low")
     return canvas, low
+
+
+def select_aerial_tifs_for_islands(all_tifs, islands):
+    """Keep every aerial source touching the exact union of candidate texture squares."""
+    island_polys = [info["poly"] for info in islands]
+    if not island_polys:
+        return []
+    texture_footprint = unary_union(island_polys)
+    return [tif for tif in all_tifs if tif["poly"].intersects(texture_footprint)]
+
+
+def validate_geometry_texture_coverage(coverage, bounds, unit_x, unit_y, unit_valid, tile_label="tile"):
+    """Reject an aerial composite that leaves any valid unit cap unpainted.
+
+    ``coverage`` records successful source-image pastes, independently of RGB
+    values (real aerial pixels may legitimately be very dark).  A unit cap is
+    considered covered only when its center and all six vertices land on
+    painted pixels.  Invalid/off-DEM units are deliberately ignored, so a
+    partial dataset-edge island is accepted when all geometry it can actually
+    render has imagery.
+    """
+    coverage = np.asarray(coverage, dtype=bool)
+    unit_x = np.asarray(unit_x, dtype=np.float64)
+    unit_y = np.asarray(unit_y, dtype=np.float64)
+    unit_valid = np.asarray(unit_valid, dtype=bool)
+    if coverage.ndim != 2 or coverage.size == 0:
+        raise ValueError("texture coverage mask must be a non-empty 2D array")
+    if unit_x.shape != unit_y.shape or unit_x.shape != unit_valid.shape:
+        raise ValueError("unit coordinate and validity arrays must have identical shapes")
+
+    valid_indices = np.flatnonzero(unit_valid)
+    if valid_indices.size == 0:
+        raise ValueError(f"{tile_label}: texture coverage validation has no valid terrain units")
+
+    min_x, min_y, max_x, max_y = map(float, bounds)
+    if min_x >= max_x or min_y >= max_y:
+        raise ValueError(f"{tile_label}: texture coverage bounds must have positive area")
+
+    radius = coord_util.UNIT_HEX_WIDTH_METERS / math.sqrt(3.0)
+    angles = np.arange(6, dtype=np.float64) * (math.pi / 3.0)
+    sample_dx = np.concatenate(([0.0], np.cos(angles) * radius))
+    sample_dy = np.concatenate(([0.0], np.sin(angles) * radius))
+    sample_x = unit_x[valid_indices, None] + sample_dx[None, :]
+    sample_y = unit_y[valid_indices, None] + sample_dy[None, :]
+
+    height, width = coverage.shape
+    cols = np.floor((sample_x - min_x) * width / (max_x - min_x)).astype(np.int64)
+    rows = np.floor((max_y - sample_y) * height / (max_y - min_y)).astype(np.int64)
+    inside = (cols >= 0) & (cols < width) & (rows >= 0) & (rows < height)
+    safe_cols = np.clip(cols, 0, width - 1)
+    safe_rows = np.clip(rows, 0, height - 1)
+    sample_covered = inside & coverage[safe_rows, safe_cols]
+    missing_cells = ~sample_covered.all(axis=1)
+    if np.any(missing_cells):
+        missing_indices = valid_indices[missing_cells]
+        preview = ",".join(str(int(i)) for i in missing_indices[:8])
+        raise RuntimeError(
+            f"{tile_label}: aerial composite leaves {missing_indices.size}/{valid_indices.size} "
+            f"valid terrain hexes unpainted (unit indices: {preview})"
+        )
+
+    return int(valid_indices.size)
 
 
 def resolve_basisu_binary():
@@ -718,6 +781,7 @@ def bake_gosper_textures(
     latQ,
     latR,
     valid_tifs,
+    unit_valid,
     output_dir="frontend/app/aerial_tiles",
     texture_tattoos=False,
     texture_recipe_version=None,
@@ -733,6 +797,7 @@ def bake_gosper_textures(
     target_poly = info["poly"]
 
     canvas = Image.new("RGB", (TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), (0, 0, 0))
+    coverage = np.zeros((TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), dtype=bool)
     intersecting = [t for t in valid_tifs if t["poly"].intersects(target_poly)]
 
     for t in intersecting:
@@ -756,8 +821,19 @@ def bake_gosper_textures(
                 data = src.read(window=window, out_shape=(src.count, h_px, w_px), resampling=rasterio.enums.Resampling.lanczos)
                 patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8"), "RGB")
                 canvas.paste(patch, (px0, py0))
-            except Exception:
-                pass
+                coverage[py0:py1, px0:px1] = True
+            except Exception as exc:
+                print(f"   ⚠️ aerial source failed for {t['path']}: {exc}")
+
+    geom = coord_util.gosper_tile_geometry()
+    validate_geometry_texture_coverage(
+        coverage,
+        info["bounds"],
+        info["centerX"] + geom["offx"],
+        info["centerY"] + geom["offy"],
+        unit_valid,
+        tile_label=f"gosper_{latQ}_{latR}",
+    )
 
     res_dirs = {k: os.path.join(output_dir, k) for k in ["full", "low"]}
     for d in res_dirs.values():
@@ -1025,6 +1101,40 @@ def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
     return blob
 
 
+def read_gsp1_unit_valid(path):
+    """Read the final-depth validity flags needed by texture coverage validation."""
+    with open(path, "rb") as source:
+        blob = source.read()
+    if len(blob) < GSP1_HEADER_STRUCT.size:
+        raise ValueError(f"short GSP1 file: {path}")
+    header = GSP1_HEADER_STRUCT.unpack_from(blob)
+    if header[0] != GSP1_MAGIC or header[1] != GSP1_VERSION or header[2] != GSP1_TILE_LEVEL:
+        raise ValueError(f"unsupported GSP1 header: {path}")
+
+    offset = GSP1_HEADER_STRUCT.size
+    for depth in range(1, GSP1_TILE_LEVEL):
+        if offset + 4 > len(blob):
+            raise ValueError(f"truncated GSP1 depth {depth}: {path}")
+        count = struct.unpack_from("<I", blob, offset)[0]
+        expected = 7 ** depth
+        if count != expected:
+            raise ValueError(f"GSP1 depth {depth} count {count}, expected {expected}: {path}")
+        offset += 4 + count * GSP1_AGG_DTYPE.itemsize
+
+    if offset + 4 > len(blob):
+        raise ValueError(f"truncated GSP1 unit count: {path}")
+    count = struct.unpack_from("<I", blob, offset)[0]
+    expected = 7 ** GSP1_TILE_LEVEL
+    if count != expected:
+        raise ValueError(f"GSP1 unit count {count}, expected {expected}: {path}")
+    offset += 4
+    byte_count = count * GSP1_UNIT_DTYPE.itemsize
+    if offset + byte_count != len(blob):
+        raise ValueError(f"GSP1 unit payload length mismatch: {path}")
+    records = np.frombuffer(blob, dtype=GSP1_UNIT_DTYPE, count=count, offset=offset)
+    return (records["flags"] & 1).astype(bool, copy=True)
+
+
 def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -1189,8 +1299,6 @@ def main():
     grad_ds = None
 
     valid_tifs = []
-    geom = coord_util.gosper_tile_geometry()
-    tex_half_m = float(geom["tex_half_m"])
 
     # Calculate Bounds
     if args.full:
@@ -1222,18 +1330,22 @@ def main():
         half_side = (grid_size * coord_util.SECTOR_SIZE_METERS) * 0.5
         m_x1, m_y1, m_x2, m_y2 = cx - half_side, cy - half_side, cx + half_side, cy + half_side
         region_bounds = (m_x1, m_y1, m_x2, m_y2)
-        mini_box = box(m_x1 - tex_half_m, m_y1 - tex_half_m, m_x2 + tex_half_m, m_y2 + tex_half_m)
-
-        # Only load intersecting TIFs
-        print("Filtering TIFs for Mini-Bake area (cached bounds)...")
-        tif_list = glob.glob(os.path.join(AERIAL_DIR, "*.tif"))
-        valid_tifs = [t for t in load_tif_bounds(tif_list) if t["poly"].intersects(mini_box)]
-        print(f"✅ Found {len(valid_tifs)} intersecting TIFs (of {len(tif_list)} total).")
 
     islands = enumerate_gosper_islands_for_bbox(region_bounds)
     print(f"Island candidates intersecting region: {len(islands)}")
 
     if not args.full:
+        # Candidate island squares may extend by nearly a full texture width
+        # beyond the requested mini-bake bbox. Filtering aerials against only
+        # region + tex_half silently omitted the far strip of those edge
+        # squares, which then encoded as valid black KTX2 pixels. Select
+        # against the exact union of the squares we are actually about to bake.
+        print("Filtering TIFs for candidate island texture coverage (cached bounds)...")
+        tif_list = glob.glob(os.path.join(AERIAL_DIR, "*.tif"))
+        all_tifs = load_tif_bounds(tif_list)
+        valid_tifs = select_aerial_tifs_for_islands(all_tifs, islands)
+        print(f"✅ Found {len(valid_tifs)} intersecting TIFs (of {len(tif_list)} total).")
+
         # Generate a lightweight regional gradient over every candidate island,
         # not just the center region, because border island squares intentionally
         # extend outside the requested bbox.
@@ -1292,10 +1404,12 @@ def main():
                 print("   ⏭️  no valid DEM unit samples")
                 continue
         if not skip_tex:
+            unit_valid = read_gsp1_unit_valid(bin_file)
             bake_gosper_textures(
                 yq,
                 yr,
                 valid_tifs,
+                unit_valid,
                 texture_tattoos=texture_tattoos,
                 texture_recipe_version=effective_texture_version,
             )
