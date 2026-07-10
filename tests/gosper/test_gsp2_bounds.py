@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused binary-contract tests for conservative GSP2 aggregate bounds."""
+"""Focused binary-contract tests for GSP3 terrain/render aggregate bounds."""
 
 import struct
 import sys
@@ -15,9 +15,10 @@ sys.path.insert(0, str(REPO_ROOT / "hex_backend"))
 
 import waffle_iron as waffle
 import generate_manifest
+from tests.gosper import validate_gsp1
 
 
-class GSP2BoundsTests(unittest.TestCase):
+class GSP3BoundsTests(unittest.TestCase):
     def _build_blob(self):
         count = 7 ** waffle.GSP1_TILE_LEVEL
         # Curved, non-decimetre heights exercise reconstructed means and both
@@ -27,16 +28,21 @@ class GSP2BoundsTests(unittest.TestCase):
         valid = np.ones(count, dtype=bool)
         slopes = np.zeros((count, 3), dtype=np.uint8)
         normals = np.full(count, 128, dtype=np.uint8)
-        deltas = np.zeros((count, 3), dtype=np.int16)
+        deltas = np.empty((count, 3), dtype=np.int16)
+        deltas[:, 0] = np.where((index.astype(np.int64) & 1) == 0, -124, 87)
+        deltas[:, 1] = np.where((index.astype(np.int64) % 3) == 0, 156, -63)
+        deltas[:, 2] = np.where((index.astype(np.int64) % 5) == 0, -211, 42)
         nodes = waffle._build_gsp1_nodes(heights, valid, slopes, normals, normals)
         info = {"centerQ": 0, "centerR": 0, "latQ": 0, "latR": 0}
-        blob = waffle._pack_gsp2_blob(info, nodes, deltas, slopes, normals, normals, valid)
-        return blob, nodes, valid
+        blob = waffle._pack_gsp3_blob(info, nodes, deltas, slopes, normals, normals, valid)
+        return blob, nodes, valid, deltas
 
     def test_record_layout_is_explicit_and_stable(self):
         self.assertEqual(waffle.GSP_HEADER_STRUCT.size, 48)
         self.assertEqual(waffle.GSP2_AGG_STRUCT.size, 12)
         self.assertEqual(waffle.GSP2_AGG_DTYPE.itemsize, 12)
+        self.assertEqual(waffle.GSP3_AGG_STRUCT.size, 16)
+        self.assertEqual(waffle.GSP3_AGG_DTYPE.itemsize, 16)
         self.assertEqual(waffle.GSP_UNIT_STRUCT.size, 14)
         self.assertEqual(waffle.GSP1_UNIT_DTYPE.itemsize, 14)
 
@@ -48,59 +54,147 @@ class GSP2BoundsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             waffle._pack_u16_extent_dm(np.array([np.nan]))
 
-    def test_aggregate_extents_enclose_descendants_from_reconstructed_mean(self):
-        blob, nodes, _ = self._build_blob()
+    def test_empty_children_do_not_inflate_parent_terrain_extrema(self):
+        count = 7 ** waffle.GSP1_TILE_LEVEL
+        heights = np.zeros(count, dtype=np.float64)
+        valid = np.zeros(count, dtype=bool)
+        heights[:7] = 1000.0
+        valid[:7] = True
+        heights[-7:] = 3000.0
+        valid[-7:] = True
+        slopes = np.zeros((count, 3), dtype=np.uint8)
+        normals = np.full(count, 128, dtype=np.uint8)
+
+        nodes = waffle._build_gsp1_nodes(heights, valid, slopes, normals, normals)
+
+        # Depth-3 node zero owns units [0, 343): one populated depth-4 child
+        # at 1000m and six empty children whose representative is the 2000m
+        # island mean. Only the populated child's terrain belongs in bounds.
+        self.assertEqual(nodes[3]["count"][0], 7)
+        self.assertEqual(nodes[3]["h_min"][0], 1000.0)
+        self.assertEqual(nodes[3]["h_max"][0], 1000.0)
+        self.assertEqual(nodes[0]["h_min"][0], 1000.0)
+        self.assertEqual(nodes[0]["h_max"][0], 3000.0)
+
+    def test_terrain_and_render_extents_have_separate_tight_contracts(self):
+        blob, nodes, _, expected_deltas = self._build_blob()
         header = waffle.GSP_HEADER_STRUCT.unpack_from(blob)
-        self.assertEqual(header[0:3], (b"GSP2", 2, waffle.GSP1_TILE_LEVEL))
+        self.assertEqual(header[0:3], (b"GSP3", 3, waffle.GSP1_TILE_LEVEL))
 
         offset = waffle.GSP_HEADER_STRUCT.size
         reconstructed = np.array([header[7]], dtype=np.float64)
+        reconstructed_by_depth = {0: reconstructed}
+        aggregate_records = {}
         for depth in range(1, waffle.GSP1_TILE_LEVEL):
             count = struct.unpack_from("<I", blob, offset)[0]
             offset += 4
             self.assertEqual(count, 7 ** depth)
-            records = np.frombuffer(blob, dtype=waffle.GSP2_AGG_DTYPE, count=count, offset=offset)
-            offset += count * waffle.GSP2_AGG_DTYPE.itemsize
+            records = np.frombuffer(blob, dtype=waffle.GSP3_AGG_DTYPE, count=count, offset=offset).copy()
+            offset += count * waffle.GSP3_AGG_DTYPE.itemsize
 
             reconstructed = np.repeat(reconstructed, 7) + records["dH"].astype(np.float64) * 0.1
-            lower = reconstructed - records["downExtent"].astype(np.float64) * 0.1
-            upper = reconstructed + records["upExtent"].astype(np.float64) * 0.1
-            np.testing.assert_array_less(lower - 1e-10, nodes[depth]["h_min"])
-            np.testing.assert_array_less(nodes[depth]["h_max"], upper + 1e-10)
-            # Less than one extent quantum plus the final dH reconstruction's
-            # sub-half-decimetre deviation from the source statistic.
-            self.assertLess(float(np.max(nodes[depth]["h_min"] - lower)), 0.150001)
-            self.assertLess(float(np.max(upper - nodes[depth]["h_max"])), 0.150001)
+            reconstructed_by_depth[depth] = reconstructed
+            aggregate_records[depth] = records
             self.assertTrue(np.all(records["reserved"] == 0))
 
-    def test_unit_valid_reader_accepts_current_gsp2(self):
-        blob, _, valid = self._build_blob()
+        unit_count = struct.unpack_from("<I", blob, offset)[0]
+        offset += 4
+        self.assertEqual(unit_count, 7 ** waffle.GSP1_TILE_LEVEL)
+        units = np.frombuffer(blob, dtype=waffle.GSP1_UNIT_DTYPE, count=unit_count, offset=offset)
+        reconstructed_units = np.repeat(reconstructed, 7) + units["dH"].astype(np.float64) * 0.1
+        reconstructed_by_depth[waffle.GSP1_TILE_LEVEL] = reconstructed_units
+        encoded_deltas = np.column_stack((units["d1"], units["d2"], units["d3"]))
+        np.testing.assert_array_equal(encoded_deltas, expected_deltas)
+        # Terrain extents stay tight to terrain centers and source extrema;
+        # signed edge endpoints must not inflate aggregate skirt sizing.
+        for depth, records in aggregate_records.items():
+            count = 7 ** depth
+            descendants = 7 ** (waffle.GSP1_TILE_LEVEL - depth)
+            reconstructed_min = reconstructed_units.reshape(count, descendants).min(axis=1)
+            reconstructed_max = reconstructed_units.reshape(count, descendants).max(axis=1)
+            expected_min = np.minimum(nodes[depth]["h_min"], reconstructed_min)
+            expected_max = np.maximum(nodes[depth]["h_max"], reconstructed_max)
+            mean = reconstructed_by_depth[depth]
+            lower = mean - records["downExtent"].astype(np.float64) * 0.1
+            upper = mean + records["upExtent"].astype(np.float64) * 0.1
+            np.testing.assert_array_less(lower - 1e-10, expected_min)
+            np.testing.assert_array_less(expected_max, upper + 1e-10)
+            self.assertLess(float(np.max(expected_min - lower)), 0.150001)
+            self.assertLess(float(np.max(upper - expected_max)), 0.150001)
+
+        endpoints = reconstructed_units[:, np.newaxis] - encoded_deltas.astype(np.float64) * 0.1
+        unit_render_min = np.minimum(
+            reconstructed_units,
+            endpoints.min(axis=1) - waffle.SHADER_SKIRT_EXTENSION_M,
+        )
+        unit_render_max = np.maximum(reconstructed_units, endpoints.max(axis=1))
+
+        render_bounds = {waffle.GSP1_TILE_LEVEL: (unit_render_min, unit_render_max)}
+        for depth in range(waffle.GSP1_TILE_LEVEL - 1, 0, -1):
+            records = aggregate_records[depth]
+            child_min, child_max = render_bounds[depth + 1]
+            descendant_min = child_min.reshape(-1, 7).min(axis=1)
+            descendant_max = child_max.reshape(-1, 7).max(axis=1)
+            mean = reconstructed_by_depth[depth]
+            relief = (
+                records["downExtent"].astype(np.float64)
+                + records["upExtent"].astype(np.float64)
+            ) * 0.1
+            own_min = (
+                mean - relief
+                - waffle.AGGREGATE_SKIRT_BASE_EXTENSION_M
+                - waffle.SHADER_SKIRT_EXTENSION_M
+            )
+            expected_min = np.minimum(descendant_min, own_min)
+            expected_max = np.maximum(descendant_max, mean)
+            lower = mean - records["renderDown"].astype(np.float64) * 0.1
+            upper = mean + records["renderUp"].astype(np.float64) * 0.1
+            np.testing.assert_array_less(lower - 1e-10, expected_min)
+            np.testing.assert_array_less(expected_max, upper + 1e-10)
+            self.assertLess(float(np.max(expected_min - lower)), 0.100001)
+            self.assertLess(float(np.max(upper - expected_max)), 0.100001)
+            render_bounds[depth] = (expected_min, expected_max)
+
+    def test_unit_valid_reader_accepts_current_gsp3(self):
+        blob, _, valid, _ = self._build_blob()
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "island.bin"
             path.write_bytes(blob)
             np.testing.assert_array_equal(waffle.read_gsp_unit_valid(path), valid)
 
-    def test_unit_valid_reader_keeps_legacy_gsp1_migration_path(self):
-        blob = bytearray(waffle.GSP_HEADER_STRUCT.pack(
-            b"GSP1", 1, waffle.GSP1_TILE_LEVEL,
-            0, 0, 0, 0, 1000.0, 900.0, 1100.0,
-            0, 0, 128, 128, 1, 0,
-        ))
-        for depth in range(1, waffle.GSP1_TILE_LEVEL):
-            count = 7 ** depth
-            blob.extend(struct.pack("<I", count))
-            blob.extend(np.zeros(count, dtype=waffle.GSP1_AGG_DTYPE).tobytes())
-        count = 7 ** waffle.GSP1_TILE_LEVEL
-        expected = (np.arange(count) % 3) != 0
-        units = np.zeros(count, dtype=waffle.GSP1_UNIT_DTYPE)
-        units["flags"] = expected.astype(np.uint8)
-        blob.extend(struct.pack("<I", count))
-        blob.extend(units.tobytes())
-
+    def test_independent_validator_accepts_current_gsp3(self):
+        blob, _, _, _ = self._build_blob()
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "legacy.bin"
+            path = Path(temp_dir) / "gosper_0_0.bin"
             path.write_bytes(blob)
-            np.testing.assert_array_equal(waffle.read_gsp_unit_valid(path), expected)
+            validate_gsp1.validate_file(path)
+
+    def test_unit_valid_reader_keeps_gsp1_and_gsp2_migration_paths(self):
+        for magic, version, aggregate_dtype in (
+            (b"GSP1", 1, waffle.GSP1_AGG_DTYPE),
+            (b"GSP2", 2, waffle.GSP2_AGG_DTYPE),
+        ):
+            with self.subTest(magic=magic):
+                blob = bytearray(waffle.GSP_HEADER_STRUCT.pack(
+                    magic, version, waffle.GSP1_TILE_LEVEL,
+                    0, 0, 0, 0, 1000.0, 900.0, 1100.0,
+                    0, 0, 128, 128, 1, 0,
+                ))
+                for depth in range(1, waffle.GSP1_TILE_LEVEL):
+                    count = 7 ** depth
+                    blob.extend(struct.pack("<I", count))
+                    blob.extend(np.zeros(count, dtype=aggregate_dtype).tobytes())
+                count = 7 ** waffle.GSP1_TILE_LEVEL
+                expected = (np.arange(count) % 3) != 0
+                units = np.zeros(count, dtype=waffle.GSP1_UNIT_DTYPE)
+                units["flags"] = expected.astype(np.uint8)
+                blob.extend(struct.pack("<I", count))
+                blob.extend(units.tobytes())
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    path = Path(temp_dir) / "legacy.bin"
+                    path.write_bytes(blob)
+                    np.testing.assert_array_equal(waffle.read_gsp_unit_valid(path), expected)
 
     def test_manifest_exposes_per_tile_version_during_rolling_rebake(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -109,9 +203,16 @@ class GSP2BoundsTests(unittest.TestCase):
             binary_dir.mkdir()
             output = temp / "manifest.json"
             metadata = temp / "metadata.json"
-            metadata.write_text('{"texture_version":"3.0.0+tattoo-2","texture_tattoos":true}')
+            metadata.write_text(
+                '{"baker_version":"6.0.1","texture_version":"3.0.0+tattoo-2",'
+                '"texture_tattoos":true}'
+            )
 
-            for magic, version, yq, yr in ((b"GSP1", 1, 0, 0), (b"GSP2", 2, 1, -1)):
+            for magic, version, yq, yr in (
+                (b"GSP1", 1, 0, 0),
+                (b"GSP2", 2, 1, -1),
+                (b"GSP3", 3, 2, -2),
+            ):
                 center_q, center_r = waffle.coord_util.gosper_lattice_to_center(yq, yr)
                 header = waffle.GSP_HEADER_STRUCT.pack(
                     magic, version, waffle.GSP1_TILE_LEVEL,
@@ -137,8 +238,13 @@ class GSP2BoundsTests(unittest.TestCase):
 
             import json
             manifest = json.loads(output.read_text())
-            self.assertEqual([tile["gspVersion"] for tile in manifest["tiles"]], [1, 2])
-            self.assertEqual(manifest["binary"]["aggregate_record_bytes"], {"1": 8, "2": 12})
+            self.assertEqual([tile["gspVersion"] for tile in manifest["tiles"]], [1, 2, 3])
+            self.assertEqual(manifest["binary"]["cache_key"], "6.0.1")
+            self.assertEqual(manifest["binary"]["supported_versions"], [1, 2, 3])
+            self.assertEqual(
+                manifest["binary"]["aggregate_record_bytes"],
+                {"1": 8, "2": 12, "3": 16},
+            )
             self.assertEqual(manifest["textures"]["recipe_version"], "3.0.0+tattoo-2")
             self.assertTrue(manifest["textures"]["diagnostic_tattoos"])
 

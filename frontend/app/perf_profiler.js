@@ -200,7 +200,7 @@ export class PerfProfiler {
                     loadQueue: stats.tiles.loadQueue,
                     textureQueue: stats.tiles.textureQueue,
                     textureResultQueue: stats.tiles.textureResultQueue,
-                    sinterQueue: stats.tiles.sinterQueue,
+                    geometryRebuildQueue: stats.tiles.geometryRebuildQueue,
                     activeWorkers: stats.tiles.activeWorkers,
                 };
 

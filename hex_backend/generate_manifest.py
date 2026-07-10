@@ -1,4 +1,4 @@
-# @atlas: Gosper tile manifest generator. Scans legacy GSP1/current GSP2 island binaries, reads their 48-byte headers, and emits frontend/app/tile_manifest.json with explicit binary and three-tier texture contracts.
+# @atlas: Gosper manifest generator. Scans rolling GSP1/GSP2/current GSP3 island binaries and emits explicit per-tile versions plus binary/texture contracts.
 import json
 import os
 import re
@@ -16,7 +16,7 @@ METADATA_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../fron
 
 GSP_HEADER = struct.Struct("<4sHHiiiifffBBBBBxxxI")
 GSP1_PATTERN = re.compile(r"gosper_(-?\d+)_(-?\d+)\.bin$")
-SUPPORTED_GSP_FORMATS = {(b"GSP1", 1), (b"GSP2", 2)}
+SUPPORTED_GSP_FORMATS = {(b"GSP1", 1), (b"GSP2", 2), (b"GSP3", 3)}
 
 
 def _read_header(path):
@@ -104,11 +104,15 @@ def generate_manifest():
         "tile_pitch_m": float(geom["tile_pitch_m"]),
         "tex_world_side_m": tex_half_m * 2.0,
         "binary": {
-            "default_format": "GSP2",
-            "default_version": 2,
-            "supported_versions": [1, 2],
+            "default_format": "GSP3",
+            "default_version": 3,
+            # Asset URLs stay stable across bakes, so the baker recipe is the
+            # explicit browser-cache identity.  Per-tile GSP versions are
+            # still appended by the frontend during rolling migrations.
+            "cache_key": bake_metadata.get("baker_version", "gsp3-v3"),
+            "supported_versions": [1, 2, 3],
             "header_bytes": GSP_HEADER.size,
-            "aggregate_record_bytes": {"1": 8, "2": 12},
+            "aggregate_record_bytes": {"1": 8, "2": 12, "3": 16},
             "unit_record_bytes": 14,
             "extent_quantum_m": 0.1,
         },

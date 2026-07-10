@@ -1,5 +1,5 @@
-// @atlas: Asynchronous background Web Worker dedicated to parsing 'GSP1' Gosper-island binary tiles and transcoding XUASTC LDR 6x6 KTX2 aerial textures. Decodes the hierarchical offset-coded height tree (level-5 island root + per-depth decimeter deltas), reconstructs absolute heights, and builds per-level instanced mesh buffers whose matrices bake in each Gosper level's sqrt(7)^k scale and k*19.1066deg rotation, plus the parent-center attribute the CDLOD shader cut needs. Textures transcode via the vendored Basis Universal v2 WASM transcoder to whatever GPU format the main thread's capability handshake selected; everything returns via zero-copy transferables.
-importScripts('gosper_core.js');
+// @atlas: Worker for GSP1/GSP2/current GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP2+ loading is two-stage; GSP3 separates terrain relief from exact rendered bounds.
+importScripts('gosper_core.js?v=frustum9');
 
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5
@@ -186,7 +186,7 @@ self.onmessage = async function (e) {
             // Transfer buffers to avoid copy
             const transferables = [];
 
-            Object.values(result.lods).forEach(lod => {
+            Object.values(result.lods || {}).forEach(lod => {
                 if (lod) {
                     transferables.push(lod.matrix.buffer);
                     transferables.push(lod.nz1.buffer);
@@ -199,10 +199,17 @@ self.onmessage = async function (e) {
                 }
             });
             transferables.push(result.unitHeights.buffer);
+            if (result.geometrySource?.byteLength) {
+                transferables.push(result.geometrySource);
+            }
             if (result.visibilityData) {
                 const seen = new Set(transferables);
                 for (const depth of result.visibilityData.depths) {
-                    for (const array of [depth.h, depth.valid, depth.relief, depth.downExtent, depth.upExtent]) {
+                    for (const array of [
+                        depth.h, depth.valid, depth.relief,
+                        depth.downExtent, depth.upExtent,
+                        depth.renderDown, depth.renderUp,
+                    ]) {
                         if (array?.buffer && !seen.has(array.buffer)) {
                             transferables.push(array.buffer);
                             seen.add(array.buffer);
@@ -222,6 +229,22 @@ self.onmessage = async function (e) {
                 result.texture.mipmaps.forEach(m => transferables.push(m.data.buffer));
             }
 
+            self.postMessage({ id, status: 'success', result }, transferables);
+
+        } else if (type === 'BUILD_GEOMETRY') {
+            const result = buildGeometryFromSource(data);
+            const transferables = [];
+            Object.values(result.lods).forEach(lod => {
+                if (!lod) return;
+                transferables.push(lod.matrix.buffer);
+                transferables.push(lod.nz1.buffer);
+                transferables.push(lod.nz2.buffer);
+                transferables.push(lod.slopes.buffer);
+                transferables.push(lod.deltas.buffer);
+                transferables.push(lod.norms.buffer);
+                transferables.push(lod.parentPos.buffer);
+                transferables.push(lod.parentHeight.buffer);
+            });
             self.postMessage({ id, status: 'success', result }, transferables);
 
         } else if (type === 'LOAD_TEXTURE') {
@@ -246,7 +269,7 @@ async function fetchFirst(urls) {
     return { response: last, url: candidates[candidates.length - 1] };
 }
 
-async function loadTile({ yq, yr, texUrl, texUrls, binUrl }) {
+async function loadTile({ yq, yr, texUrl, texUrls, binUrl, expectedGspVersion }) {
     // Parallel Fetch: Bin + LowTexture
     const [binRes, texFetch] = await Promise.all([
         fetch(binUrl),
@@ -276,15 +299,17 @@ async function loadTile({ yq, yr, texUrl, texUrls, binUrl }) {
     }
 
     const parsed = parseGSP1(binBuf, yq, yr);
-    const lods = buildLevelBuffers(parsed);
-
-    let geometryBytes = 0;
-    Object.values(lods).forEach(lod => {
-        if (!lod) return;
-        geometryBytes += lod.matrix.byteLength + lod.nz1.byteLength + lod.nz2.byteLength
-            + lod.slopes.byteLength + lod.deltas.byteLength + lod.norms.byteLength
-            + lod.parentPos.byteLength + lod.parentHeight.byteLength;
-    });
+    if (expectedGspVersion !== undefined && parsed.binaryVersion !== expectedGspVersion) {
+        throw new Error(
+            `Binary cache mismatch for ${yq}_${yr}: manifest GSP${expectedGspVersion}, parsed GSP${parsed.binaryVersion}`,
+        );
+    }
+    // GSP2+ is a deliberate two-stage load: return its compact hierarchy and
+    // source bytes first, let the main thread's generic planner choose L3
+    // subtrees, then BUILD_GEOMETRY constructs only those contiguous ranges.
+    // Legacy GSP1 keeps the safe, proven full-build fallback.
+    const lods = parsed.binaryVersion >= 2 ? null : buildLevelBuffers(parsed);
+    const geometryBytes = geometryBytesForLods(lods);
 
     return {
         lods,
@@ -293,6 +318,7 @@ async function loadTile({ yq, yr, texUrl, texUrls, binUrl }) {
         center: parsed.center,
         unitHeights: parsed.unitHeights, // Float32Array(16807), heap order — main keeps ONE static (dq,dr)->index map
         binaryVersion: parsed.binaryVersion,
+        geometrySource: parsed.binaryVersion >= 2 ? binBuf : null,
         visibilityData: {
             depths: parsed.depths.map(depth => ({
                 h: depth.h,
@@ -300,11 +326,46 @@ async function loadTile({ yq, yr, texUrl, texUrls, binUrl }) {
                 relief: depth.relief,
                 downExtent: depth.downExtent,
                 upExtent: depth.upExtent,
+                renderDown: depth.renderDown,
+                renderUp: depth.renderUp,
             })),
             unit: parsed.unit,
         },
         geometryBytes,
         networkBytes: { bin: binBuf.byteLength, tex: texBytes },
+    };
+}
+
+function geometryBytesForLods(lods) {
+    let geometryBytes = 0;
+    Object.values(lods || {}).forEach(lod => {
+        if (!lod) return;
+        geometryBytes += lod.matrix.byteLength + lod.nz1.byteLength + lod.nz2.byteLength
+            + lod.slopes.byteLength + lod.deltas.byteLength + lod.norms.byteLength
+            + lod.parentPos.byteLength + lod.parentHeight.byteLength;
+    });
+    return geometryBytes;
+}
+
+function buildGeometryFromSource({
+    binBuffer,
+    yq,
+    yr,
+    expectedGspVersion,
+    rangesByDepth,
+}) {
+    if (!(binBuffer instanceof ArrayBuffer)) throw new TypeError('BUILD_GEOMETRY needs binBuffer');
+    const parsed = parseGSP1(binBuffer, yq, yr);
+    if (expectedGspVersion !== undefined && parsed.binaryVersion !== expectedGspVersion) {
+        throw new Error(
+            `Geometry source mismatch for ${yq}_${yr}: expected GSP${expectedGspVersion}, parsed GSP${parsed.binaryVersion}`,
+        );
+    }
+    const lods = buildLevelBuffers(parsed, { rangesByDepth });
+    return {
+        lods,
+        geometryBytes: geometryBytesForLods(lods),
+        binaryVersion: parsed.binaryVersion,
     };
 }
 
@@ -320,18 +381,21 @@ async function loadTextureOnly({ url, urls }) {
 }
 
 // =============================================================================
-// GSP1/GSP2 PARSER. GSP2 adds conservative asymmetric vertical extents to
-// aggregates; unit records stay byte-for-byte compatible. Heights remain
-// offset-coded: recon(node) = recon(parent) + dH * 0.1.
+// GSP1/GSP2/GSP3 PARSER. GSP2 adds terrain down/up extents; GSP3 adds exact
+// rendered down/up extents. Unit records stay byte-for-byte compatible.
 // =============================================================================
 function parseGSP1(buffer, expectYq, expectYr) {
     const view = new DataView(buffer);
     const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (sig !== 'GSP1' && sig !== 'GSP2') throw new Error(`Invalid signature '${sig}' (want GSP1/GSP2)`);
+    if (sig !== 'GSP1' && sig !== 'GSP2' && sig !== 'GSP3') {
+        throw new Error(`Invalid signature '${sig}' (want GSP1/GSP2/GSP3)`);
+    }
     const version = view.getUint16(4, true);
     const tileLevel = view.getUint16(6, true);
     const isGsp2 = sig === 'GSP2';
-    if ((isGsp2 ? version !== 2 : version !== 1) || tileLevel !== TILE_LEVEL) {
+    const isGsp3 = sig === 'GSP3';
+    const expectedVersion = isGsp3 ? 3 : (isGsp2 ? 2 : 1);
+    if (version !== expectedVersion || tileLevel !== TILE_LEVEL) {
         throw new Error(`Unsupported ${sig} version ${version} / tileLevel ${tileLevel}`);
     }
     const centerQ = view.getInt32(8, true);
@@ -370,27 +434,39 @@ function parseGSP1(buffer, expectYq, expectYr) {
 
         if (d < TILE_LEVEL) {
             const relief = new Uint8Array(count); // subtree hMax-hMin, 4 m units
-            const downExtent = isGsp2 ? new Uint16Array(count) : null;
-            const upExtent = isGsp2 ? new Uint16Array(count) : null;
+            const hasTerrainExtents = isGsp2 || isGsp3;
+            const downExtent = hasTerrainExtents ? new Uint16Array(count) : null;
+            const upExtent = hasTerrainExtents ? new Uint16Array(count) : null;
+            const renderDown = isGsp3 ? new Uint16Array(count) : null;
+            const renderUp = isGsp3 ? new Uint16Array(count) : null;
             for (let i = 0; i < count; i++) {
                 const dH = view.getInt16(off, true);
                 slopeMean[i] = view.getUint8(off + 2);
                 // off+3 = slopeMax (unused by the renderer for now)
                 nx[i] = view.getUint8(off + 4);
                 nz[i] = view.getUint8(off + 5);
-                if (isGsp2) {
+                if (hasTerrainExtents) {
                     downExtent[i] = view.getUint16(off + 6, true);
                     upExtent[i] = view.getUint16(off + 8, true);
                     relief[i] = Math.min(255, Math.ceil((downExtent[i] + upExtent[i]) * 0.1 / 4));
-                    valid[i] = view.getUint8(off + 10) & 1;
+                    if (isGsp3) {
+                        renderDown[i] = view.getUint16(off + 10, true);
+                        renderUp[i] = view.getUint16(off + 12, true);
+                        valid[i] = view.getUint8(off + 14) & 1;
+                    } else {
+                        valid[i] = view.getUint8(off + 10) & 1;
+                    }
                 } else {
                     relief[i] = view.getUint8(off + 6);
                     valid[i] = view.getUint8(off + 7) & 1;
                 }
                 h[i] = parentH[(i / 7) | 0] + dH * 0.1;
-                off += isGsp2 ? 12 : 8;
+                off += isGsp3 ? 16 : (isGsp2 ? 12 : 8);
             }
-            depths.push({ h, slopeMean, nx, nz, valid, relief, downExtent, upExtent });
+            depths.push({
+                h, slopeMean, nx, nz, valid, relief,
+                downExtent, upExtent, renderDown, renderUp,
+            });
         } else {
             const d1 = new Int16Array(count), d2 = new Int16Array(count), d3 = new Int16Array(count);
             const s1 = new Uint8Array(count), s2 = new Uint8Array(count), s3 = new Uint8Array(count);
@@ -429,7 +505,26 @@ function parseGSP1(buffer, expectYq, expectYr) {
 // evaluate the hierarchical CDLOD cut (draw iff selfDist >= R(k) AND
 // parentDist < R(k+1)) without gaps or double-draw at ring boundaries.
 // =============================================================================
-function buildLevelBuffers(parsed) {
+function validateSelectedRanges(rawRanges, count, depth) {
+    if (rawRanges === undefined || rawRanges === null) return null;
+    if (typeof rawRanges.length !== 'number' || rawRanges.length % 2 !== 0) {
+        throw new TypeError(`depth ${depth} ranges must be start/count pairs`);
+    }
+    let previousEnd = 0;
+    for (let pair = 0; pair < rawRanges.length; pair += 2) {
+        const start = Number(rawRanges[pair]);
+        const length = Number(rawRanges[pair + 1]);
+        const end = start + length;
+        if (!Number.isInteger(start) || !Number.isInteger(length) || length <= 0
+            || start < previousEnd || end > count) {
+            throw new RangeError(`invalid depth ${depth} geometry range ${start}+${length}/${count}`);
+        }
+        previousEnd = end;
+    }
+    return rawRanges;
+}
+
+function buildLevelBuffers(parsed, selection = null) {
     const { n, px, pz, depths: geomDepths } = tileGeometry();
     const lods = {};
 
@@ -438,10 +533,21 @@ function buildLevelBuffers(parsed) {
         const pd = parsed.depths[d];
         const level = gd.level;
         const isUnit = (level === 0);
+        const selectedRanges = validateSelectedRanges(
+            selection?.rangesByDepth?.[d],
+            pd.valid.length,
+            d,
+        );
+        const rangePairCount = selectedRanges ? selectedRanges.length : 2;
 
         // Count valid instances first (invalid = off-DEM, never rendered)
         let num = 0;
-        for (let i = 0; i < pd.valid.length; i++) num += pd.valid[i];
+        for (let pair = 0; pair < rangePairCount; pair += 2) {
+            const start = selectedRanges ? selectedRanges[pair] : 0;
+            const count = selectedRanges ? selectedRanges[pair + 1] : pd.valid.length;
+            const end = start + count;
+            for (let i = start; i < end; i++) num += pd.valid[i];
+        }
         if (num === 0) { lods[level] = null; continue; }
 
         const matrix = new Float32Array(num * 16);
@@ -458,32 +564,38 @@ function buildLevelBuffers(parsed) {
 
         let w = 0;
         let activeSkirts = 0;
-        for (let i = 0; i < pd.valid.length; i++) {
-            if (!pd.valid[i]) continue;
-            const u = i * gd.stride;         // unit index of this node's center
-            const lx = px[u], lz = pz[u];
+        for (let pair = 0; pair < rangePairCount; pair += 2) {
+            const start = selectedRanges ? selectedRanges[pair] : 0;
+            const count = selectedRanges ? selectedRanges[pair + 1] : pd.valid.length;
+            const end = start + count;
+            // This loop visits selected contiguous descendants only. Rejected
+            // L3 subtrees never incur per-unit validity/geometry work.
+            for (let i = start; i < end; i++) {
+                if (!pd.valid[i]) continue;
+                const u = i * gd.stride;         // unit index of this node's center
+                const lx = px[u], lz = pz[u];
 
-            const mIdx = w * 16;
-            matrix[mIdx + 0] = a; matrix[mIdx + 4] = 0; matrix[mIdx + 8] = b; matrix[mIdx + 12] = lx;
-            matrix[mIdx + 1] = 0; matrix[mIdx + 5] = 1; matrix[mIdx + 9] = 0; matrix[mIdx + 13] = 0;
-            matrix[mIdx + 2] = c; matrix[mIdx + 6] = 0; matrix[mIdx + 10] = dd; matrix[mIdx + 14] = lz;
-            matrix[mIdx + 3] = 0; matrix[mIdx + 7] = 0; matrix[mIdx + 11] = 0; matrix[mIdx + 15] = 1;
+                const mIdx = w * 16;
+                matrix[mIdx + 0] = a; matrix[mIdx + 4] = 0; matrix[mIdx + 8] = b; matrix[mIdx + 12] = lx;
+                matrix[mIdx + 1] = 0; matrix[mIdx + 5] = 1; matrix[mIdx + 9] = 0; matrix[mIdx + 13] = 0;
+                matrix[mIdx + 2] = c; matrix[mIdx + 6] = 0; matrix[mIdx + 10] = dd; matrix[mIdx + 14] = lz;
+                matrix[mIdx + 3] = 0; matrix[mIdx + 7] = 0; matrix[mIdx + 11] = 0; matrix[mIdx + 15] = 1;
 
-            const hh = parsed.depths[d].h[i];
-            const n1 = w * 4;
-            nz1[n1] = hh; nz1[n1 + 1] = hh; nz1[n1 + 2] = hh; nz1[n1 + 3] = hh;
-            nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh; nz2[n1 + 3] = 0.0;
+                const hh = parsed.depths[d].h[i];
+                const n1 = w * 4;
+                nz1[n1] = hh; nz1[n1 + 1] = hh; nz1[n1 + 2] = hh; nz1[n1 + 3] = hh;
+                nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh; nz2[n1 + 3] = 0.0;
 
-            const sIdx = w * 3;
-            if (isUnit) {
-                slopes[sIdx] = parsed.unit.s1[i];
-                slopes[sIdx + 1] = parsed.unit.s2[i];
-                slopes[sIdx + 2] = parsed.unit.s3[i];
-                deltas[sIdx] = parsed.unit.d1[i];
-                deltas[sIdx + 1] = parsed.unit.d2[i];
-                deltas[sIdx + 2] = parsed.unit.d3[i];
-                if (parsed.unit.d1[i] !== 0 || parsed.unit.d2[i] !== 0 || parsed.unit.d3[i] !== 0) activeSkirts++;
-            } else {
+                const sIdx = w * 3;
+                if (isUnit) {
+                    slopes[sIdx] = parsed.unit.s1[i];
+                    slopes[sIdx + 1] = parsed.unit.s2[i];
+                    slopes[sIdx + 2] = parsed.unit.s3[i];
+                    deltas[sIdx] = parsed.unit.d1[i];
+                    deltas[sIdx + 1] = parsed.unit.d2[i];
+                    deltas[sIdx + 2] = parsed.unit.d3[i];
+                    if (parsed.unit.d1[i] !== 0 || parsed.unit.d2[i] !== 0 || parsed.unit.d3[i] !== 0) activeSkirts++;
+                } else {
                 // Aggregate caps hang relief-depth skirts (subtree hMax-hMin
                 // + margin) so neighbor height steps don't read as black
                 // sliver stripes when SETTLED. While MOVING the main thread
@@ -494,34 +606,40 @@ function buildLevelBuffers(parsed) {
                 // full-relief skirt. The main thread gives aggregates six-sided
                 // skirt geometry, so exposed edges at mixed-size LOD cuts are
                 // sealed and remain immediately identifiable by slope color.
-                const sm = pd.slopeMean[i];
-                slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
-                const reliefMeters = pd.downExtent && pd.upExtent
-                    ? (pd.downExtent[i] + pd.upExtent[i]) * 0.1
-                    : pd.relief[i] * 4;
-                const dDm = (reliefMeters + 12) * 10;
-                deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
-                activeSkirts++;
-            }
+                    const sm = pd.slopeMean[i];
+                    slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
+                    const reliefMeters = pd.downExtent && pd.upExtent
+                        ? (pd.downExtent[i] + pd.upExtent[i]) * 0.1
+                        : pd.relief[i] * 4;
+                    const dDm = (reliefMeters + 12) * 10;
+                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
+                    activeSkirts++;
+                }
 
-            const nIdx = w * 2;
-            norms[nIdx] = pd.nx[i] / 255.0;
-            norms[nIdx + 1] = pd.nz[i] / 255.0;
+                const nIdx = w * 2;
+                norms[nIdx] = pd.nx[i] / 255.0;
+                norms[nIdx + 1] = pd.nz[i] / 255.0;
 
             // Parent center (tile-local). Root (d=0) points at itself, and its
             // material's uLodRadii.y is effectively infinite, so it always draws
             // when the tile is resident and beyond R(5).
-            const pu = (d === 0) ? u : ((i / 7) | 0) * parentStride;
-            parentPos[nIdx] = px[pu];
-            parentPos[nIdx + 1] = pz[pu];
-            parentHeight[w] = (d === 0) ? hh : parsed.depths[d - 1].h[(i / 7) | 0];
+                const pu = (d === 0) ? u : ((i / 7) | 0) * parentStride;
+                parentPos[nIdx] = px[pu];
+                parentPos[nIdx + 1] = pz[pu];
+                parentHeight[w] = (d === 0) ? hh : parsed.depths[d - 1].h[(i / 7) | 0];
 
-            w++;
+                w++;
+            }
         }
 
         lods[level] = {
             matrix, nz1, nz2, slopes, deltas, norms, parentPos, parentHeight,
             activeSkirts, count: num, level,
+            selectedSourceCount: selectedRanges
+                ? Array.from({ length: selectedRanges.length / 2 }, (_, pair) => selectedRanges[pair * 2 + 1])
+                    .reduce((sum, count) => sum + count, 0)
+                : pd.valid.length,
+            sourceCount: pd.valid.length,
         };
     }
 

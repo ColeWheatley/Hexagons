@@ -3,7 +3,7 @@
 // coordinates remain explicitly renderer-scene meters: the terrain renderer
 // dynamically subtracts a view-dependent floor and morphs height with pitch,
 // so camera.position.y is not an absolute elevation above sea level.
-import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utility.js?v=view1';
+import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utility.js?v=frustum9';
 
 const SCHEMA_VERSION = '1';
 const SETTLE_DEBOUNCE_MS = 450;
@@ -175,12 +175,14 @@ export class ShareableViewState {
         );
         if (!Number.isFinite(separation) || separation < 1 || separation > 100000) return false;
 
+        this.viewer.bootstrapVisibilityFloor?.(targetScene);
         this.viewer.controls.target.set(targetScene.x, targetScene.y, targetScene.z);
         this.viewer.camera.position.set(cameraScene.x, cameraScene.y, cameraScene.z);
+        const now = performance.now();
+        this.viewer.notifyCameraMotion(now);
         this.viewer.controls.update();
+        this.viewer.syncHeightFactorFromControls?.();
         this.viewer.lastLODCamPos.copy(this.viewer.camera.position);
-        this.viewer.lastInteractionTime = performance.now();
-        this.viewer.isRefinementDone = false;
         this.viewer.needsLODUpdate = true;
         this.viewer.needsRender = true;
         return true;

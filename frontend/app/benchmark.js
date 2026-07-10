@@ -262,7 +262,9 @@ function runScenario(viewer, name, scenario, appVersion) {
     const finish = () => {
         updateHud(hud, name, scenario.duration, scenario.duration, true);
         console.log(`[BENCHMARK] Scenario "${name}" complete.`);
-        const texturePipeline = viewer.texStats ? 'ktx2' : 'webp';
+        // The runtime contract is KTX2-only. Missing telemetry means the
+        // pipeline has not produced a sample yet; it is not a WebP fallback.
+        const texturePipeline = 'ktx2';
         if (viewer.profiler) {
             const report = viewer.profiler.finalize({
                 scenario: name,
@@ -303,8 +305,10 @@ function runScenario(viewer, name, scenario, appVersion) {
 
         viewer.camera.position.set(camPos.x, camPos.y, camPos.z);
         viewer.controls.target.set(target.x, target.y, target.z);
-        // Same flags a real interaction would set — see main.js's controls 'change' listener
-        // and animate()'s isMoving3D/LOD-update gating.
+        // Enter the same synchronous motion edge as real controls before
+        // either viewer rAF or a promise callback can run maintenance.
+        viewer.notifyCameraMotion(performance.now());
+        viewer.controls.update();
         viewer.needsRender = true;
         viewer.needsLODUpdate = true;
 

@@ -2,9 +2,9 @@
 """Headless visual probe for the gosper viewer.
 
 Loads the app in headless Chrome (rAF runs unthrottled there — a visible-but-
-unfocused tab suspends rAF and fakes deadlock), waits for tiles to stream +
-sinter, then drives the camera through a fixed set of poses and saves a PNG
-per pose for eyeball review.
+unfocused tab suspends rAF and fakes deadlock), waits for tiles to stream,
+then drives the camera through moving-L3 and direct-settled poses and saves a
+PNG per pose for eyeball review.
 
 Usage: python3.14 tests/gosper/visual_probe.py http://localhost:8123/ outdir/
 """
@@ -57,39 +57,44 @@ POSES = [
     ("settle_aerial", """
         const v = window.pistonViewer; const t = v.controls.target;
         v.camera.position.set(t.x + 200, 850, t.z + 1100);
-        v.controls.update(); v.needsRender = true; v.needsLODUpdate = true; 'ok'
+        v.notifyCameraMotion(performance.now()); v.controls.update(); 'ok'
     """, 25),
     ("closeup_units", """
         const v = window.pistonViewer; const t = v.controls.target;
         v.camera.position.set(t.x + 60, 380, t.z + 320);
-        v.controls.update(); v.needsRender = true; v.needsLODUpdate = true; 'ok'
+        v.notifyCameraMotion(performance.now()); v.controls.update(); 'ok'
     """, 12),
     ("moving_coarse", """
         const v = window.pistonViewer;
-        v._savedMaxFrame = v.maxFrameTime; v.maxFrameTime = -1;  // block refinement
-        v.qualityScale = v.movingCoarseness; v.isRefining = false;
+        v.isUserInteracting = true;
         const t = v.controls.target;
         v.camera.position.set(t.x - 900, 1500, t.z + 1600);
-        v.controls.update(); v.needsRender = true; v.needsLODUpdate = true; 'ok'
-    """, 4),
+        v.notifyCameraMotion(performance.now()); v.controls.update(); 'ok'
+    """, 0.1),
+    ("settled_direct", """
+        const v = window.pistonViewer;
+        v.isUserInteracting = false;
+        v.cameraMotion.lastMotionTime = -Infinity;
+        v.needsRender = true; v.needsLODUpdate = true; 'ok'
+    """, 8),
     ("topdown_2d", """
         const v = window.pistonViewer;
-        v.maxFrameTime = v._savedMaxFrame ?? 500;   // re-enable refinement
         const t = v.controls.target;
         v.camera.position.set(t.x, 2600, t.z + 22); // near-vertical: flat 2D mode
-        v.controls.update(); v.needsRender = true; v.needsLODUpdate = true; 'ok'
+        v.notifyCameraMotion(performance.now()); v.controls.update(); 'ok'
     """, 15),
     ("horizon_far", """
         const v = window.pistonViewer; const t = v.controls.target;
         v.camera.position.set(t.x + 300, 2500, t.z + 5200);
-        v.controls.update(); v.needsRender = true; v.needsLODUpdate = true; 'ok'
+        v.notifyCameraMotion(performance.now()); v.controls.update(); 'ok'
     """, 12),
 ]
 
 STATUS = """(() => { const v = window.pistonViewer;
   return JSON.stringify({tiles: v.tiles.size, instQ: v.instantiateQueue.length,
-    q: +v.qualityScale.toFixed(2), state: v.engineState,
-    sintered: [...v.tiles.values()].filter(t=>!t.needsSinteredBuild).length,
+    state: v.engineState, moving: v.isMovingView,
+    awaitingFinal: [...v.tiles.values()].filter(t=>t.geometryAwaitingFinal).length,
+    geometryQ: v.geometryRebuildQueue.length,
     tex: v.texStats.count, texFail: v._texErrorCount,
     tris: v.renderer.info.render.triangles}); })()"""
 

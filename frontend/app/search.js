@@ -1,5 +1,5 @@
 // @atlas: The 'HexSearch' module. A UI component that lazy-loads GeoJSON data for Tirol peaks and ski resorts, providing an interactive search interface. It translates geographic coordinates to local PistonViewer space and safely rejects flights to destinations lying outside the currently baked map bounds.
-import { initProjection, latLonToWorld, worldToGosperTile } from './coordinate_utility.js?v=view1';
+import { initProjection, latLonToWorld, worldToGosperTile } from './coordinate_utility.js?v=frustum9';
 
 export class HexSearch {
     constructor() {
@@ -442,12 +442,11 @@ export class HexSearch {
                 // Fly there
                 v.controls.target.set(tx, 0, tz);
                 v.camera.position.set(tx, 1500, tz + 1000); // Offset for view
+                v.notifyCameraMotion(performance.now());
                 v.controls.update();
                 v.needsRender = true;
                 v.needsLODUpdate = true;
 
-                // Trigger detail load if far
-                v.renderSettings.renderDistance = v.renderSettings.renderDistance || 4000;
                 v.updateLOD();
             }
         }

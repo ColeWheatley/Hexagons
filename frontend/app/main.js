@@ -1,26 +1,42 @@
-// @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation over Gosper-fractal island tiles ('GSP1'). Settled LOD uses the primary viewer's fixed world-distance bands (extended through Gosper's two extra hierarchy levels), selected per-instance by a hierarchical CDLOD cut. Moving mode renders one uniform aggregate size across the whole view. A manifest-driven horizon mesh renders every baked island's level-5 aggregate cap out to ~60 km for free. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode tiles.
+// @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=view1';
-import { VRAMLedger } from './vram_ledger.js?v=frustum1';
-import { CacheManager } from './cache_manager.js?v=frustum1';
-import { PerfProfiler } from './perf_profiler.js';
-import { initBenchmark } from './benchmark.js';
-import { ShareableViewState } from './view_state.js?v=view1';
+import { HexSearch } from './search.js?v=frustum9';
+import { VRAMLedger } from './vram_ledger.js?v=frustum9';
+import { CacheManager } from './cache_manager.js?v=frustum9';
+import { PerfProfiler } from './perf_profiler.js?v=frustum9';
+import { initBenchmark } from './benchmark.js?v=frustum9';
+import { ShareableViewState } from './view_state.js?v=frustum9';
 import {
     VisibilityClass,
     createProjectionContext,
     expandFrustumPlanes,
     extractFrustumPlanes,
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=frustum1';
-import { GosperVisibilityAdapter } from './gosper_visibility_adapter.js?v=frustum1';
-import './gosper_core.js';
+} from './visibility_planner.js?v=frustum9';
+import { GosperVisibilityAdapter } from './gosper_visibility_adapter.js?v=frustum9';
+import {
+    gosperGeometrySelectionNeedsRebuild,
+    planGosperGeometrySelection,
+} from './gosper_geometry_selection.js?v=frustum9';
+import {
+    applyLodPauseTransition,
+    CameraMotionLatch,
+    geometryBuildCanCommit,
+    geometryLevelsForMode,
+    shouldForceCoarseGeometry,
+    shouldRefreshMotionFromControlsChange,
+} from './geometry_transition_state.js?v=frustum9';
+import {
+    computeTerrainAnchorRebase,
+    selectManifestFloorBaseline,
+} from './vertical_bootstrap.js?v=frustum9';
+import './gosper_core.js?v=frustum9';
 
 const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.9.0';
+const APP_VERSION = 'v0.9.8';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
@@ -37,7 +53,6 @@ const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
 const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper island
-const GRID_BUCKET_M = 1024.0;               // spatial hash bucket for manifest tiles
 
 // Three deterministic imagery tiers. Quality is selected from projected screen
 // footprint, never a radial distance or inferred device class.
@@ -51,6 +66,12 @@ const TEXTURE_CONFIG = Object.freeze({
     maxTextureJobs: 2,
     maxUploadsPerFrame: 1,
 });
+
+function appendCacheKey(url, cacheKey) {
+    if (cacheKey === undefined || cacheKey === null || cacheKey === '') return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}v=${encodeURIComponent(String(cacheKey))}`;
+}
 
 // Round world meters to the nearest unit axial cell (cube rounding).
 function worldToUnitAxial(x, y) {
@@ -67,9 +88,9 @@ function worldToUnitAxial(x, y) {
 }
 
 // --- CONFIG ---
-// Default full-detail radius: tiles stream within this range (configurable
-// via UI slider); the manifest-driven horizon mesh covers everything beyond.
-const DEFAULT_RENDER_DISTANCE = 4000;
+// Non-mini atmospheric transition only. Geometry and texture residency are
+// governed by the frustum planner, never this visual haze control.
+const DEFAULT_HAZE_DISTANCE = 4000;
 const HORIZON_DISTANCE = 60000;
 const FLOOR_MODE = 'view-min';
 const LOCK_FLOOR_ON_RISE = true;
@@ -126,29 +147,29 @@ class PistonViewer {
 
         // INTERACTION STATE TRACKING
         this.isUserInteracting = false;
-        // True for either flat/top-down or pitched camera movement.  This is
-        // deliberately separate from isMoving3D: the uniform moving LOD is a
-        // whole-scene invariant, not a 3D-only optimization.
+        // One whole-scene motion invariant for flat and pitched views alike.
         this.isMovingView = false;
+        this.cameraMotion = new CameraMotionLatch(200);
         this.controls.addEventListener('start', () => {
             this.isUserInteracting = true;
-            // animate() derives both moving flags from this interaction. Keep
-            // the previous-frame values intact so it can detect the edge and
-            // atomically swap every moving/settled representation.
-            this.resetLODs();
+            // Real controls input enters before wheel's synchronous end event
+            // or any promise callback can observe stale settled mode.
+            this.notifyCameraMotion(performance.now());
         });
         this.controls.addEventListener('end', () => {
             this.isUserInteracting = false;
-            // animate() owns the moving -> settled transition.  Do not clear
-            // its previous state here or that frame cannot restore the
-            // settled horizon/skirts reliably.
-            this.lastInteractionTime = performance.now();
+            const now = performance.now();
+            // MapControls wheel dispatches start/change/end in one browser
+            // event. Keep that completed burst moving through a rendered frame.
+            if (this.isMovingView) this.cameraMotion.note(now);
         });
         this.controls.addEventListener('change', () => {
-            this.needsRender = true;
-            this.needsLODUpdate = true;
-            // NOTE: We do NOT reset LODs here anymore to avoid oscillation loops
-            // from our own camera altitude adjustments.
+            // MapControls can emit passive change events forever from update()
+            // with an identical pose. Only an active gesture may refresh the
+            // latch; programmatic callers use notifyCameraMotion explicitly.
+            if (shouldRefreshMotionFromControlsChange(this.isUserInteracting)) {
+                this.notifyCameraMotion(performance.now());
+            }
         });
         this.viewState = new ShareableViewState(this);
 
@@ -163,15 +184,14 @@ class PistonViewer {
         // The hierarchical shader cut still uses a single shared boundary for
         // every parent/child pair, so the bands partition without omissions.
         this.settledLodRadii = new Float32Array([2000, 5000, 10000, 25000, 60000, 1e9]);
-        this.movingCoarseness = 7.0;
-        // While panning in 3D we do NOT run the per-distance CDLOD selection:
+        // During any camera motion we do NOT run the per-distance CDLOD selection:
         // the whole view is a single uniform gosper level — identically sized
         // large skirtless hexes at every distance (fastest, and the intended
         // look). movingLevel picks that size (2 ~45 m, 3 ~118 m, 4 ~314 m
         // flat-to-flat). Settled mode reverts to the multi-level CDLOD.
         this.movingLevel = 3;
-        this.qualityScale = this.movingCoarseness;
-        this.lodRadii = new Float32Array(TILE_LEVEL + 2); // R(0)..R(6)
+        this.lodRadii = new Float32Array(TILE_LEVEL + 1); // R(0)..R(5)
+        this.computeLodRadii();
 
         // Per-tile per-level submission gate. The CDLOD cut degenerates
         // out-of-band instances in the vertex shader, but they are still
@@ -182,12 +202,6 @@ class PistonViewer {
         // distant tiles stop submitting fine levels entirely. Margin covers
         // the ~415 m unit half-footprint plus overscan/rotation slack.
         this.lodTileMargin = 650;
-
-        // Antisintering State
-        this.lastInteractionTime = performance.now();
-        this.isRefining = false;
-        this.refineRate = 0.80;  // qualityScale multiplier per refined frame (snappy: ~5 frames)
-        this.maxFrameTime = 500; // Allow a 0.5s pause for the "Snap" reward
 
         window.addEventListener('resize', this.onResize.bind(this));
 
@@ -202,16 +216,24 @@ class PistonViewer {
         this.manifest = null;
         this.loadingTiles = new Set();
         this.loadQueue = [];
+        this.geometryRebuildQueue = [];
+        this.geometryPlanEpoch = 0;
         this.textureQueue = [];
         this.textureResultQueue = [];
         this.textureStates = new Map();
         this.visibilityByKey = new Map();
+        this.currentVisibilityContext = null;
+        this.geometryFrontierStats = {
+            plannedTiles: 0,
+            activeL3: 0,
+            excludedL3: 0,
+            selectedDetailNodes: 0,
+            rebuilds: 0,
+        };
         this.activeTextureJobs = 0;
         this.instantiateQueue = []; // NEW: Results ready for main thread
         this.activeWorkerCount = 0; // NEW: Replaces isProcessingTile
         this.recentlyUpgradedTextures = []; // Track tiles that just got texture upgraded (for render spike correlation)
-        this.lodTransitionInProgress = false; // Flag to suppress spike warnings during expected LOD transitions
-        this.lastLodPreset = 'MOVING'; // Track if we're in MOVING or TARGET preset
         // this.isProcessingTile = false; // REMOVED
         // this.isUpgradingTex = false; // REMOVED
 
@@ -224,11 +246,12 @@ class PistonViewer {
         this.transSettings = { flatThresh: 5.0, riseStart: 6.0, riseEnd: 25.0, curve: 1.0 };
         this.worldOrigin = { x: 0, y: 0 };
         this.floorMode = FLOOR_MODE;
-        this.floorState = { locked: false, value: 0.0, lastFactor: 0.0 };
+        this.floorState = { locked: false, provisional: false, value: 0.0 };
+        this.visibilityBootstrapReady = false;
         this.globalStats = { min: Infinity, max: -Infinity, avgSum: 0.0, baseSum: 0.0, count: 0 };
         this.frustum = new THREE.Frustum();
         this.projScreenMatrix = new THREE.Matrix4();
-        this.renderSettings = { renderDistance: DEFAULT_RENDER_DISTANCE };
+        this.atmosphereSettings = { hazeDistance: DEFAULT_HAZE_DISTANCE };
 
         // Debug/Stats
         this.fpsState = { lastSample: performance.now(), frames: 0 };
@@ -238,13 +261,7 @@ class PistonViewer {
         this.cameraHeightEl = document.getElementById('camera-height');
         this.statsUpdateState = { lastUpdate: 0, interval: 500 };
 
-        // 3D movement vs sintered state
-        // - 3D moving: only build/render LOD0 (large, skirtless) for responsiveness.
-        // - 3D sintered: allow building finer LODs once camera is settled.
-        this.isMoving3D = false;
-        this.wasMoving3D = false;
         this.wasMovingView = false;
-        this.sinterQueue = [];
 
         // Engine state machine (for structured perf logging)
         this.engineState = ENGINE_STATES.STATIC;
@@ -322,7 +339,7 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=frustum1');
+            const w = new Worker('./tile_worker.js?v=frustum9');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -392,14 +409,14 @@ class PistonViewer {
     }
 
     initLODSliders() {
-        // Render Distance
-        const rdSlider = document.getElementById('render-distance-slider');
-        const rdVal = document.getElementById('render-distance-val');
+        // Non-mini fog/horizon transition; unrelated to residency.
+        const rdSlider = document.getElementById('haze-distance-slider');
+        const rdVal = document.getElementById('haze-distance-val');
         if (rdSlider) {
-            rdSlider.value = this.renderSettings.renderDistance / 1000;
-            if (rdVal) rdVal.textContent = (this.renderSettings.renderDistance / 1000) + "km";
+            rdSlider.value = this.atmosphereSettings.hazeDistance / 1000;
+            if (rdVal) rdVal.textContent = (this.atmosphereSettings.hazeDistance / 1000) + "km";
             rdSlider.addEventListener('input', () => {
-                this.renderSettings.renderDistance = parseInt(rdSlider.value) * 1000;
+                this.atmosphereSettings.hazeDistance = parseInt(rdSlider.value) * 1000;
                 if (rdVal) rdVal.textContent = rdSlider.value + "km";
                 this.updateFogAndClip();
             });
@@ -454,17 +471,10 @@ class PistonViewer {
         const lodPauseToggle = document.getElementById('lod-pause-toggle');
         if (lodPauseToggle) {
             lodPauseToggle.addEventListener('change', (e) => {
-                this.lodPaused = e.target.checked;
+                applyLodPauseTransition(this, e.target.checked);
                 this.log(this.lodPaused ? "LOD Updates PAUSED" : "LOD Updates RESUMED", "info");
             });
         }
-
-        this.syncLODUI();
-    }
-
-    syncLODUI() {
-        const el = document.getElementById('lod-quality-val');
-        if (el) el.textContent = `q ×${this.qualityScale.toFixed(2)}`;
     }
 
     // --- FIXED WORLD-DISTANCE LOD BAND RADII ---
@@ -475,15 +485,8 @@ class PistonViewer {
     // uses for its own self-test, so the hierarchical cut partitions the
     // plane exactly — no holes, no double-draw at ring boundaries.
     computeLodRadii() {
-        for (let k = 0; k < TILE_LEVEL; k++) {
-            // Keep the existing antisintering sweep: immediately after motion
-            // bands start compressed, then expand to the exact primary-style
-            // settled boundaries as qualityScale reaches 1.
-            this.lodRadii[k] = this.settledLodRadii[k] / this.qualityScale;
-        }
-        // Root caps never expire while their tile is resident — the horizon
-        // instance for a resident tile is hidden, so someone must draw it.
-        this.lodRadii[TILE_LEVEL] = 1e9;
+        // Fixed settled bands. Moving mode ignores them and forces L3 open.
+        this.lodRadii.set(this.settledLodRadii);
     }
 
     // Per-tile per-level submission gate (runs every frame after
@@ -497,71 +500,81 @@ class PistonViewer {
     // frametime lever — it restores the old per-band residency the CDLOD
     // shader cut alone does not provide.
     updateLevelVisibility(heightFactor) {
-        // Panning: one uniform level across the whole view (all distances),
-        // skirtless. No distance-based selection — every tile shows exactly
-        // movingLevel, and that level draws ALL its instances (the material
-        // uniform pass forces its CDLOD cut open). This is the intended fast
-        // look; it also avoids the mixed-size "disjointed plates" that a
-        // per-distance cut produces mid-pan.
-        if (this.isMovingView) {
-            const ml = this.movingLevel;
-            for (const t of this.tiles.values()) {
-                const mesh = t.mesh;
-                if (!mesh) continue;
-                for (const g of mesh.children) {
-                    const k = g.userData.gosperLevel;
-                    if (k === undefined) continue;
-                    const vis = (k === ml);
-                    if (g.visible !== vis) g.visible = vis;
-                }
-            }
-            return;
+        for (const tile of this.tiles.values()) {
+            this._applyTileLevelVisibility(tile, heightFactor);
         }
+    }
 
+    /** Apply the complete moving/settled submission cut to one tile mesh.
+     * Rebuilt meshes use this before scene attachment, so they can never spend
+     * a frame with every Three.js group left at its default `visible=true`. */
+    _applyTileLevelVisibility(t, heightFactor) {
         const camX = this.camera.position.x;
         const camY = this.camera.position.y;
         const camZ = this.camera.position.z;
         const R = this.lodRadii;
-        for (const t of this.tiles.values()) {
-            const mesh = t.mesh;
-            if (!mesh) continue;
-            // Match the shader's VISIBLE representative height instead of the
-            // old baked Y=0 proxy. Root hMean is the tile-center representative.
-            // The dynamic margin is a triangle-inequality bound from that point
-            // to any instance center: 505 m conservative XZ half-extent plus
-            // the tile's maximum animated relief about hMean. The old fixed
-            // 650 m margin already exceeded the ~490 m island extent, so tile-
-            // center XZ gating was not the marked hole's cause; this extension
-            // keeps the gate conservative after adding real cap heights.
-            const centerY = ((t.stats?.avg ?? this.floorState.value) - this.floorState.value) * heightFactor;
-            const relief = t.stats ? Math.max(
-                Math.abs(t.stats.avg - t.stats.min),
-                Math.abs(t.stats.max - t.stats.avg),
-            ) * heightFactor : 0;
-            const rootRadius = this.visibilityAdapter?.horizontalRadiusByLevel?.[TILE_LEVEL] || 551;
-            const margin = Math.max(this.lodTileMargin, Math.hypot(rootRadius, relief) + 16);
-            const dx = t.lx - camX;
-            const dy = centerY - camY;
-            const dz = t.lz - camZ;
-            const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            const near = d - margin;
-            const far = d + margin;
-            // Finest built level ignores its near edge so the closest tile is
-            // always covered down to the camera (matches uFinestBuilt).
-            const finest = t.finestBuilt ?? 0;
-            for (const g of mesh.children) {
-                const k = g.userData.gosperLevel;
-                if (k === undefined) continue;
-                let visible;
-                if (k >= TILE_LEVEL) {
-                    visible = true; // root: 1 instance, always the coverage floor
-                } else {
-                    const nearEdge = (k <= finest) ? 0 : (k <= 0 ? 0 : R[k - 1]);
-                    const farEdge = R[k];
-                    visible = (near < farEdge) && (far > nearEdge);
+        const mesh = t.mesh;
+        if (!mesh) return;
+        // Any camera motion is one uniform, skirtless L3 cut. On the first
+        // settled frame a GSP2+ tile remains on that exact representation
+        // until its final epoch/signature-matched frontier is ready, so an
+        // old medium layer can never flash between moving and final detail.
+        const forceCoarse = shouldForceCoarseGeometry(
+            this.isMovingView,
+            t.geometryAwaitingFinal,
+        );
+        for (const g of mesh.children) {
+            const k = g.userData.gosperLevel;
+            if (k === undefined) continue;
+            for (const child of g.children) {
+                if (child.material?.userData) {
+                    child.material.userData.forceMovingMode = forceCoarse;
                 }
+            }
+            if (k >= 1 && g.children[1]) g.children[1].visible = !forceCoarse;
+            if (forceCoarse) {
+                const visible = k === this.movingLevel;
                 if (g.visible !== visible) g.visible = visible;
             }
+        }
+        if (forceCoarse) return;
+
+        // Match the shader's VISIBLE representative height instead of the
+        // old baked Y=0 proxy. Root hMean is the tile-center representative.
+        // The dynamic margin is a triangle-inequality bound from that point
+        // to any instance center: 505 m conservative XZ half-extent plus
+        // the tile's maximum animated relief about hMean. The old fixed
+        // 650 m margin already exceeded the ~490 m island extent, so tile-
+        // center XZ gating was not the marked hole's cause; this extension
+        // keeps the gate conservative after adding real cap heights.
+        const centerY = ((t.stats?.avg ?? this.floorState.value) - this.floorState.value) * heightFactor;
+        const relief = t.stats ? Math.max(
+            Math.abs(t.stats.avg - t.stats.min),
+            Math.abs(t.stats.max - t.stats.avg),
+        ) * heightFactor : 0;
+        const rootRadius = this.visibilityAdapter?.horizontalRadiusByLevel?.[TILE_LEVEL] || 551;
+        const margin = Math.max(this.lodTileMargin, Math.hypot(rootRadius, relief) + 16);
+        const dx = t.lx - camX;
+        const dy = centerY - camY;
+        const dz = t.lz - camZ;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const near = d - margin;
+        const far = d + margin;
+        // Finest built level ignores its near edge so the closest tile is
+        // always covered down to the camera (matches uFinestBuilt).
+        const finest = t.finestBuilt ?? 0;
+        for (const g of mesh.children) {
+            const k = g.userData.gosperLevel;
+            if (k === undefined) continue;
+            let visible;
+            if (k >= TILE_LEVEL) {
+                visible = true; // root: 1 instance, always the coverage floor
+            } else {
+                const nearEdge = (k <= finest) ? 0 : (k <= 0 ? 0 : R[k - 1]);
+                const farEdge = R[k];
+                visible = (near < farEdge) && (far > nearEdge);
+            }
+            if (g.visible !== visible) g.visible = visible;
         }
     }
 
@@ -675,7 +688,7 @@ class PistonViewer {
     }
 
     updateFogAndClip() {
-        const dist = this.renderSettings.renderDistance;
+        const dist = this.atmosphereSettings.hazeDistance;
         const fogEnd = dist;
         const fogStart = dist * 0.6;
         if (this.isMiniBake) {
@@ -687,7 +700,7 @@ class PistonViewer {
             this.scene.fog.near = fogStart;
             this.scene.fog.far = fogEnd;
         }
-        // Streamed tiles fade into fog at renderDistance; the horizon mesh is
+        // Streamed tiles fade into the visual haze distance; the horizon mesh is
         // fog-exempt (manual haze) and needs the far plane out past Tirol.
         this.camera.far = Math.max(dist + 2000, HORIZON_DISTANCE + 5000);
         this.camera.updateProjectionMatrix();
@@ -700,31 +713,56 @@ class PistonViewer {
 
     async initWorld() {
         try {
-            const res = await fetch('tile_manifest.json');
+            // This small file is the cache-identity authority for every large
+            // asset, so rebakes must revalidate it even when app code did not
+            // change. Binaries and textures remain explicitly recipe-keyed.
+            const res = await fetch(
+                appendCacheKey('tile_manifest.json', APP_VERSION),
+                { cache: 'no-store' },
+            );
             this.manifest = await res.json();
             if (this.manifest.type !== 'gosper_l5') {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
+            const textureContract = this.manifest.textures;
+            if (!textureContract || textureContract.container !== 'ktx2' ||
+                textureContract.codec !== 'xuastc-ldr-6x6') {
+                throw new Error('Manifest needs the XUASTC KTX2 three-tier texture contract');
+            }
+            const expectedTextureSizes = { low: 128, medium: 256, high: 4096 };
+            const manifestTierSizes = Object.fromEntries(
+                (textureContract.tiers || []).map(tier => [tier.name, tier.size_px]));
+            for (const [name, size] of Object.entries(expectedTextureSizes)) {
+                if (manifestTierSizes[name] !== size) {
+                    throw new Error(`Manifest texture tier ${name} must be ${size}px`);
+                }
+            }
+            this.textureContract = textureContract;
+            this.binaryContract = this.manifest.binary || {};
+            const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
             const mapSpan = Math.max(
                 this.manifest.bounds.max_x - this.manifest.bounds.min_x,
                 this.manifest.bounds.max_y - this.manifest.bounds.min_y,
             );
             this.isMiniBake = mapSpan <= 30000;
+            const hazeControl = document.getElementById('haze-distance-control');
+            if (hazeControl) hazeControl.hidden = this.isMiniBake;
             this.updateFogAndClip();
             this.texWorldSide = this.manifest.tex_world_side_m; // uniform square canvas, world meters
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
 
-            // --- Spatial Index: lattice-key map + coarse world-space buckets ---
+            // Canonical lattice-key lookup. Frustum hierarchy traversal owns
+            // visibility; the obsolete radial spatial buckets are gone.
             this.manifestGrid = new Map();   // "yq_yr" -> manifest tile
-            this.tileBuckets = new Map();    // "bx_bz" -> [manifest tiles]
             for (const t of this.manifest.tiles) {
+                t.gspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
+                if (!supportedBinaryVersions.has(t.gspVersion)) {
+                    throw new Error(`Manifest tile ${t.yq}_${t.yr} uses unsupported GSP${t.gspVersion}`);
+                }
                 t.lx = t.x - this.worldOrigin.x;
                 t.lz = -(t.y - this.worldOrigin.y);
                 this.manifestGrid.set(`${t.yq}_${t.yr}`, t);
-                const bKey = `${Math.floor(t.lx / GRID_BUCKET_M)}_${Math.floor(t.lz / GRID_BUCKET_M)}`;
-                if (!this.tileBuckets.has(bKey)) this.tileBuckets.set(bKey, []);
-                this.tileBuckets.get(bKey).push(t);
             }
 
             // Translation boundary: the generic planner receives only opaque
@@ -767,8 +805,17 @@ class PistonViewer {
 
             this.camera.position.set(startX, 1200, startZ);
             this.controls.target.set(startX, 0, startZ);
+            this.bootstrapVisibilityFloor(this.controls.target);
+            this.notifyCameraMotion(performance.now());
             this.controls.update();
+            this.syncHeightFactorFromControls();
             await this.viewState.restoreFromUrl();
+            // restoreFromUrl may yield for projection initialization. Keep
+            // visibility gated until its final target has a local manifest
+            // floor and the matching pitch morph is available synchronously.
+            this.bootstrapVisibilityFloor(this.controls.target);
+            this.syncHeightFactorFromControls();
+            this.visibilityBootstrapReady = true;
             this.lastVisibilityCameraPosition = this.camera.position.clone();
 
             // PRE-ALLOCATE GEOMETRIES
@@ -795,6 +842,23 @@ class PistonViewer {
             if (d < bestD) { bestD = d; best = t; }
         }
         return best;
+    }
+
+    bootstrapVisibilityFloor(scenePoint = this.controls?.target) {
+        // Provisional manifest data breaks the no-tile/no-floor deadlock only.
+        // Once real geometry contributes a view floor (or locks it), this path
+        // can never overwrite the live floor state.
+        if (!this.manifest?.tiles || this.floorState.locked || this.tiles.size > 0) return false;
+        const baseline = selectManifestFloorBaseline(this.manifest.tiles, scenePoint);
+        if (!Number.isFinite(baseline)) return false;
+        this.floorState.value = baseline;
+        this.floorState.provisional = true;
+        return true;
+    }
+
+    syncHeightFactorFromControls(angle = this.controls.getPolarAngle() * 180 / Math.PI) {
+        this.heightFactor = Math.min(1, Math.max(0, (angle - 5.5) / (25.0 - 5.5)));
+        return this.heightFactor;
     }
 
     // ------------------------------------------------------------------
@@ -828,7 +892,7 @@ class PistonViewer {
             shader.uniforms.uFloorOffset = { value: 0.0 };
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
             shader.uniforms.uHazeColor = { value: new THREE.Color(0x0a0a0a) };
-            shader.uniforms.uHazeRange = { value: new THREE.Vector2(DEFAULT_RENDER_DISTANCE * 0.8, HORIZON_DISTANCE) };
+            shader.uniforms.uHazeRange = { value: new THREE.Vector2(DEFAULT_HAZE_DISTANCE * 0.8, HORIZON_DISTANCE) };
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
                 #include <common>
                 uniform float uHeightFactor;
@@ -1415,6 +1479,7 @@ class PistonViewer {
                 activeTier: null,
                 classification: 'outside',
                 projectedDiameterPx: 0,
+                perceptibility: 0,
             };
             this.textureStates.set(key, state);
         }
@@ -1422,12 +1487,19 @@ class PistonViewer {
     }
 
     _textureUrls(tier, key) {
-        const file = `gosper_${key}.ktx2`;
-        if (tier === TEXTURE_TIER.LOW) return [`aerial_tiles/low/${file}`];
-        if (tier === TEXTURE_TIER.MEDIUM) return [`aerial_tiles/medium/${file}`];
+        const manifestTile = this.manifestGrid?.get(key);
+        if (!manifestTile) throw new Error(`Unknown texture tile ${key}`);
+        const contractTier = tier === TEXTURE_TIER.LOW
+            ? 'low'
+            : (tier === TEXTURE_TIER.MEDIUM ? 'medium' : 'high');
+        const template = this.textureContract.url_template;
+        const url = template
+            .replace('{tier}', contractTier)
+            .replace('{yq}', String(manifestTile.yq))
+            .replace('{yr}', String(manifestTile.yr));
         // High is one 4096 source with its full mip chain. Devices below that
         // hard GL limit start at the first supported mip.
-        return [`aerial_tiles/high/${file}`];
+        return [appendCacheKey(url, this.textureContract.cache_key)];
     }
 
     _desiredTextureTier(state, projectedDiameterPx, classification) {
@@ -1457,7 +1529,16 @@ class PistonViewer {
     _queueTextureTier(manifestTile, tier, priority = 0) {
         if (!manifestTile) return;
         const state = this._textureState(manifestTile);
-        if (state.assets.has(tier) || state.loading.has(tier) || state.queued.has(tier)) return;
+        if (state.assets.has(tier) || state.loading.has(tier)) return;
+        if (state.queued.has(tier)) {
+            // Mini mode seeds every medium at background priority. Promote
+            // that existing task when its tile later enters the frustum.
+            const queued = this.textureQueue.find(
+                task => task.key === state.key && task.tier === tier,
+            );
+            if (queued) queued.priority = Math.max(queued.priority, priority);
+            return;
+        }
         // A failed required asset may become available after a new bake/server
         // restart. Do not spin on the same missing URL in this page session.
         if (state.failed.has(tier)) return;
@@ -1475,7 +1556,9 @@ class PistonViewer {
         const state = this._textureState(manifestTile);
         state.classification = classification;
         state.projectedDiameterPx = projectedDiameterPx;
+        state.perceptibility = Number.isFinite(priority) ? priority : 0;
         state.desiredTier = this._desiredTextureTier(state, projectedDiameterPx, classification);
+        this.cacheManager.updatePriority(state.key, state.perceptibility);
 
         // The postage tier is the non-grey coverage invariant. Once decoded it
         // remains resident; no high/geometry decision is allowed to evict it.
@@ -1511,6 +1594,9 @@ class PistonViewer {
         }
         tile.textureTier = tier;
         tile.isFullTex = tier === TEXTURE_TIER.HIGH; // benchmark compatibility
+        if (tier === TEXTURE_TIER.HIGH) {
+            this.cacheManager.touch(`${tile.yq}_${tile.yr}`);
+        }
         this.needsRender = true;
     }
 
@@ -1521,8 +1607,6 @@ class PistonViewer {
             state.activeTier = best[0];
             if (tile) this._assignTextureToTile(tile, best[1].texture, best[0]);
         }
-
-        if (state.activeTier === TEXTURE_TIER.HIGH) this.cacheManager.touch(state.key);
 
         // Downgrade only after a lower-tier replacement exists. This invariant
         // prevents a cache decision from ever turning visible terrain grey.
@@ -1571,6 +1655,14 @@ class PistonViewer {
                 result.gpuBytes || 0,
                 victimKey => this._dropTextureTier(victimKey, TEXTURE_TIER.HIGH, true),
                 new Set(state.classification === 'visible' ? [state.key] : []),
+                state.perceptibility,
+                victimKey => {
+                    const victim = this.textureStates.get(victimKey);
+                    return !!victim && (
+                        victim.activeTier !== TEXTURE_TIER.HIGH
+                        || !!this._bestTextureAsset(victim, victim.desiredTier, TEXTURE_TIER.HIGH)
+                    );
+                },
             );
             if (!admitted) {
                 texture.dispose();
@@ -1617,6 +1709,14 @@ class PistonViewer {
                 item => !this.isMovingView || item.task.tier !== TEXTURE_TIER.HIGH);
             if (index < 0) break;
             const { task, result } = this.textureResultQueue.splice(index, 1)[0];
+            const state = this._textureState(task.manifestTile);
+            if (task.tier === TEXTURE_TIER.HIGH && state.desiredTier !== TEXTURE_TIER.HIGH) {
+                // Demand changed during transcode. These are still CPU-side
+                // bytes, so avoid a pointless GPU upload and immediate drop.
+                state.loading.delete(task.tier);
+                state.queued.delete(task.tier);
+                continue;
+            }
             this._installTextureResult(task, result);
             installed++;
         }
@@ -1670,8 +1770,43 @@ class PistonViewer {
         }
     }
 
+    _planTileGeometry(manifestTile, { coarseOnly = false } = {}) {
+        const context = this.currentVisibilityContext;
+        if (!context) throw new Error('geometry selection requires a current visibility context');
+        const key = `${manifestTile.yq}_${manifestTile.yr}`;
+        const rootHandle = this.visibilityAdapter.getRootHandle(key);
+        if (rootHandle === null) throw new Error(`missing visibility root for ${key}`);
+
+        // L3 horizontal spread plus the island's exact vertical relief gives a
+        // conservative prebuild margin around the shader's fixed LOD bands.
+        // A child needed at a ring edge is therefore selected before it can
+        // become visible; there are no per-unit frustum tests.
+        const relief = Math.max(0, manifestTile.hMax - manifestTile.hMin);
+        const l3Radius = this.visibilityAdapter.horizontalRadiusByLevel[3];
+        const detailMarginMeters = Math.max(
+            this.lodTileMargin,
+            Math.hypot(l3Radius, relief) + 24,
+        );
+        return planGosperGeometrySelection({
+            adapter: this.visibilityAdapter,
+            rootHandle,
+            visibleFrustum: context.visibleFrustum,
+            guardFrustum: context.guardFrustum,
+            projection: context.projection,
+            detailDistanceByDepth: [
+                Infinity,
+                Infinity,
+                Infinity,
+                coarseOnly ? -1e30 : this.settledLodRadii[2],
+                coarseOnly ? -1e30 : this.settledLodRadii[1],
+                coarseOnly ? -1e30 : this.settledLodRadii[0],
+            ],
+            detailMarginMeters,
+        });
+    }
+
     updateLOD() {
-        if (!this.visibilityAdapter || this.lodPaused) return;
+        if (!this.visibilityAdapter || !this.visibilityBootstrapReady || this.lodPaused) return;
 
         this.camera.updateMatrixWorld();
         this.projScreenMatrix.multiplyMatrices(
@@ -1712,6 +1847,11 @@ class PistonViewer {
             factor: this.heightFactor,
             floor: this.floorState.value,
         });
+        this.currentVisibilityContext = Object.freeze({
+            visibleFrustum,
+            guardFrustum,
+            projection,
+        });
         const plan = planHierarchicalVisibility({
             hierarchy: this.visibilityAdapter,
             visibleFrustum,
@@ -1735,6 +1875,14 @@ class PistonViewer {
             this.lastVisibilityCameraPosition = this.camera.position.clone();
         }
         this.visibilityByKey.clear();
+        const previousRebuilds = this.geometryFrontierStats?.rebuilds || 0;
+        this.geometryFrontierStats = {
+            plannedTiles: 0,
+            activeL3: 0,
+            excludedL3: 0,
+            selectedDetailNodes: 0,
+            rebuilds: previousRebuilds,
+        };
 
         for (let island = 0; island < this.visibilityAdapter.islandCount; island++) {
             const key = this.visibilityAdapter.getIslandKey(island);
@@ -1746,13 +1894,67 @@ class PistonViewer {
                 : (code === VisibilityClass.GUARD ? 'guard' : 'outside');
             const projectedDiameterPx = summary.projectedDiameterPx[island] || 0;
             const distanceMeters = summary.distanceMeters[island];
+            const viewDepthMeters = summary.viewDepthMeters[island];
+            const viewCosine = Number.isFinite(distanceMeters) && distanceMeters > 0
+                ? Math.max(0, Math.min(1, viewDepthMeters / distanceMeters))
+                : 1;
+            // Strongly prefer centered content for finite budgets. Tier choice
+            // remains projected-size-only; this term affects scheduling and
+            // eviction order, not image-quality thresholds.
+            const centerWeight = Math.pow(viewCosine, 8);
+            const projectedPriority = Number.isFinite(projectedDiameterPx)
+                ? projectedDiameterPx * (0.1 + 0.9 * centerWeight) * 100
+                : 999999;
             const priority = (classification === 'visible' ? 1e9 : (classification === 'guard' ? 1e6 : 0))
-                + Math.min(999999, projectedDiameterPx * 100)
+                + Math.min(999999, projectedPriority)
                 - Math.min(99999, Number.isFinite(distanceMeters) ? distanceMeters : 99999);
 
-            const visibility = { classification, projectedDiameterPx, distanceMeters, priority };
+            const visibility = {
+                classification,
+                projectedDiameterPx,
+                distanceMeters,
+                viewDepthMeters,
+                centerWeight,
+                priority,
+            };
             this.visibilityByKey.set(key, visibility);
             this._scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority);
+
+            // GSP2+ supports deferred geometry, so a settled resident tile
+            // can refine the generic root plan to L3 and keep only descendant
+            // ranges that can contribute. GSP3 supplies exact subtree bounds;
+            // GSP2 safely refines with its deliberately loose migration bounds.
+            // GSP1 remains on its full-build compatibility path.
+            let resident = this.tiles.get(key);
+            if (resident?.binaryVersion >= 2 && classification !== 'outside' && !this.isMovingView) {
+                const desiredSelection = this._planTileGeometry(manifestTile);
+                resident.geometryDesiredSelection = desiredSelection;
+                resident.geometryDesiredSignature = desiredSelection.signature;
+                this.geometryFrontierStats.plannedTiles++;
+                this.geometryFrontierStats.activeL3 += desiredSelection.activeL3Count;
+                this.geometryFrontierStats.excludedL3 += desiredSelection.excludedL3Count;
+                this.geometryFrontierStats.selectedDetailNodes += desiredSelection.detailNodeCount;
+                const needsRebuild = gosperGeometrySelectionNeedsRebuild(
+                    resident.geometrySelection,
+                    desiredSelection,
+                );
+                if (needsRebuild) {
+                    // Keep this tile on the complete L3 cut until the exact
+                    // final frontier is ready. Never reveal old-camera detail.
+                    resident.geometryAwaitingFinal = true;
+                    if (this._queueGeometryRebuild(
+                        resident,
+                        manifestTile,
+                        desiredSelection,
+                        priority,
+                    )) {
+                        this.geometryFrontierStats.rebuilds++;
+                    }
+                } else if (resident.geometryAwaitingFinal) {
+                    resident.geometryAwaitingFinal = false;
+                    this.needsRender = true;
+                }
+            }
 
             if (classification !== 'outside') {
                 if (!this.tiles.has(key) && !this.loadingTiles.has(key)) {
@@ -1781,13 +1983,248 @@ class PistonViewer {
         if (operational >= 1) this.hideLoader();
     }
 
+    _suppressHighTextureWorkForMotion() {
+        this.textureQueue = this.textureQueue.filter(task => {
+            if (task.tier !== TEXTURE_TIER.HIGH) return true;
+            this.textureStates.get(task.key)?.queued.delete(TEXTURE_TIER.HIGH);
+            return false;
+        });
+        for (const state of this.textureStates.values()) {
+            state.queued.delete(TEXTURE_TIER.HIGH);
+        }
+    }
+
+    notifyCameraMotion(now = performance.now()) {
+        const entered = this.cameraMotion.enterMotion(now, this.isMovingView);
+        this.needsRender = true;
+        this.needsLODUpdate = true;
+        if (!entered) return false;
+
+        // This method runs inside the controls `change` event, before another
+        // microtask or the next animation frame can observe stale settled mode.
+        this.isMovingView = true;
+        this._beginGeometryMode(true);
+        this._suppressHighTextureWorkForMotion();
+        return true;
+    }
+
+    _beginGeometryMode(isMovingView) {
+        // Every camera-mode edge invalidates queued/pending work from the old
+        // view. Worker jobs cannot be cancelled, but their epoch/signature is
+        // checked before installation so stale meshes never flash on screen.
+        this.geometryPlanEpoch++;
+        this.geometryRebuildQueue.length = 0;
+        for (const tile of this.tiles.values()) {
+            tile.geometryRebuildQueued = null;
+            tile.geometryRebuildNext = null;
+            tile.geometryDesiredSelection = null;
+            tile.geometryDesiredSignature = null;
+            tile.geometryAwaitingFinal = !isMovingView && tile.binaryVersion >= 2;
+        }
+        if (isMovingView) this.needsRender = true;
+    }
+
+    _queueGeometryRebuild(tile, manifestTile, selection, priority) {
+        const task = {
+            tile,
+            manifestTile,
+            selection,
+            priority,
+            epoch: this.geometryPlanEpoch,
+            mode: this.isMovingView ? 'moving' : 'settled',
+            signature: selection.signature,
+        };
+        tile.geometryDesiredSelection = selection;
+        tile.geometryDesiredSignature = selection.signature;
+
+        if (tile.geometryRebuildPending) {
+            const pending = tile.geometryRebuildPending;
+            if (pending.epoch === task.epoch
+                && pending.mode === task.mode
+                && pending.signature === task.signature) return false;
+            tile.geometryRebuildNext = task;
+            return true;
+        }
+        if (tile.geometryRebuildQueued) {
+            Object.assign(tile.geometryRebuildQueued, task, {
+                priority: Math.max(tile.geometryRebuildQueued.priority, priority),
+            });
+            return false;
+        }
+        tile.geometryRebuildQueued = task;
+        this.geometryRebuildQueue.push(task);
+        return true;
+    }
+
+    _startGeometryRebuild(task) {
+        const { tile, manifestTile, selection } = task;
+        const key = `${manifestTile.yq}_${manifestTile.yr}`;
+        tile.geometryRebuildQueued = null;
+        if (this.tiles.get(key) !== tile || !(tile.geometrySource instanceof ArrayBuffer)) return false;
+        if (tile.geometryRebuildPending || !geometryBuildCanCommit({
+            taskEpoch: task.epoch,
+            currentEpoch: this.geometryPlanEpoch,
+            taskSignature: task.signature,
+            desiredSignature: tile.geometryDesiredSignature,
+            taskMode: task.mode,
+            isMovingView: this.isMovingView,
+        })) return false;
+
+        tile.geometryRebuildPending = task;
+        this.activeWorkerCount++;
+        this.postWorkerJob('BUILD_GEOMETRY', {
+            // Clone, do not transfer: this retained ~258 KB source makes
+            // subsequent L3 expansions local and avoids network flashes.
+            binBuffer: tile.geometrySource,
+            yq: manifestTile.yq,
+            yr: manifestTile.yr,
+            expectedGspVersion: tile.binaryVersion,
+            rangesByDepth: selection.rangesByDepth,
+        }).then(result => {
+            if (this.tiles.get(key) !== tile) return;
+            if (result.binaryVersion !== tile.binaryVersion) {
+                throw new Error(`geometry rebuild version mismatch for ${key}`);
+            }
+            if (!geometryBuildCanCommit({
+                taskEpoch: task.epoch,
+                currentEpoch: this.geometryPlanEpoch,
+                taskSignature: task.signature,
+                desiredSignature: tile.geometryDesiredSignature,
+                taskMode: task.mode,
+                isMovingView: this.isMovingView,
+            })) return;
+            this._replaceTileGeometry(tile, result.lods, result.geometryBytes, selection);
+        }).catch(error => {
+            console.error(`Geometry rebuild failed for ${key}`, error);
+        }).finally(() => {
+            this.activeWorkerCount--;
+            if (tile.geometryRebuildPending === task) tile.geometryRebuildPending = null;
+            const next = tile.geometryRebuildNext;
+            tile.geometryRebuildNext = null;
+            if (next && geometryBuildCanCommit({
+                taskEpoch: next.epoch,
+                currentEpoch: this.geometryPlanEpoch,
+                taskSignature: next.signature,
+                desiredSignature: tile.geometryDesiredSignature,
+                taskMode: next.mode,
+                isMovingView: this.isMovingView,
+            })) {
+                tile.geometryRebuildQueued = next;
+                this.geometryRebuildQueue.push(next);
+            }
+            this.needsLODUpdate = true;
+            this.needsRender = true;
+            this.processQueues();
+        });
+        return true;
+    }
+
+    _replaceTileGeometry(tile, lods, geometryBytes, selection) {
+        const replacement = new THREE.Group();
+        const builtLevels = {};
+        const replacementMaterials = [];
+        const levels = geometryLevelsForMode(this.isMovingView, tile.binaryVersion);
+
+        try {
+            for (const level of levels) {
+                const lodData = lods[level];
+                if (!lodData) continue;
+                const material = tile.material.clone();
+                material.userData = { ...tile.material.userData, lodIdx: level, shader: null };
+                this.setupMaterialShader(material);
+                this.materialsToUpdate.add(material);
+                replacementMaterials.push(material);
+                const layer = this.createMeshFromWorkerData(lodData, material, true);
+                if (!layer) continue;
+                layer.userData.activeSkirts = lodData.activeSkirts;
+                layer.userData.gosperLevel = level;
+                if (level >= 1 && layer.children[1]) layer.children[1].visible = !this.isMovingView;
+                replacement.add(layer);
+                builtLevels[level] = true;
+            }
+            const built = Object.keys(builtLevels).map(Number);
+            if (built.length === 0) throw new Error('filtered rebuild produced no coarse geometry');
+            const nextFinestBuilt = Math.min(...built);
+            replacement.position.copy(tile.mesh.position);
+
+            // Compile while detached, then apply the exact current submission
+            // cut before attachment. Three.js groups default to visible; if the
+            // replacement enters the container first, a render triggered by
+            // surrounding SINTERING work can briefly submit every built level.
+            const stagedTile = {
+                ...tile,
+                mesh: replacement,
+                builtLevels,
+                finestBuilt: nextFinestBuilt,
+                geometrySelection: selection,
+                geometryAwaitingFinal: false,
+            };
+            this._markFinestBuilt(stagedTile);
+            this.renderer.compile(replacement, this.camera);
+            this._applyTileLevelVisibility(stagedTile, this.heightFactor);
+
+            const oldMesh = tile.mesh;
+            tile.container.add(replacement);
+            tile.container.remove(oldMesh);
+            const disposedMaterials = new Set();
+            oldMesh.traverse(object => {
+                if (!object.isMesh) return;
+                object.geometry?.dispose();
+                const materials = Array.isArray(object.material) ? object.material : [object.material];
+                for (const material of materials) {
+                    if (!material || disposedMaterials.has(material)) continue;
+                    disposedMaterials.add(material);
+                    if (material.map) material.map = null;
+                    this.materialsToUpdate.delete(material);
+                    material.dispose();
+                }
+            });
+
+            tile.mesh = replacement;
+            tile.lods = lods;
+            tile.builtLevels = builtLevels;
+            tile.finestBuilt = nextFinestBuilt;
+            tile.clonedMaterials = replacementMaterials;
+            tile.geometrySelection = selection;
+            tile.geometryAwaitingFinal = false;
+            this.vramLedger.registerGeometry(`${tile.yq}_${tile.yr}`, {
+                geometryBytes,
+                q: tile.yq,
+                r: tile.yr,
+                lx: tile.lx,
+                lz: tile.lz,
+            });
+            this.needsRender = true;
+        } catch (error) {
+            replacement.traverse(object => {
+                if (object.isMesh) object.geometry?.dispose();
+            });
+            for (const material of replacementMaterials) {
+                this.materialsToUpdate.delete(material);
+                material.dispose();
+            }
+            throw error;
+        }
+    }
+
     processQueues() {
         const maxConcurrent = this.workers.length;
-        // Geometry is prioritized over refinement textures. The visibility
-        // planner supplies priority; no radial residency circle participates.
+        // New-root loads and resident range rebuilds share one priority lane.
+        // A visible missing tile must outrank a guard-only refinement, while a
+        // centered visible refinement can still beat speculative guard loads.
+        this.geometryRebuildQueue.sort((a, b) => b.priority - a.priority);
         this.loadQueue.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
-        while (this.activeWorkerCount < maxConcurrent && this.loadQueue.length > 0) {
+        while (this.activeWorkerCount < maxConcurrent &&
+            (this.loadQueue.length > 0 || this.geometryRebuildQueue.length > 0)) {
+            const rebuild = this.geometryRebuildQueue[0];
+            const load = this.loadQueue[0];
+            if (rebuild && (!load || rebuild.priority > (load.priority || 0))) {
+                this.geometryRebuildQueue.shift();
+                this._startGeometryRebuild(rebuild);
+                continue;
+            }
+
             const task = this.loadQueue.shift();
             const key = `${task.t.yq}_${task.t.yr}`;
 
@@ -1805,7 +2242,9 @@ class PistonViewer {
                 this.processQueues(); // Keep the pipe full
             });
         }
-        if (this.loadQueue.length === 0) this._dispatchTextureJobs(maxConcurrent);
+        if (this.loadQueue.length === 0 && this.geometryRebuildQueue.length === 0) {
+            this._dispatchTextureJobs(maxConcurrent);
+        }
     }
 
     async fetchTileOnWorker(task) {
@@ -1814,13 +2253,57 @@ class PistonViewer {
         if (needsLow) state.loading.add(TEXTURE_TIER.LOW);
         try {
             const { t } = task;
-            const binUrl = `tiles_bin/gosper_${t.yq}_${t.yr}.bin?v=1`;
+            const expectedGspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
+            const binaryBaseKey = this.binaryContract.cache_key
+                ?? `${this.binaryContract.default_format || 'GSP'}${this.binaryContract.default_version || expectedGspVersion}`;
+            const binUrl = appendCacheKey(
+                `tiles_bin/gosper_${t.yq}_${t.yr}.bin`,
+                `${binaryBaseKey}-gsp${expectedGspVersion}`,
+            );
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
                 yq: t.yq, yr: t.yr,
                 texUrls: needsLow ? this._textureUrls(TEXTURE_TIER.LOW, state.key) : [],
-                binUrl: binUrl
+                binUrl,
+                expectedGspVersion,
             });
+            if (workerData.binaryVersion !== expectedGspVersion) {
+                throw new Error(
+                    `Binary cache mismatch for ${state.key}: manifest GSP${expectedGspVersion}, parsed GSP${workerData.binaryVersion}`,
+                );
+            }
+
+            if (workerData.binaryVersion >= 2) {
+                if (!(workerData.geometrySource instanceof ArrayBuffer) || !workerData.visibilityData) {
+                    throw new Error(`GSP2+ tile ${state.key} did not provide deferred geometry source/bounds`);
+                }
+                this.visibilityAdapter.attachDecodedIsland(state.key, workerData.visibilityData);
+
+                // Always produce the tiny complete coarse layers, even if the
+                // root left the guard during phase one. If it re-enters before
+                // instantiation there is valid L3 coverage; outside detail is
+                // still empty and costs only 57 aggregate records.
+                const geometrySelection = this._planTileGeometry(t, {
+                    coarseOnly: this.isMovingView
+                        || this.visibilityByKey.get(state.key)?.classification === 'outside',
+                });
+                // Deliberately do not transfer geometrySource here. The
+                // structured clone sent to the worker leaves one compact
+                // source copy attached to the tile for future re-plans.
+                const geometryResult = await this.postWorkerJob('BUILD_GEOMETRY', {
+                    binBuffer: workerData.geometrySource,
+                    yq: t.yq,
+                    yr: t.yr,
+                    expectedGspVersion,
+                    rangesByDepth: geometrySelection.rangesByDepth,
+                });
+                if (geometryResult.binaryVersion !== expectedGspVersion) {
+                    throw new Error(`deferred geometry version mismatch for ${state.key}`);
+                }
+                workerData.lods = geometryResult.lods;
+                workerData.geometryBytes = geometryResult.geometryBytes;
+                workerData.geometrySelection = geometrySelection;
+            }
 
             // (silent — structured perf logging only)
             // Return data for instantiation frame
@@ -1828,6 +2311,7 @@ class PistonViewer {
 
         } catch (e) {
             console.error("Tile Fetch Error", e);
+            this.visibilityAdapter?.detachDecodedIsland(state.key);
             this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
             if (needsLow) {
                 state.loading.delete(TEXTURE_TIER.LOW);
@@ -1931,11 +2415,15 @@ class PistonViewer {
             if (workerData.texture) {
                 this._installTextureResult({ key, manifestTile: t, tier: TEXTURE_TIER.LOW }, workerData.texture);
             }
+            this.visibilityAdapter?.detachDecodedIsland(key);
             this.loadingTiles.delete(key);
             return;
         }
 
         try {
+            if (!workerData.lods) {
+                throw new Error(`tile ${key} reached instantiation before deferred geometry was built`);
+            }
             const textureState = this._textureState(t);
             textureState.loading.delete(TEXTURE_TIER.LOW);
             if (workerData.visibilityData) {
@@ -1971,11 +2459,13 @@ class PistonViewer {
 
             const meshGroup = new THREE.Group();
 
-            // Coarse levels (5..2, 400 instances) build immediately; fine
-            // levels (1: 2401, 0: 16807) defer to the sinter pass when the
-            // camera is moving — same deferral pattern as before, driven by
-            // the same needsSinteredBuild machinery.
-            const eagerLevels = this.isMovingView ? [5, 4, 3, 2] : [5, 4, 3, 2, 1, 0];
+            // GSP2+ moving mode instantiates only the complete 49-cap L3 cut.
+            // GSP1 keeps its full compatibility geometry because it cannot be
+            // range-rebuilt later; updateLevelVisibility still displays L3 only.
+            const eagerLevels = geometryLevelsForMode(
+                this.isMovingView,
+                workerData.binaryVersion,
+            );
             const builtLevels = {};
 
             for (const level of eagerLevels) {
@@ -2006,6 +2496,12 @@ class PistonViewer {
                     builtLevels[level] = true;
                 }
             }
+            const builtLevelNumbers = Object.keys(builtLevels).map(Number);
+            if (builtLevelNumbers.length === 0) throw new Error(`tile ${key} has no selected geometry`);
+            const finestBuilt = Math.min(...builtLevelNumbers);
+            const installedSelection = workerData.binaryVersion >= 2 && this.isMovingView
+                ? this._planTileGeometry(t, { coarseOnly: true })
+                : (workerData.geometrySelection || null);
 
             meshGroup.position.set(t.lx, 0, t.lz);
 
@@ -2040,11 +2536,19 @@ class PistonViewer {
                 material: sharedMaterial, bounds,
                 lods: workerData.lods,
                 builtLevels,
-                finestBuilt: this.isMovingView ? 2 : 0,
-                needsSinteredBuild: this.isMovingView,
+                finestBuilt,
                 unitHeights: workerData.unitHeights,
                 stats: workerData.stats,
                 center: workerData.center,
+                binaryVersion: workerData.binaryVersion,
+                geometrySelection: installedSelection,
+                geometryDesiredSelection: null,
+                geometryDesiredSignature: null,
+                geometryRebuildPending: null,
+                geometryRebuildQueued: null,
+                geometryRebuildNext: null,
+                geometryAwaitingFinal: false,
+                geometrySource: workerData.geometrySource || null,
                 textureTier: textureState.activeTier,
                 isFullTex: textureState.activeTier === TEXTURE_TIER.HIGH,
                 isTransitioning: false,
@@ -2052,6 +2556,11 @@ class PistonViewer {
             };
             this._markFinestBuilt(tileObj);
             this.tiles.set(key, tileObj);
+            if (tileObj.binaryVersion >= 2) {
+                // Revalidate against the latest camera after both async worker
+                // phases and any instantiation-queue delay.
+                this.needsLODUpdate = true;
+            }
             this.setHorizonTileHidden(key, true);
             this.updateGlobalStats(workerData.stats);
 
@@ -2071,48 +2580,6 @@ class PistonViewer {
             this.loadingTiles.delete(key);
             this.visibilityAdapter?.detachDecodedIsland(key);
         }
-    }
-
-    buildSinteredLods(tile) {
-        if (!tile?.mesh || !tile.lods) return;
-        if (!tile.needsSinteredBuild) return;
-
-        for (const level of [1, 0]) {
-            if (tile.builtLevels?.[level]) continue;
-            const lodData = tile.lods[level];
-            if (!lodData) continue;
-
-            const layerMaterial = tile.material.clone();
-            layerMaterial.userData = { ...tile.material.userData };
-            layerMaterial.userData.lodIdx = level;
-            layerMaterial.userData.shader = null;
-            this.setupMaterialShader(layerMaterial);
-            this.materialsToUpdate.add(layerMaterial);
-            tile.clonedMaterials?.push(layerMaterial);
-            // Late-built materials must inherit the tile's current texture,
-            // not the sharedMaterial snapshot from instantiation time.
-            if (tile.material.map) { layerMaterial.map = tile.material.map; layerMaterial.needsUpdate = true; }
-
-            const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, true);
-            if (finalMesh) {
-                finalMesh.userData.activeSkirts = lodData.activeSkirts;
-                finalMesh.userData.gosperLevel = level;
-                if (level >= 1 && finalMesh.children[1]) {
-                    finalMesh.children[1].visible = !this.isMoving3D;
-                }
-                tile.mesh.add(finalMesh);
-                this.renderer.compile(finalMesh, this.camera);
-                tile.builtLevels[level] = true;
-                tile.finestBuilt = level;
-            }
-        }
-
-        this._markFinestBuilt(tile);
-
-        // (sintered-build timing captured by aggregate frame violation)
-
-        tile.needsSinteredBuild = false;
-        this.needsRender = true;
     }
 
     // The finest BUILT level of a tile ignores its band's near edge (its
@@ -2199,6 +2666,8 @@ class PistonViewer {
         tile.container = null;
         tile.lods = null;
         tile.unitHeights = null;
+        tile.geometrySource = null;
+        tile.geometrySelection = null;
     }
 
     hideLoader() {
@@ -2250,28 +2719,59 @@ class PistonViewer {
         this._setHudText('world-val', `${wx.toFixed(0)}, ${wy.toFixed(0)}`);
         this._setHudText('hex-val', `${axial.q}, ${axial.r}`);
 
+        let groundH;
         if (tile && tile.center && tile.unitHeights) {
             // O(1) picking: heap-order unit index from the static offset map
             // (identical for every island), then one Float32Array read.
             const dq = axial.q - tile.center.q;
             const dr = axial.r - tile.center.r;
             const idx = this.unitIndexMap.get(((dq + 128) << 8) | (dr + 128));
-            let groundH = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
+            groundH = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
             if (groundH === undefined) groundH = tile.stats.avg;
+        } else {
+            // A manifest root is available before its GSP payload. It is less
+            // precise than a unit sample, but keeps the navigation focus in
+            // the same vertical coordinate frame during bootstrap/loading.
+            // animate() starts synchronously while initWorld() is still
+            // awaiting the manifest fetch, so the lookup itself is optional
+            // during the cold-start frames.
+            groundH = this.manifestGrid?.get(key)?.hMean;
+        }
 
-            const animatedH = (groundH - this.floorState.value) * h;
-            const minCamY = animatedH + 50.0;
+        if (Number.isFinite(groundH)) {
+            const anchored = computeTerrainAnchorRebase({
+                cameraY: this.camera.position.y,
+                targetY: target.y,
+                sourceElevation: groundH,
+                floor: this.floorState.value,
+                factor: h,
+            });
 
-            // Soft constraint: only push if below
+            // Floor selection and pitch morph both move rendered terrain. Move
+            // the camera and its MapControls pivot by the identical amount so
+            // pan/zoom/orbit preserve their bearing, polar angle, and range.
+            // The target therefore remains the terrain point being inspected,
+            // rather than a stale y=0 datum below a pitched mountain.
+            target.y = anchored.targetY;
+            this.camera.position.y = anchored.cameraY;
+
+            // Soft clearance constraint. Normally MapControls' polar/range
+            // constraints already satisfy this; malformed saved views still
+            // cannot place the eye inside the cap.
+            const minCamY = anchored.terrainY + 50.0;
             if (this.camera.position.y < minCamY) this.camera.position.y = minCamY;
 
-            this._setHudText('tile-height', `${animatedH.toFixed(1)}m`);
+            this._setHudText('tile-height', `${anchored.terrainY.toFixed(1)}m`);
         }
         this._setHudText('camera-height', `${this.camera.position.y.toFixed(0)}m`);
     }
 
     updateFloorState(h) {
         const currentMin = this.pickFloorValue();
+        // A pitched saved view can start rendering before its first tile has
+        // instantiated. Zero is not a terrain sample: locking it here would
+        // permanently place real ~2,500 m terrain above the camera model.
+        if (!Number.isFinite(currentMin)) return;
 
         if (LOCK_FLOOR_ON_RISE && h > FLOOR_LOCK_THRESHOLD) {
             // Logic: Only update if we found a LOWER floor (prevent sinking), but don't raise it (prevent jitter).
@@ -2279,13 +2779,16 @@ class PistonViewer {
                 this.floorState.value = currentMin;
             }
             this.floorState.locked = true;
+            this.floorState.provisional = false;
             this.updateFloorUniforms();
         } else if (!LOCK_FLOOR_ON_RISE) {
             this.floorState.value = currentMin;
+            this.floorState.provisional = false;
             this.updateFloorUniforms();
         } else {
             // Not yet locked (flat mode), just track freely
             this.floorState.value = currentMin;
+            this.floorState.provisional = false;
             this.updateFloorUniforms();
         }
     }
@@ -2295,7 +2798,7 @@ class PistonViewer {
         const validTiles = inView.length ? inView : Array.from(this.tiles.values());
         let min = Infinity;
         for (const t of validTiles) if (t.stats && t.stats.min < min) min = t.stats.min;
-        return Number.isFinite(min) ? min : 0;
+        return Number.isFinite(min) ? min : NaN;
     }
 
     getTilesInView() {
@@ -2311,58 +2814,14 @@ class PistonViewer {
         }
     }
 
-    resetLODs() {
-        // Snap back to the coarse moving-mode quality scalar.
-        if (this.qualityScale !== this.movingCoarseness || this.isRefining) {
-            this.qualityScale = this.movingCoarseness;
-            this.isRefining = false;
-            this.needsRender = true;
-            this.syncLODUI();
-        }
-    }
-
-    refineLODs() {
-        // Antisintering, one scalar edition: walk qualityScale from
-        // movingCoarseness down to 1 — every band sweeps outward in lockstep
-        // (each step multiplies all radii by 1/refineRate). Frametime-capped
-        // exactly like the old four-band version.
-        const sampleCount = 5;
-        const recentFrames = this.frametimeBuffer.slice(-sampleCount);
-        const avgFrameTime = recentFrames.reduce((a, b) => a + b, 0) / recentFrames.length;
-
-        if (avgFrameTime > this.maxFrameTime) {
-            if (this.isRefining) {
-                this.log(`Antisintering capped by performance (${avgFrameTime.toFixed(1)}ms avg)`, "warn");
-                this.isRefining = false;
-            }
-            return false;
-        }
-
-        if (this.qualityScale > 1.0) {
-            this.qualityScale = Math.max(1.0, this.qualityScale * this.refineRate);
-            this.isRefining = true;
-            this.needsRender = true;
-            this.needsLODUpdate = true;
-            this.syncLODUI();
-            return this.qualityScale > 1.0;
-        }
-
-        if (this.isRefining) {
-            this.log("Antisintering Complete: Maximum Resolution Reached.", "success");
-            this.isRefining = false;
-        }
-        return false;
-    }
-
     // --- ENGINE STATE DERIVATION ---
-    deriveEngineState(moved, flat) {
-        // Priority order: MOVING_3D > MOVING_2D > SINTERING > STATIC
-        if (this.isMoving3D) return ENGINE_STATES.MOVING_3D;
-        if (moved || this.isUserInteracting) return flat ? ENGINE_STATES.MOVING_2D : ENGINE_STATES.MOVING_3D;
+    deriveEngineState(flat) {
+        // Camera motion is latched, so a completed wheel burst still reports
+        // moving even when controls.update() is already false this frame.
+        if (this.isMovingView) return flat ? ENGINE_STATES.MOVING_2D : ENGINE_STATES.MOVING_3D;
         const recentUpgrade = this.recentlyUpgradedTextures.some(u => performance.now() - u.time < 100);
-        if (this.sinterQueue.length > 0 || this.textureQueue.length > 0 ||
-            this.textureResultQueue.length > 0 ||
-            this.activeWorkerCount > 0 || this.isRefining || recentUpgrade) return ENGINE_STATES.SINTERING;
+        if (this.textureQueue.length > 0 || this.textureResultQueue.length > 0 ||
+            this.activeWorkerCount > 0 || recentUpgrade) return ENGINE_STATES.SINTERING;
         return ENGINE_STATES.STATIC;
     }
 
@@ -2467,7 +2926,7 @@ class PistonViewer {
                 loadQueue: this.loadQueue.length,
                 textureQueue: this.textureQueue.length,
                 textureResultQueue: this.textureResultQueue.length,
-                sinterQueue: this.sinterQueue.length,
+                geometryRebuildQueue: this.geometryRebuildQueue.length,
                 activeWorkers: this.activeWorkerCount,
                 materialsTracked: this.materialsToUpdate.size,
                 evictedTotal: this.cacheManager.evictionCount,
@@ -2494,6 +2953,7 @@ class PistonViewer {
                 highSkippedTopMips: this.texStats.highSkippedTopMips,
             },
             visibilityPlanner: this.visibilityPlanStats || null,
+            geometryFrontier: this.geometryFrontierStats || null,
             violations: this._perfViolationCount,
             allocationCount: this.vramLedger.entries.size,
             movingLod: this.getMovingLodDebugStats(),
@@ -2535,60 +2995,59 @@ class PistonViewer {
         track('processQueues', () => this.processQueues());
 
         const now = performance.now();
-        const timeSinceInteraction = now - this.lastInteractionTime;
 
-        // --- ANTISINTERING REFINEMENT ---
-        if (!this.isUserInteracting && timeSinceInteraction > 200) {
-            if (!this.isRefining && !this.isRefinementDone) {
-                this.isRefining = true;
-            }
-            const stillRefining = track('refineLODs', () => this.refineLODs());
-            if (!stillRefining) this.isRefinementDone = true;
-        } else {
-            if (this.isUserInteracting) {
-                this.isRefinementDone = false;
-            }
-        }
-
-        // Disable damping when not actively interacting to prevent momentum in sintered mode.
+        // Disable damping when not actively interacting to prevent momentum in
+        // settled mode. Wheel start/change/end may all have completed already;
+        // CameraMotionLatch carries that motion through this rendered frame.
         this.controls.enableDamping = this.isUserInteracting;
         const moved = this.controls.update();
 
-        // CALCULATE isMoving3D EARLY so updateLOD() can skip texture upgrades during movement
+        // Camera pitch affects presentation and telemetry, not the moving LOD contract.
         const angle = this.controls.getPolarAngle() * 180 / Math.PI;
         const flat = angle < 5.5;
-        const h = Math.min(1, Math.max(0, (angle - 5.5) / (25.0 - 5.5)));
-        this.heightFactor = h;
-        const wasMoving3D = this.isMoving3D;
-        const wasMovingView = this.isMovingView;
-        this.isMovingView = moved || this.isUserInteracting;
-        this.isMoving3D = !flat && this.isMovingView;
-
-        // --- DERIVE ENGINE STATE (must happen after moved/flat/isMoving3D are set) ---
-        this.engineState = this.deriveEngineState(moved, flat);
+        const h = this.syncHeightFactorFromControls(angle);
+        const movingAtFrameStart = this.isMovingView;
+        const renderedMovingView = this.wasMovingView;
+        const effectiveMotion = this.cameraMotion.sample({ now });
+        if (!effectiveMotion && this.isMovingView) {
+            // Only rAF owns the quiet-window moving -> settled edge.
+            this.isMovingView = false;
+        }
+        // --- DERIVE ENGINE STATE ---
+        this.engineState = this.deriveEngineState(flat);
         // The first no-motion frame is also the moving -> settled swap frame.
         // Keep it from taking the STATIC early-return before horizon, skirt,
         // and resident-level visibility have been restored.
-        if (wasMovingView !== this.isMovingView) {
+        if (movingAtFrameStart && !this.isMovingView) {
             this.needsRender = true;
+            this.needsLODUpdate = true;
+            this._beginGeometryMode(false);
+        }
+
+        // Camera state, terrain floor, and clearance all affect the adapter's
+        // world-space bounds/projection. Apply them before the frustum plan so
+        // this frame cannot classify stale geometry.
+        if (this.isMovingView) {
+            this.needsLODUpdate = true;
+        } else if (movingAtFrameStart) {
+            // The exact settled frontier is planned immediately; individual
+            // tiles remain uniform L3 until their matching build commits.
             this.needsLODUpdate = true;
         }
 
-        // If transitioning INTO movement, clear the upgrade queue
-        if (!wasMoving3D && this.isMoving3D) {
-            this.textureQueue = this.textureQueue.filter(task => {
-                if (task.tier !== TEXTURE_TIER.HIGH) return true;
-                this.textureStates.get(task.key)?.queued.delete(TEXTURE_TIER.HIGH);
-                return false;
-            });
-            for (const state of this.textureStates.values()) {
-                state.queued.delete(TEXTURE_TIER.HIGH);
-            }
+        const floorBeforeVisibility = this.floorState.value;
+        const cameraYBeforeVisibility = this.camera.position.y;
+        this.updateFloorState(h);
+        this.maintainCameraAltitudeDuringAnimation(h);
+        if (this.floorState.value !== floorBeforeVisibility ||
+            this.camera.position.y !== cameraYBeforeVisibility) {
+            this.needsLODUpdate = true;
+            this.needsRender = true;
         }
 
-        // NOW update LOD (after isMoving3D is set)
+        // NOW update LOD (after all-camera moving state is set)
         const camDist = this.camera.position.distanceTo(this.lastLODCamPos);
-        if (camDist > 50 || this.isRefining || this.needsLODUpdate || !this.loaderHidden) {
+        if (camDist > 50 || this.needsLODUpdate || !this.loaderHidden) {
             track('updateLOD', () => this.updateLOD());
             if (camDist > 50) this.lastLODCamPos.copy(this.camera.position);
             this.needsLODUpdate = false;
@@ -2606,60 +3065,17 @@ class PistonViewer {
         this.updateFps();
         this.updateFrametimeGraph();
 
-        if (this.isMoving3D) {
-            this.lastInteractionTime = now;
-            this.isRefining = false;
-            this.resetLODs();
-            this.needsLODUpdate = true;
-            this.lodTransitionInProgress = false;
-            this.lastLodPreset = 'MOVING';
-        } else if (wasMoving3D && !flat) {
-            // Settling: refineLODs() walks qualityScale down to 1 over the
-            // next frames (frametime-capped) — no preset snap needed.
-            this.needsLODUpdate = true;
-            this.lodTransitionInProgress = true;
-            this.lastLodPreset = 'TARGET';
-        }
-
-        this.updateFloorState(h);
-        this.maintainCameraAltitudeDuringAnimation(h);
-
         // --- VISIBILITY PASS ---
         // No flat-plane swap (top-down 2D is just the flattened caps via
         // uHeightFactor) and no per-band group toggling (the CDLOD cut is
         // per-instance in the vertex shader). The only toggle left: aggregate
         // skirts render when settled, hide while moving (large skirtless
         // caps = the fast panning mode).
-        let visibilityChanges = 0;
-        if (wasMovingView !== this.isMovingView) {
-            const showAggSkirts = !this.isMovingView;
-            for (const t of this.tiles.values()) {
-                if (!t.mesh) continue;
-                for (const g of t.mesh.children) {
-                    if (g.userData.gosperLevel >= 1 && g.children[1] && g.children[1].visible !== showAggSkirts) {
-                        g.children[1].visible = showAggSkirts;
-                        visibilityChanges++;
-                    }
-                }
-            }
+        if (renderedMovingView !== this.isMovingView) {
             if (this.horizonMesh) this.horizonMesh.visible = !this.isMovingView;
             if (this.movingHorizonMesh) this.movingHorizonMesh.visible = this.isMovingView;
         }
 
-        // --- SINTERING (settled 3D) ---
-        if (!flat && !this.isMoving3D) {
-            const inView = this.getTilesInView();
-            for (const t of inView) {
-                if (t.needsSinteredBuild && !this.sinterQueue.includes(t)) {
-                    this.sinterQueue.push(t);
-                }
-            }
-            if (this.sinterQueue.length > 0) {
-                const tile = this.sinterQueue.shift();
-                this.buildSinteredLods(tile);
-            }
-        }
-        this.wasMoving3D = this.isMoving3D;
         this.wasMovingView = this.isMovingView;
 
         // --- MATERIAL UNIFORM UPDATE ---
@@ -2680,7 +3096,7 @@ class PistonViewer {
 
                 if (m.userData.lodIdx !== undefined) {
                     const k = m.userData.lodIdx;
-                    if (this.isMovingView && k === this.movingLevel) {
+                    if (m.userData.forceMovingMode && k === this.movingLevel) {
                         // Uniform panning level: force the cut fully open so
                         // every instance of this level draws at all distances.
                         m.userData.shader.uniforms.uLodRadii.value.set(0.0, 1e12);
@@ -2688,7 +3104,7 @@ class PistonViewer {
                     } else {
                         // Gosper level k: band = (R(k-1), R(k)], parent checked
                         // against R(k). The finest BUILT level ignores the near
-                        // edge so coverage holds before sintering completes.
+                        // edge so coverage holds while an exact frontier builds.
                         const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
                         const maxD = this.lodRadii[k];
                         m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
@@ -2712,13 +3128,13 @@ class PistonViewer {
             if (this._perfViolationCount <= PERF_VERBOSE_MAX) {
                 // VERBOSE: Full-fat output for first N violations
                 const culprits = [];
-                if (visibilityChanges > 50) culprits.push(`vis-thrash:${visibilityChanges}`);
                 if (needsUpdateCount > 0) culprits.push(`mat-recompile:${needsUpdateCount}`);
                 const recentUpgrades = this.recentlyUpgradedTextures.filter(u => now - u.time < 50);
                 if (recentUpgrades.length > 0) culprits.push(`tex-upgrade:${recentUpgrades.length}`);
                 this.recentlyUpgradedTextures = recentUpgrades.slice(-3);
-                if (this.sinterQueue.length > 0) culprits.push(`sinter-queue:${this.sinterQueue.length}`);
-                if (this.lodTransitionInProgress) culprits.push('lod-transition');
+                if (this.geometryRebuildQueue.length > 0) {
+                    culprits.push(`geometry-rebuild-queue:${this.geometryRebuildQueue.length}`);
+                }
                 if (culprits.length === 0) culprits.push('gpu-render');
 
                 console.log('[PERF_VIOLATION] ' + JSON.stringify({
@@ -2762,11 +3178,7 @@ class PistonViewer {
             }
         }
 
-        // Consume transition flag (allow one frame grace)
-        if (this.lodTransitionInProgress) this.lodTransitionInProgress = false;
-
         this.needsRender = false;
-        this.floorState.lastFactor = h;
     }
 }
 

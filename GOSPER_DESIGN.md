@@ -9,15 +9,14 @@ reasoning behind each, plus what was deliberately NOT done._
 The terrain pipeline no longer thinks in 819.2 m rectangular sectors with four
 uniform-scale hex layers. The streaming/storage/LOD unit is now a **level-5
 Gosper island**: 7⁵ = 16,807 unit hexes (6.4 m), recursively grouped 7-at-a-
-time into a 6-level aggregate tree. One `.bin` (`GSP2`) stores the tree as a
+time into a 6-level aggregate tree. One `.bin` (`GSP3`) stores the tree as a
 root height plus per-node decimeter offsets from the parent's reconstructed
-value; three square KTX2 tiers (980 m, 128/256/4096 px) texture the island. The renderer
-draws every level of every resident island as instanced hex caps — scale
-√7ᵏ, rotation k·19.1066° — and picks the level **per instance in the vertex
-shader** with a hierarchical CDLOD cut driven by a single screen-space rule:
-*a hex cap is refined when it grows past `hexTargetPx` on screen*. A
-manifest-driven horizon mesh renders every baked island's level-5 aggregate
-out to 60 km without fetching anything.
+value; three square KTX2 tiers (980 m, 128/256/4096 px) texture the island.
+Every resident island retains a complete L3 coverage cut; settled views add
+only the contiguous deeper ranges selected by the frustum frontier. The
+vertex shader partitions those selected levels with fixed world-distance
+bands at 2/5/10/25/60 km. A manifest-driven horizon mesh renders every baked
+island's level-5 aggregate out to 60 km without fetching terrain geometry.
 
 ## The canonical math (and a chirality landmine)
 
@@ -53,23 +52,29 @@ zero-mean and small → dH compresses (gzipped bins are 32 % smaller than
 HEX4); offsets from a max are all-negative and as large as the relief.
 (b) *rendering*: a max-height cap makes every distant face read as a cliff
 (Cole's own observation); the mean is the only aggregate that keeps distant
-terrain silhouettes honest. (c) *bounds*: extrema are not lost — each GSP2
-aggregate carries independent `downExtent`/`upExtent` uint16 decimetre ranges
-around its reconstructed mean, and the header carries exact root hMin/hMax.
+terrain silhouettes honest. (c) *bounds*: extrema are not lost — each GSP3
+aggregate carries independent terrain and rendered-subtree uint16 decimetre
+ranges around its reconstructed mean, and the header carries exact root
+hMin/hMax.
 
-### D3 — GSP2 format: offset-coded heights and conservative bounds
+### D3 — GSP3 format: offset-coded heights and split conservative bounds
 `recon(node) = recon(parent) + dH·0.1 m`, and the baker computes each dH
 against the parent's **already-quantized** value, so error never
 accumulates: every node lands within ±5 cm of the DEM sample regardless of
 depth (validator asserts ≤0.35 m including aggregation slack; DEM
-cross-check on 200 random units per tile). Records: 12 B aggregates
-(dH, slopeMean, slopeMax, nx, nz, downExtent, upExtent, flags, reserved),
-14 B units (dH, 3 skirt
+cross-check on 200 random units per tile). Records: 16 B aggregates
+(dH, slopeMean, slopeMax, nx, nz, terrain down/up, rendered down/up, flags,
+reserved), 14 B units (dH, 3 skirt
 deltas, 3 edge slopes, normal, flags). No per-hex coordinates at all —
-heap order IS the address. Extents are conservatively ceil-quantized from the
-reconstructed mean and enclose source plus rendered descendant heights. GSP2
-is 268,966 bytes/tile fixed; header magic/version identifies legacy GSP1
-during a rolling local rebake.
+heap order IS the address. Terrain extents are conservatively ceil-quantized
+around the reconstructed mean and remain terrain-only because their sum sizes
+aggregate skirts. Separate rendered extents recursively enclose every child
+LOD, signed unit-skirt endpoint, the aggregate's own skirt, and shader skirt
+slack. Keeping those meanings separate prevents culling safety from inflating
+geometry. GSP3 is 280,166 bytes/tile fixed; header magic/version identifies
+legacy GSP1/GSP2 during a rolling local rebake. Legacy formats use a loose,
+safe root interval for aggregate culling because neither encoded the exact
+rendered-subtree contract.
 
 ### D4 — Render aggregates as rotated, scaled hex caps (embrace the 19.1°)
 A level-k island is a fractal region, not a hexagon; any hex rendering of it
@@ -88,20 +93,26 @@ not hidden: it costs zero (baked into instance matrices), it's visually
 coherent within each ring, and it makes the map literally *be* the data
 structure — requirement (A), "it's fucking cool," is a spec.
 
-### D5 — One LOD rule instead of four sliders: screen-space hex size
-`R(k) = size(k) · pxPerRad / (hexTargetPx · qualityScale)`; level k lives in
-the distance band (R(k−1), R(k)]. Every visible hex stays ≥ hexTargetPx on
-screen at every distance, which bounds work: hex density per steradian is
-constant, so instance count scales with screen area, not render distance.
-Bands are geometric (ratio √7), which is exactly the gosper tree — the data
-structure and the LOD policy are the same object.
+### D5 — Fixed world-distance bands and hierarchical frustum residency
+Settled level k occupies `(R(k−1), R(k)]` with fixed far edges
+`R = [2, 5, 10, 25, 60, ∞] km`: units through 2 km, L1 through 5 km, L2
+through 10 km, L3 through 25 km, L4 through 60 km, and the resident L5 root
+as the final coverage floor. Distance is three-dimensional and includes
+camera altitude. There is no quality scalar or LOD-resolution slider.
 
-Default settled target is **3 px** (owner directive: STATIC = small skirted
-hexes; units reach ~1.45 km, the familiar TARGET-unitEnd feel). NB instance
-distance includes camera *altitude*, so a "1 cm hexes" target like 16 px
-means a hovering camera never enters the unit band at all — that default
-was tried and rejected on sight. The slider (2–24 px) makes the trade
-explicit; raising it is the single knob for weaker GPUs.
+Residency is a separate hierarchical query. The planner uses the camera's
+actual rectangular perspective frustum—wide in landscape and tall in
+portrait—plus a conservatively expanded guard frustum with motion lead. It
+knows only opaque node handles and AABBs. `GosperVisibilityAdapter` is the
+translation shim that supplies Gosper children, bounds, projection spheres,
+and contiguous descendant ranges, so the planner itself is entirely blind to
+Gosper packing.
+
+The geometry query descends only to depth 2 / L3. Rejecting one L3 node drops
+its complete 7 L2, 49 L1, and 343 unit descendant ranges without inspecting
+them. There are no per-unit frustum plane tests. The complete 49-node L3 cut
+stays available for every resident GSP2+ island; only visible/guard L3
+subtrees can contribute finer worker ranges.
 
 ### D6 — Hierarchical CDLOD cut in the vertex shader (no holes, no stacking)
 Per instance: `draw ⟺ selfDist > R(k−1) AND parentDist ≤ R(k)`, with the
@@ -113,13 +124,15 @@ whole distance bands per layer with hand-tuned overlaps.) While fine levels
 aren't built yet, the finest *built* level gets `uFinestBuilt=1` and ignores
 its near edge, so coverage holds mid-stream.
 
-### D7 — Two states, one scalar
-MOVING vs SETTLED is now `qualityScale`: `movingCoarseness` (default ×7 —
-exactly two gosper levels coarser) animating to 1 on settle, frametime-
-capped like the old antisintering. Levels 5..2 build eagerly (400
-instances/tile); levels 1..0 (19,208 instances) build in the existing
-sinter pass. Freeze-frame-at-full-detail behavior is preserved; STATIC
-still never renders.
+### D7 — Two states, one exact frontier
+Every camera motion—pan, orbit, wheel zoom, or dolly—shows the same complete,
+skirtless L3 cut. A short motion latch covers MapControls wheel events whose
+start/change/end callbacks complete before the next animation frame. On settle,
+GSP2+ tiles keep showing L3 until the exact epoch/signature-matched final
+frontier is ready, then swap the complete mesh atomically into the fixed
+settled bands. There is no intermediate level sweep or late append path. GSP1
+retains complete compatibility buffers but applies the same visible L3-only
+moving cut. STATIC still never renders.
 
 ### D8 — Textures: square per-island KTX2, planar world UVs
 `TEXTURE_CONTAINER_FINDINGS.md` stands: rectangular containers, hexes
@@ -136,8 +149,8 @@ world-registered green/blue/pink motifs for low/medium/high; production and
 
 ### D9 — 2D mode is the 3D mode
 The flat per-sector textured quads are deleted. Top-down already animates
-`uHeightFactor → 0`; with screen-space banding, camera *altitude* is part of
-instance distance, so zooming out in 2D coarsens levels automatically. One
+`uHeightFactor → 0`; camera altitude remains part of the fixed three-dimensional
+distance bands, so zooming out in 2D coarsens levels automatically. One
 pipeline, one material family, no plane/hex crossfade, and the 2D map keeps
 the bestagon look. Overlapping coplanar caps can't z-fight visibly because
 they sample the same world-registered aerial imagery.
@@ -155,7 +168,7 @@ pipeline.)
 
 ### D11 — JS heap fix rides along
 Known issue: ~1 GB heap at 100+ resident tiles from per-hex JS objects
-(`hexDataLayers`). GSP2 tiles ship heights as one `Float32Array(16807)` and
+(`hexDataLayers`). GSP3 tiles ship heights as one `Float32Array(16807)` and
 picking uses a single static heap-index map shared by all tiles
 (offsets are identical per island by construction). Per-tile JS overhead
 drops from ~16 k objects to one typed array (~67 KB).
@@ -172,10 +185,8 @@ drops from ~16 k objects to one typed array (~67 KB).
 - **No L6+ streaming tiers.** Two use cases (couloir vs range) → one tile
   size + one horizon tier. The manifest tree can aggregate upward later
   without touching the wire format.
-- **Rotation UX, sinter FPS readout** (KNOWN_BUGS.md items) — out of scope,
-  behavior preserved. The sinter texture-blur bug is fixed structurally
-  (late-built materials register in `clonedMaterials` and inherit the
-  current map).
+- **Rotation UX and settled FPS readout** (KNOWN_BUGS.md items) — out of
+  scope; behavior is otherwise preserved.
 
 ## Post-review changes (owner feedback, 2026-07-07 night)
 
@@ -185,16 +196,16 @@ sharpened first-pass decisions:
 1. **"The top of hexagons should NEVER be colored."** The experimental 50 %
    slope-class tint on aggregate caps is deleted (uniform and all). Slope
    colors live exclusively on skirts.
-2. **"When static there are small skirted hexes."** Settled target dropped
-   16 px → 3 px, and every aggregate level now hangs relief-depth skirts
-   (subtree hMax−hMin) so the settled field is sealed at all rings: level 1
-   keeps the slope-class gradient at half relief (it inherits the old unit
-   ring's role out to ~4 km); levels 2+ seal at full relief but stay
+2. **"When static there are small skirted hexes."** Settled mode uses fixed
+   2/5/10/25/60 km boundaries, and every aggregate level hangs relief-depth
+   skirts (subtree hMax−hMin) so the settled field is sealed at all rings:
+   level 1 keeps the slope-class gradient at half relief; levels 2+ seal at
+   full relief but stay
    texture-toned — full-relief colored banners visually drowned the far
    field when tried.
 3. **"When panning there are large skirtless hexes."** Aggregate skirt
-   meshes toggle hidden while MOVING — coarse panning stays the cheap
-   skirtless mosaic; movingCoarseness ×7 ≈ the old MOVING preset.
+   meshes toggle hidden while MOVING, and every camera motion displays the
+   same complete L3 mosaic at every distance.
 
 Plus two fixes the review flushed out:
 - Ring-contour steps: a neighbor across an LOD contour renders at subtree
@@ -212,22 +223,22 @@ Known follow-ups (non-blocking):
   `basisu -info`, ordinary sessions show 0, and a failed full-res upgrade
   gracefully keeps the low-res. Suspected WASM heap pressure across the
   worker pool.
-- Initial cold load enqueues every tile inside renderDistance+1 km at once
-  (~150 tiles); instantiation is time-sliced at one tile/frame like before,
-  but a distance-staggered trickle would smooth first paint.
+- Initial terrain work is prioritized by visible/guard classification and
+  projected importance. Outside-frustum roots are not admitted by a radial
+  render-distance sweep; instantiation remains time-sliced.
 
 ## Numbers
 
-- Binary payload: 268,966 B/tile fixed for GSP2 vs 257,766 B for GSP1; the
-  11.2 KB increase buys non-saturating tight vertical bounds at every aggregate.
+- Binary payload: 280,166 B/tile fixed for GSP3 vs 268,966 B for GSP2 and
+  257,766 B for GSP1. GSP3's additional 11.2 KB buys exact rendered-subtree
+  bounds without corrupting the terrain-relief/skirt-sizing contract.
 - Texture bake cost remains dominated by the 4096px high composite and encode;
   the new 128px postage tier adds negligible work beside high and medium.
 - Baked geometry integrity: `tests/gosper/validate_gsp1.py` — structure,
   dH-chain reconstruction, re-aggregation, asymmetric bounds, flags, plus 200-sample
   direct DEM cross-check per tile: all green over the full bake.
-- Band radii (settled, 3 px, 900 px viewport): R = [1448, 3832, 10141,
-  26834, 71013] m — units to ~1.45 km, L1 to ~3.8 km, whole-tile caps by
-  ~10 km (capped by renderDistance + horizon). Instances per band are
-  ~constant by construction; total visible work is bounded by screen area
-  regardless of render distance.
+- Settled band far edges are exactly 2/5/10/25/60 km for unit/L1/L2/L3/L4;
+  resident L5 roots remain the coverage floor beyond them. Frustum/guard L3
+  pruning, rather than a radial render-distance or pixel formula, bounds
+  deeper geometry work.
 - Bench A/B vs master: _see PERF section appended after the headless runs._

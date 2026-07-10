@@ -1,23 +1,22 @@
 // @atlas: Translation shim between the generic hierarchical visibility
 // planner and level-5 Gosper islands.  All Gosper-specific facts live here:
 // 7-way heap indexing, analytic node centres/radii, manifest height roots,
-// GSP1/GSP2 aggregate bounds, and contiguous descendant ranges.  The planner
+// GSP1/GSP2/GSP3 aggregate bounds, and contiguous descendant ranges. The planner
 // sees only opaque uint32 handles and its generic hierarchy interface.
 
-import './gosper_core.js';
-import { VisibilityClass } from './visibility_planner.js';
+import './gosper_core.js?v=frustum9';
+import { VisibilityClass } from './visibility_planner.js?v=frustum9';
 
 const DEFAULT_CORE = globalThis.GosperCore;
 const BRANCHING = 7;
 const CAP_OVERSCAN = 1.15;
 const ROOT_HEIGHT_ROUNDING_M = 0.1;
-const GSP1_RELIEF_QUANTUM_M = 4;
-const GSP1_RELIEF_ROUNDING_M = GSP1_RELIEF_QUANTUM_M * 0.5 + 0.1;
-const GSP1_RELIEF_SATURATED = 255;
 // Aggregate worker buffers add 12 m and the shader can add another 12 m.
 const AGGREGATE_SKIRT_SAFETY_M = 24;
 // Unit skirts receive only the shader's distance-dependent 12 m extension.
 const UNIT_SKIRT_SAFETY_M = 12;
+// The baker rejects neighbor deltas beyond this physical limit.
+const MAX_UNIT_EDGE_DELTA_M = 400;
 
 export const GOSPER_LEVEL_COUNT = 6;
 export const GOSPER_MAX_DEPTH = 5;
@@ -243,8 +242,8 @@ export class GosperVisibilityAdapter {
 
     /**
      * Attach the worker/parser's compact typed arrays without expanding them
-     * into node objects.  GSP2 records may expose conservative `downExtent`
-     * and `upExtent` Uint16Arrays in decimetres.  GSP1 uses `relief` bytes.
+     * into node objects. GSP2+ records expose terrain `downExtent`/`upExtent`;
+     * GSP3 additionally exposes exact `renderDown`/`renderUp` culling bounds.
      */
     attachDecodedIsland(keyOrIslandIndex, decoded) {
         const island = this._resolveIsland(keyOrIslandIndex);
@@ -261,7 +260,7 @@ export class GosperVisibilityAdapter {
             if (record.valid && record.valid.length !== expected) {
                 throw new RangeError(`decoded depth ${depth} validity length mismatch`);
             }
-            for (const name of ['relief', 'downExtent', 'upExtent']) {
+            for (const name of ['relief', 'downExtent', 'upExtent', 'renderDown', 'renderUp']) {
                 if (record[name] && record[name].length !== expected) {
                     throw new RangeError(`decoded depth ${depth} ${name} length mismatch`);
                 }
@@ -446,11 +445,13 @@ export class GosperVisibilityAdapter {
         const rootRenderMin = Math.min(
             rootMin,
             this._rootMean[island] - (rootMax - rootMin) - this._aggregateSkirtSafetyM,
+            rootMin - MAX_UNIT_EDGE_DELTA_M - this._unitSkirtSafetyM,
         );
+        const rootRenderMax = rootMax + MAX_UNIT_EDGE_DELTA_M;
         const decoded = this._decodedByIsland[island];
         if (address.depth === 0 || !decoded) {
             out[0] = rootRenderMin;
-            out[1] = rootMax;
+            out[1] = rootRenderMax;
             return out;
         }
 
@@ -461,57 +462,46 @@ export class GosperVisibilityAdapter {
             const d2 = recordArray(decoded.unit, 'd2');
             const d3 = recordArray(decoded.unit, 'd3');
             if (d1 && d2 && d3) {
-                const e1 = mean - Number(d1[address.index]) * 0.1 - this._unitSkirtSafetyM;
-                const e2 = mean - Number(d2[address.index]) * 0.1 - this._unitSkirtSafetyM;
-                const e3 = mean - Number(d3[address.index]) * 0.1 - this._unitSkirtSafetyM;
-                out[0] = Math.min(mean, e1, e2, e3) - 0.1;
+                const e1 = mean - Number(d1[address.index]) * 0.1;
+                const e2 = mean - Number(d2[address.index]) * 0.1;
+                const e3 = mean - Number(d3[address.index]) * 0.1;
+                out[0] = Math.min(
+                    mean,
+                    e1 - this._unitSkirtSafetyM,
+                    e2 - this._unitSkirtSafetyM,
+                    e3 - this._unitSkirtSafetyM,
+                ) - 0.1;
                 out[1] = Math.max(mean, e1, e2, e3) + 0.1;
                 return out;
             }
             // GSP1 unit records do contain edge deltas, but a consumer may
             // attach only depth arrays.  Root fallback is loose and safe.
             out[0] = rootRenderMin;
-            out[1] = rootMax;
+            out[1] = rootRenderMax;
             return out;
         }
 
-        const downExtent = recordArray(record, 'downExtent');
-        const upExtent = recordArray(record, 'upExtent');
-        if (downExtent && upExtent) {
-            // GSP2 values are ceil-quantized decimetres and therefore already
-            // conservative.  Clip to the exact root interval to avoid float
-            // reconstruction noise, then include rendered skirt slack below.
-            const down = Number(downExtent[address.index]) * 0.1;
-            const up = Number(upExtent[address.index]) * 0.1;
-            const subtreeLow = Math.max(rootMin, mean - down);
-            const skirtLow = mean - down - up - this._aggregateSkirtSafetyM;
-            const high = Math.min(rootMax, mean + Number(upExtent[address.index]) * 0.1);
-            out[0] = Math.min(subtreeLow, skirtLow);
-            out[1] = high;
+        // GSP1 and GSP2 never encoded an exact rendered subtree interval.
+        // During rolling migration they use a deliberately loose root bound.
+        if (this._gspVersion[island] < 3) {
+            out[0] = rootRenderMin;
+            out[1] = rootRenderMax;
             return out;
         }
 
-        const relief = recordArray(record, 'relief');
-        if (relief) {
-            const encoded = Number(relief[address.index]);
-            if (encoded < GSP1_RELIEF_SATURATED) {
-                // GSP1 stores only total relief, so symmetric mean +/- relief
-                // is necessarily looser than asymmetric bounds but remains
-                // conservative after the half-quantum margin.
-                const extent = encoded * GSP1_RELIEF_QUANTUM_M + GSP1_RELIEF_ROUNDING_M;
-                const low = Math.max(rootMin, mean - extent);
-                const high = Math.min(rootMax, mean + extent);
-                out[0] = low - this._aggregateSkirtSafetyM;
-                out[1] = high;
-                return out;
-            }
+        const renderDown = recordArray(record, 'renderDown');
+        const renderUp = recordArray(record, 'renderUp');
+        if (renderDown && renderUp) {
+            // GSP3 extents already include this aggregate's skirt, every
+            // descendant LOD, signed unit endpoints, and shader skirt slack.
+            out[0] = mean - Number(renderDown[address.index]) * 0.1;
+            out[1] = mean + Number(renderUp[address.index]) * 0.1;
+            return out;
         }
 
-        // relief==255 is saturated/ambiguous in GSP1.  Falling back to the
-        // root interval preserves correctness at the cost of vertical culling
-        // precision; it must never be treated as exactly 1020 m.
+        // A malformed/partial GSP3 attachment must fail safe rather than cull.
         out[0] = rootRenderMin;
-        out[1] = rootMax;
+        out[1] = rootRenderMax;
         return out;
     }
 

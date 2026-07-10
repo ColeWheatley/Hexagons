@@ -150,13 +150,13 @@
                             <span class="arrow">▼</span>
                         </div>
                         <div class="collapsible-content">
-                            <!-- RENDER DISTANCE -->
-                            <div class="hud-item" style="flex-direction: column; margin-top: 5px;">
+                            <!-- VISUAL HAZE ONLY; hidden for mini-bakes -->
+                            <div class="hud-item" id="haze-distance-control" style="flex-direction: column; margin-top: 5px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span>RENDER DISTANCE</span>
-                                    <span class="value" id="render-distance-val">20km</span>
+                                    <span>ATMOSPHERE DISTANCE</span>
+                                    <span class="value" id="haze-distance-val">4km</span>
                                 </div>
-                                <input type="range" id="render-distance-slider" min="1" max="50" step="1" value="20"
+                                <input type="range" id="haze-distance-slider" min="1" max="50" step="1" value="4"
                                     style="width: 100%;">
                             </div>
 
@@ -185,10 +185,8 @@
                                     <span>FAR HIERARCHY</span>
                                     <span class="value">25 / 60 km</span>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
-                                    <span>moving: uniform L3 (118 m)</span>
-                                    <span id="lod-quality-val">q ×7.00</span>
-                                </div>
+                                <div style="font-size: 10px; color: #aaa;">moving: uniform skirtless L3 (118 m)</div>
+                                <div style="font-size: 10px; color: #aaa;">settled: fixed 2 / 5 / 10 / 25 / 60 km bands</div>
                             </div>
                         </div>
                     </div>
@@ -282,7 +280,7 @@
         </div>
         <div id="canvas-container"></div>
 
-        <script type="module" src="main.js?v=frustum1"></script>
+        <script type="module" src="main.js?v=frustum9"></script>
 </body>
 
 </html>

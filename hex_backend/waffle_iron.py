@@ -1,8 +1,8 @@
-# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v6.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP2 binary tiles plus island-centered three-tier XUASTC LDR 6x6 KTX2 textures with incremental caching.
+# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v6.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP3 binary tiles with separate terrain/render aggregate bounds plus island-centered three-tier XUASTC LDR 6x6 KTX2 textures.
 # 🧇 Waffle Iron v6.0 - Gosper Island Bake Edition
 # =============================================================================
 # FEATURES:
-#   - GSP2 per-island binary layout with conservative aggregate vertical bounds
+#   - GSP3 per-island binary layout with separate terrain and rendered bounds
 #   - Gapless "Partial Skirt" Topology (SE, S, SW ownership)
 #   - "Diamond" Area Sampling for faithful edge slopes
 #   - Baked-in Center Normals (Nx, Nz) for smooth Cap lighting
@@ -21,7 +21,7 @@
 #                    Generated on first run from the DEM (2× upsampled dx/dy gradients)
 #
 # OUTPUT FORMATS (baked per Gosper L5 island, also NOT in git):
-#   .bin:   GSP2 header + 5 heap-ordered Gosper depth blocks
+#   .bin:   GSP3 header + 5 heap-ordered Gosper depth blocks
 #   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
 #           client-side to ASTC/BC7/BC1/ETC1/PVRTC). One 980m square per island,
 #           emitted as low/medium/high KTX2 tiers at 128/256/4096px with full mips.
@@ -95,7 +95,7 @@ DEBUG_MODE = False
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "6.0.0"  # GSP2 aggregate extents; forces legacy GSP1 bins to re-bake
+BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
 TEXTURE_VERSION = TEXTURE_RECIPE_VERSION
 TEXTURE_TATTOO_VERSION = "2"  # three-tier colors/sizes; separate from clean textures
 
@@ -112,6 +112,8 @@ TEXTURE_TATTOO_COLORS = {
 TEXTURE_TATTOO_SPACING_M = 128.0
 TEXTURE_TATTOO_RADIUS_M = 24.0
 TEXTURE_TATTOO_STROKE_M = 7.7
+SHADER_SKIRT_EXTENSION_M = 12.0
+AGGREGATE_SKIRT_BASE_EXTENSION_M = 12.0
 
 DEFAULT_GRID_SIZE = 12  # 12×12 grid for mini-bake (configurable via --grid)
 
@@ -125,21 +127,24 @@ METADATA_PATH = "frontend/app/tiles_bin/metadata.json"
 # baking anything.
 BASISU_BINARY = None
 
-# GSP1 and GSP2 share the 48-byte header and 14-byte unit record. GSP2 replaces
-# the old 8-byte aggregate's saturating 4m relief byte with independent uint16
-# decimetre extents around the reconstructed aggregate mean. A reserved byte
-# pads the record to 12 bytes and must be zero.
+# GSP1/GSP2/GSP3 share the 48-byte header and 14-byte unit record. GSP3 keeps
+# GSP2's terrain-only down/up extents for aggregate skirt sizing and adds
+# independent rendered down/up extents for hierarchical culling. The latter
+# enclose signed unit-skirt endpoints, aggregate skirts, and descendants.
 GSP_HEADER_STRUCT = struct.Struct("<4sHHiiiifffBBBBBxxxI")
 GSP1_AGG_STRUCT = struct.Struct("<hBBBBBB")
 GSP2_AGG_STRUCT = struct.Struct("<hBBBBHHBB")
+GSP3_AGG_STRUCT = struct.Struct("<hBBBBHHHHBB")
 GSP_UNIT_STRUCT = struct.Struct("<hhhhBBBBBB")
 GSP1_MAGIC = b"GSP1"
 GSP1_VERSION = 1
 GSP2_MAGIC = b"GSP2"
 GSP2_VERSION = 2
+GSP3_MAGIC = b"GSP3"
+GSP3_VERSION = 3
 GSP1_TILE_LEVEL = coord_util.GOSPER_TILE_LEVEL
 # Compatibility aliases retained for tooling that only needs the unchanged
-# header/unit layouts. New bakes always write GSP2.
+# header/unit layouts. New bakes always write GSP3.
 GSP1_HEADER_STRUCT = GSP_HEADER_STRUCT
 GSP1_UNIT_STRUCT = GSP_UNIT_STRUCT
 GSP1_UNIT_DTYPE = np.dtype([
@@ -155,6 +160,13 @@ GSP2_AGG_DTYPE = np.dtype([
     ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
     ("nx", "u1"), ("nz", "u1"),
     ("downExtent", "<u2"), ("upExtent", "<u2"),
+    ("flags", "u1"), ("reserved", "u1"),
+])
+GSP3_AGG_DTYPE = np.dtype([
+    ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
+    ("nx", "u1"), ("nz", "u1"),
+    ("downExtent", "<u2"), ("upExtent", "<u2"),
+    ("renderDown", "<u2"), ("renderUp", "<u2"),
     ("flags", "u1"), ("reserved", "u1"),
 ])
 
@@ -745,10 +757,10 @@ def _pack_u16_extent_dm(values_m):
     """Conservatively ceil non-negative metre extents into uint16 decimetres."""
     values_m = np.asarray(values_m, dtype=np.float64)
     if not np.all(np.isfinite(values_m)):
-        raise ValueError("GSP2 vertical extents must be finite")
+        raise ValueError("GSP vertical extents must be finite")
     scaled = np.ceil(np.maximum(values_m, 0.0) * 10.0)
     if np.any(scaled > np.iinfo(np.uint16).max):
-        raise OverflowError("GSP2 vertical extent exceeds uint16 decimetre range")
+        raise OverflowError("GSP vertical extent exceeds uint16 decimetre range")
     return scaled.astype(np.uint16)
 
 
@@ -1081,8 +1093,21 @@ def _build_gsp1_nodes(h_unit, valid_unit, unit_slopes, unit_nx, unit_nz):
         has_data = count > 0
         h_true[has_data] = h_sum[has_data] / count[has_data]
 
-        h_min = child["h_min"].reshape(-1, 7).min(axis=1)
-        h_max = child["h_max"].reshape(-1, 7).max(axis=1)
+        # Empty descendants carry the island-wide mean as their convenient
+        # representative height. That placeholder must never participate in
+        # a partially populated parent's terrain extrema: near DEM boundaries
+        # it can inflate local relief by hundreds of metres.
+        child_has_data = child_count > 0
+        h_min = np.where(
+            child_has_data,
+            child["h_min"].reshape(-1, 7),
+            np.inf,
+        ).min(axis=1)
+        h_max = np.where(
+            child_has_data,
+            child["h_max"].reshape(-1, 7),
+            -np.inf,
+        ).max(axis=1)
         h_min[~has_data] = mean_valid
         h_max[~has_data] = mean_valid
 
@@ -1108,7 +1133,7 @@ def _build_gsp1_nodes(h_unit, valid_unit, unit_slopes, unit_nx, unit_nz):
     return nodes
 
 
-def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid):
+def _pack_gsp3_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid):
     root_h = _float32(nodes[0]["h_true"][0])
     root_slope_mean = int(_pack_u8_round(nodes[0]["slope_mean"])[0])
     root_slope_max = int(nodes[0]["slope_max"][0])
@@ -1124,25 +1149,66 @@ def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
         dH_by_depth[depth] = dH
         recon[depth] = parent_recon + dH.astype(np.float64) * 0.1
 
-    # Frustum bounds must enclose the geometry the client reconstructs, not
-    # merely the pre-quantization DEM statistics. Combine both ranges; this
-    # costs at most the sub-decimetre dH error while remaining useful for data
-    # inspection as well as rendering.
-    descendant_bounds = {}
+    # Terrain extents remain terrain-only because the renderer uses their sum
+    # as aggregate skirt relief. Include source extrema and reconstructed unit
+    # centers, but never signed skirt endpoints.
+    reconstructed_unit_heights = recon[GSP1_TILE_LEVEL]
+    terrain_bounds = {}
+    terrain_packed = {}
     for depth in range(1, GSP1_TILE_LEVEL):
         count = 7 ** depth
         descendants_per_node = 7 ** (GSP1_TILE_LEVEL - depth)
         descendant_valid = unit_valid.reshape(count, descendants_per_node)
-        descendant_heights = recon[GSP1_TILE_LEVEL].reshape(count, descendants_per_node)
-        render_min = np.where(descendant_valid, descendant_heights, np.inf).min(axis=1)
-        render_max = np.where(descendant_valid, descendant_heights, -np.inf).max(axis=1)
+        descendant_heights = reconstructed_unit_heights.reshape(count, descendants_per_node)
+        reconstructed_min = np.where(descendant_valid, descendant_heights, np.inf).min(axis=1)
+        reconstructed_max = np.where(descendant_valid, descendant_heights, -np.inf).max(axis=1)
         has_data = nodes[depth]["flags"].astype(bool)
-        render_min[~has_data] = nodes[depth]["h_true"][~has_data]
-        render_max[~has_data] = nodes[depth]["h_true"][~has_data]
-        descendant_bounds[depth] = (
-            np.minimum(nodes[depth]["h_min"], render_min),
-            np.maximum(nodes[depth]["h_max"], render_max),
+        reconstructed_min[~has_data] = nodes[depth]["h_true"][~has_data]
+        reconstructed_max[~has_data] = nodes[depth]["h_true"][~has_data]
+        terrain_min = np.minimum(nodes[depth]["h_min"], reconstructed_min)
+        terrain_max = np.maximum(nodes[depth]["h_max"], reconstructed_max)
+        terrain_bounds[depth] = (terrain_min, terrain_max)
+        terrain_packed[depth] = (
+            _pack_u16_extent_dm(np.where(has_data, recon[depth] - terrain_min, 0.0)),
+            _pack_u16_extent_dm(np.where(has_data, terrain_max - recon[depth], 0.0)),
         )
+
+    # Render extents are a distinct culling contract. Start at exact signed
+    # unit-skirt endpoints, then fold upward recursively so a rejected parent
+    # encloses every possible descendant LOD plus its own aggregate skirt.
+    reconstructed_edge_endpoints = (
+        reconstructed_unit_heights[:, np.newaxis]
+        - unit_deltas.astype(np.float64) * 0.1
+    )
+    unit_render_min = np.minimum(
+        reconstructed_unit_heights,
+        reconstructed_edge_endpoints.min(axis=1) - SHADER_SKIRT_EXTENSION_M,
+    )
+    unit_render_max = np.maximum(
+        reconstructed_unit_heights,
+        reconstructed_edge_endpoints.max(axis=1),
+    )
+    render_bounds = {GSP1_TILE_LEVEL: (unit_render_min, unit_render_max)}
+    for depth in range(GSP1_TILE_LEVEL - 1, 0, -1):
+        child_min, child_max = render_bounds[depth + 1]
+        child_valid = unit_valid if depth + 1 == GSP1_TILE_LEVEL else nodes[depth + 1]["flags"].astype(bool)
+        child_valid = child_valid.reshape(-1, 7)
+        descendant_min = np.where(child_valid, child_min.reshape(-1, 7), np.inf).min(axis=1)
+        descendant_max = np.where(child_valid, child_max.reshape(-1, 7), -np.inf).max(axis=1)
+        has_data = nodes[depth]["flags"].astype(bool)
+        terrain_down, terrain_up = terrain_packed[depth]
+        encoded_relief_m = (terrain_down.astype(np.float64) + terrain_up.astype(np.float64)) * 0.1
+        own_skirt_min = (
+            recon[depth]
+            - encoded_relief_m
+            - AGGREGATE_SKIRT_BASE_EXTENSION_M
+            - SHADER_SKIRT_EXTENSION_M
+        )
+        render_min = np.minimum(descendant_min, own_skirt_min)
+        render_max = np.maximum(descendant_max, recon[depth])
+        render_min[~has_data] = recon[depth][~has_data]
+        render_max[~has_data] = recon[depth][~has_data]
+        render_bounds[depth] = (render_min, render_max)
 
     reconstructed_units = recon[GSP1_TILE_LEVEL][unit_valid]
     root_bound_min = min(float(nodes[0]["h_min"][0]), float(reconstructed_units.min()))
@@ -1151,8 +1217,8 @@ def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
     h_max = _float32_outward(root_bound_max, 1)
 
     blob = bytearray(GSP_HEADER_STRUCT.pack(
-        GSP2_MAGIC,
-        GSP2_VERSION,
+        GSP3_MAGIC,
+        GSP3_VERSION,
         GSP1_TILE_LEVEL,
         info["centerQ"],
         info["centerR"],
@@ -1172,21 +1238,21 @@ def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
     for depth in range(1, GSP1_TILE_LEVEL):
         node = nodes[depth]
         count = 7 ** depth
-        records = np.empty(count, dtype=GSP2_AGG_DTYPE)
+        records = np.empty(count, dtype=GSP3_AGG_DTYPE)
         records["dH"] = dH_by_depth[depth]
         records["slopeMean"] = _pack_u8_round(node["slope_mean"])
         records["slopeMax"] = node["slope_max"]
         records["nx"] = node["nx"]
         records["nz"] = node["nz"]
         valid = node["flags"].astype(bool)
-        # Extents are relative to the *reconstructed* dH mean consumed by the
-        # renderer, not the unquantized statistical mean. Ceil quantization
-        # guarantees [mean-down, mean+up] encloses every valid descendant.
-        bound_min, bound_max = descendant_bounds[depth]
-        down_m = np.where(valid, recon[depth] - bound_min, 0.0)
-        up_m = np.where(valid, bound_max - recon[depth], 0.0)
-        records["downExtent"] = _pack_u16_extent_dm(down_m)
-        records["upExtent"] = _pack_u16_extent_dm(up_m)
+        records["downExtent"], records["upExtent"] = terrain_packed[depth]
+        render_min, render_max = render_bounds[depth]
+        records["renderDown"] = _pack_u16_extent_dm(
+            np.where(valid, recon[depth] - render_min, 0.0)
+        )
+        records["renderUp"] = _pack_u16_extent_dm(
+            np.where(valid, render_max - recon[depth], 0.0)
+        )
         records["flags"] = node["flags"]
         records["reserved"] = 0
         blob.extend(struct.pack("<I", count))
@@ -1210,7 +1276,7 @@ def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
 
 
 def read_gsp_unit_valid(path):
-    """Read final-depth validity flags from legacy GSP1 or current GSP2."""
+    """Read final-depth validity flags from GSP1, GSP2, or current GSP3."""
     with open(path, "rb") as source:
         blob = source.read()
     if len(blob) < GSP_HEADER_STRUCT.size:
@@ -1221,6 +1287,8 @@ def read_gsp_unit_valid(path):
         aggregate_dtype = GSP1_AGG_DTYPE
     elif format_key == (GSP2_MAGIC, GSP2_VERSION):
         aggregate_dtype = GSP2_AGG_DTYPE
+    elif format_key == (GSP3_MAGIC, GSP3_VERSION):
+        aggregate_dtype = GSP3_AGG_DTYPE
     else:
         raise ValueError(f"unsupported GSP header: {path}")
     if header[2] != GSP1_TILE_LEVEL:
@@ -1250,8 +1318,8 @@ def read_gsp_unit_valid(path):
     return (records["flags"] & 1).astype(bool, copy=True)
 
 
-# Compatibility entry point for scripts written before GSP2. It now accepts
-# both versions because the final unit record layout did not change.
+# Compatibility entry point for scripts written before the rolling GSP formats. It accepts every
+# version because the final unit record layout did not change.
 read_gsp1_unit_valid = read_gsp_unit_valid
 
 
@@ -1267,7 +1335,7 @@ def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/til
     unit_deltas, unit_slopes, unit_nx, unit_nz = _sample_unit_edges_and_normals(
         unit_x, unit_y, h_unit, unit_valid, dem_data, dem_transform, grad_ds, info["bounds"])
     nodes = _build_gsp1_nodes(h_unit, unit_valid, unit_slopes, unit_nx, unit_nz)
-    blob = _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
+    blob = _pack_gsp3_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
 
     bin_path = os.path.join(output_dir, gosper_asset_name(latQ, latR, "bin"))
     with open(bin_path, "wb") as f:

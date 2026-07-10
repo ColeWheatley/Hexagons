@@ -11,7 +11,7 @@ export const DEFAULT_HIGH_TEXTURE_BUDGET = 256 * 1024 * 1024;
 export class CacheManager {
     constructor(budget = DEFAULT_HIGH_TEXTURE_BUDGET) {
         this.budget = budget;
-        this.highEntries = new Map(); // key -> { bytes, lastUsed }
+        this.highEntries = new Map(); // key -> { bytes, lastUsed, priority }
         this.highBytes = 0;
 
         // Browser-observable lifetime telemetry.
@@ -34,35 +34,53 @@ export class CacheManager {
         if (entry) entry.lastUsed = now;
     }
 
+    /** Update screen-space value without perturbing LRU recency. */
+    updatePriority(key, priority) {
+        const entry = this.highEntries.get(key);
+        if (entry) entry.priority = Number.isFinite(priority) ? priority : 0;
+    }
+
     /**
      * Admit one decoded high texture. Least-recently-used high textures are
      * downgraded first; geometry and lower texture tiers are never involved.
      * `evictHigh` must synchronously switch the affected tile to a lower tier
      * before disposing its high texture.
      */
-    admitHigh(key, bytes, evictHigh, protectedKeys = new Set()) {
+    admitHigh(
+        key,
+        bytes,
+        evictHigh,
+        protectedKeys = new Set(),
+        priority = 0,
+        canEvictHigh = () => true,
+    ) {
         if (bytes > this.budget) return false;
+        const incomingPriority = Number.isFinite(priority) ? priority : 0;
 
         const previous = this.highEntries.get(key);
         const previousBytes = previous?.bytes || 0;
-        while (this.highBytes - previousBytes + bytes > this.budget) {
-            let victimKey = null;
-            let oldest = Infinity;
-            for (const [candidateKey, entry] of this.highEntries) {
-                if (candidateKey === key || protectedKeys.has(candidateKey)) continue;
-                if (entry.lastUsed < oldest) {
-                    oldest = entry.lastUsed;
-                    victimKey = candidateKey;
-                }
-            }
-            if (victimKey === null) return false;
+        let projectedBytes = this.highBytes - previousBytes + bytes;
+        const victims = Array.from(this.highEntries.entries())
+            .filter(([candidateKey]) => candidateKey !== key
+                && !protectedKeys.has(candidateKey)
+                && canEvictHigh(candidateKey))
+            .sort((a, b) => (a[1].priority - b[1].priority)
+                || (a[1].lastUsed - b[1].lastUsed));
+        const plannedVictims = [];
+        for (const [victimKey, victim] of victims) {
+            if (projectedBytes <= this.budget) break;
+            // Plan the entire transaction before mutating anything. This
+            // prevents evicting one peripheral texture and only later finding
+            // that the remaining required victim outranks the arrival.
+            if (victim.priority > incomingPriority) return false;
+            plannedVictims.push([victimKey, victim]);
+            projectedBytes -= victim.bytes;
+        }
+        if (projectedBytes > this.budget) return false;
 
-            const victim = this.highEntries.get(victimKey);
+        for (const [victimKey, victim] of plannedVictims) {
             if (evictHigh(victimKey) === false) {
-                // The caller could not provide a safe lower-tier replacement.
-                // Protect it for this admission attempt and look elsewhere.
-                protectedKeys.add(victimKey);
-                continue;
+                throw new Error(`preflighted high-texture eviction failed for ${victimKey}`);
             }
             this.removeHigh(victimKey);
             this.evictionCount++;
@@ -71,7 +89,11 @@ export class CacheManager {
         }
 
         if (previous) this.highBytes -= previous.bytes;
-        this.highEntries.set(key, { bytes, lastUsed: performance.now() });
+        this.highEntries.set(key, {
+            bytes,
+            lastUsed: performance.now(),
+            priority: incomingPriority,
+        });
         this.highBytes += bytes;
         if (this.evictedHistory.has(key)) this.redownloadCount++;
         return true;

@@ -789,11 +789,11 @@
             <div class="glass-panel">
                 <p>
                     Traditional maps prioritize routes and flat imagery. PowFinder prioritizes <strong>terrain
-                        geometry</strong> using our proprietary <strong>Antisintering</strong> LOD strategy.
+                        geometry</strong> using a <strong>hierarchical Gosper frontier</strong> LOD strategy.
                 </p>
                 <p>
-                    When you stop navigating, the engine triggers a <strong>High-Resolution Snap</strong>,
-                    progressively filling in the foreground with unit-scale hexes (6m resolution). Use the sliders below
+                    While you navigate, the engine uses one uniform coarse cut. When motion stops, it swaps directly to
+                    the required high-resolution foreground frontier with unit-scale hexes (6m resolution). Use the sliders below
                     to compare our cinematic hexagonal reconstruction against the flat legacy satellite maps.
                 </p>
 

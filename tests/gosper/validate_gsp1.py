@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate legacy GSP1 and current GSP2 Gosper island binaries.
+"""Validate rolling GSP1/GSP2 and current GSP3 Gosper island binaries.
 
 Usage:
   python3 tests/gosper/validate_gsp1.py frontend/app/tiles_bin/gosper_*.bin
@@ -30,12 +30,25 @@ GSP2_AGG_DTYPE = np.dtype([
     ("downExtent", "<u2"), ("upExtent", "<u2"),
     ("flags", "u1"), ("reserved", "u1"),
 ])
+GSP3_AGG_DTYPE = np.dtype([
+    ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
+    ("nx", "u1"), ("nz", "u1"),
+    ("downExtent", "<u2"), ("upExtent", "<u2"),
+    ("renderDown", "<u2"), ("renderUp", "<u2"),
+    ("flags", "u1"), ("reserved", "u1"),
+])
 UNIT_DTYPE = np.dtype([
     ("dH", "<i2"), ("d1", "<i2"), ("d2", "<i2"), ("d3", "<i2"),
     ("s1", "u1"), ("s2", "u1"), ("s3", "u1"),
     ("nx", "u1"), ("nz", "u1"), ("flags", "u1"),
 ])
-AGG_DTYPES = {(b"GSP1", 1): GSP1_AGG_DTYPE, (b"GSP2", 2): GSP2_AGG_DTYPE}
+AGG_DTYPES = {
+    (b"GSP1", 1): GSP1_AGG_DTYPE,
+    (b"GSP2", 2): GSP2_AGG_DTYPE,
+    (b"GSP3", 3): GSP3_AGG_DTYPE,
+}
+SHADER_SKIRT_EXTENSION_M = 12.0
+AGGREGATE_SKIRT_BASE_EXTENSION_M = 12.0
 FILENAME_RE = re.compile(r"gosper_(-?\d+)_(-?\d+)\.bin$")
 
 
@@ -45,7 +58,8 @@ def require(cond, msg):
 
 
 def parse_file(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as source:
+        data = source.read()
     require(len(data) >= HEADER.size, f"size {len(data)} < header {HEADER.size}")
     header = HEADER.unpack_from(data, 0)
     aggregate_dtype = AGG_DTYPES.get((header[0], header[1]))
@@ -130,8 +144,24 @@ def validate_aggregates(recon, flags, records):
     h_sum = np.where(valid_units, recon[5], 0.0)
     h_min = np.where(valid_units, recon[5], np.inf)
     h_max = np.where(valid_units, recon[5], -np.inf)
+    unit_deltas = np.column_stack((
+        records[5]["d1"], records[5]["d2"], records[5]["d3"],
+    )).astype(np.float64) * 0.1
+    unit_endpoints = recon[5][:, np.newaxis] - unit_deltas
+    render_min = np.minimum(
+        recon[5], unit_endpoints.min(axis=1) - SHADER_SKIRT_EXTENSION_M,
+    )
+    render_max = np.maximum(recon[5], unit_endpoints.max(axis=1))
+    render_valid = valid_units
 
     for depth in range(4, -1, -1):
+        child_render_valid = render_valid.reshape(-1, 7)
+        descendant_render_min = np.where(
+            child_render_valid, render_min.reshape(-1, 7), np.inf,
+        ).min(axis=1)
+        descendant_render_max = np.where(
+            child_render_valid, render_max.reshape(-1, 7), -np.inf,
+        ).max(axis=1)
         count = count.reshape(-1, 7).sum(axis=1)
         h_sum = h_sum.reshape(-1, 7).sum(axis=1)
         h_min = h_min.reshape(-1, 7).min(axis=1)
@@ -149,16 +179,51 @@ def validate_aggregates(recon, flags, records):
                 rel_err = np.abs(relief[has_data] - derived_relief[has_data])
                 require(rel_err.size == 0 or float(rel_err.max()) <= 8.0, f"depth {depth} relief max error {rel_err.max():.3f}m")
             else:
-                require(np.all(records[depth]["reserved"] == 0), f"depth {depth} nonzero GSP2 reserved byte")
+                require(np.all(records[depth]["reserved"] == 0), f"depth {depth} nonzero GSP reserved byte")
                 lower = recon[depth] - records[depth]["downExtent"].astype(np.float64) * 0.1
                 upper = recon[depth] + records[depth]["upExtent"].astype(np.float64) * 0.1
                 require(np.all(lower[has_data] <= h_min[has_data] + 1e-9), f"depth {depth} downExtent clips descendants")
                 require(np.all(upper[has_data] >= h_max[has_data] - 1e-9), f"depth {depth} upExtent clips descendants")
-                require(np.all(h_min[has_data] - lower[has_data] < 0.16), f"depth {depth} downExtent is unexpectedly loose")
-                require(np.all(upper[has_data] - h_max[has_data] < 0.16), f"depth {depth} upExtent is unexpectedly loose")
+                if "renderDown" in records[depth].dtype.names:
+                    require(np.all(h_min[has_data] - lower[has_data] < 0.16), f"depth {depth} terrain downExtent is unexpectedly loose")
+                    require(np.all(upper[has_data] - h_max[has_data] < 0.16), f"depth {depth} terrain upExtent is unexpectedly loose")
+                    relief = (
+                        records[depth]["downExtent"].astype(np.float64)
+                        + records[depth]["upExtent"].astype(np.float64)
+                    ) * 0.1
+                    own_skirt_min = (
+                        recon[depth] - relief
+                        - AGGREGATE_SKIRT_BASE_EXTENSION_M
+                        - SHADER_SKIRT_EXTENSION_M
+                    )
+                    expected_render_min = np.minimum(descendant_render_min, own_skirt_min)
+                    expected_render_max = np.maximum(descendant_render_max, recon[depth])
+                    encoded_render_min = (
+                        recon[depth]
+                        - records[depth]["renderDown"].astype(np.float64) * 0.1
+                    )
+                    encoded_render_max = (
+                        recon[depth]
+                        + records[depth]["renderUp"].astype(np.float64) * 0.1
+                    )
+                    require(np.all(encoded_render_min[has_data] <= expected_render_min[has_data] + 1e-9), f"depth {depth} renderDown clips rendered descendants")
+                    require(np.all(encoded_render_max[has_data] >= expected_render_max[has_data] - 1e-9), f"depth {depth} renderUp clips rendered descendants")
+                    require(np.all(expected_render_min[has_data] - encoded_render_min[has_data] < 0.101), f"depth {depth} renderDown is unexpectedly loose")
+                    require(np.all(encoded_render_max[has_data] - expected_render_max[has_data] < 0.101), f"depth {depth} renderUp is unexpectedly loose")
+                    render_min = expected_render_min
+                    render_max = expected_render_max
+                else:
+                    # GSP2 had terrain bounds only. Its culling adapter uses a
+                    # loose root fallback, so migration validation requires
+                    # containment but intentionally does not demand tightness.
+                    render_min = descendant_render_min
+                    render_max = descendant_render_max
         else:
             root_err = abs(float(recon[0][0] - truth[0]))
             require(root_err <= 0.35, f"root height mean error {root_err:.3f}m")
+            render_min = descendant_render_min
+            render_max = descendant_render_max
+        render_valid = has_data
 
     return valid_h
 
@@ -220,8 +285,8 @@ def validate_file(path, dem_ds=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate GSP1/GSP2 Gosper island binaries")
-    parser.add_argument("bins", nargs="+", help="GSP1 or GSP2 .bin files")
+    parser = argparse.ArgumentParser(description="Validate GSP1/GSP2/GSP3 Gosper island binaries")
+    parser.add_argument("bins", nargs="+", help="GSP1, GSP2, or GSP3 .bin files")
     parser.add_argument("--dem", help="Optional DEM path for direct sample cross-checks")
     args = parser.parse_args()
 
