@@ -93,7 +93,21 @@ STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "5.0.0"  # bump this when you change .bin baking logic to trigger re-bake
-TEXTURE_VERSION = "2.0.0"  # bump this when you change texture encoding to trigger re-bake
+TEXTURE_VERSION = "2.0.0"  # clean production texture recipe/cache version
+TEXTURE_TATTOO_VERSION = "1"  # diagnostic recipe version; deliberately separate from clean textures
+
+# Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
+# world metres, so overlapping island textures paint the same strokes at the
+# same terrain locations.  A 3.8 m stroke is one low-res pixel and sixteen
+# full-res pixels at the production 980 m / {256,4096}px sizes: thin in the
+# landscape, but equally visible after either texture is sampled.
+TEXTURE_TATTOO_COLORS = {
+    "low": (0, 80, 255),      # electric blue
+    "full": (255, 0, 170),   # hot pink
+}
+TEXTURE_TATTOO_SPACING_M = 128.0
+TEXTURE_TATTOO_RADIUS_M = 24.0
+TEXTURE_TATTOO_STROKE_M = 3.8
 
 DEFAULT_GRID_SIZE = 12  # 12×12 grid for mini-bake (configurable via --grid)
 
@@ -122,6 +136,133 @@ GSP1_AGG_DTYPE = np.dtype([
     ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
     ("nx", "u1"), ("nz", "u1"), ("relief", "u1"), ("flags", "u1"),
 ])
+
+
+def texture_tattoos_enabled(full_bake, disable_requested=False):
+    """Diagnostic tattoos default on only for mini-bakes and cannot enter a full bake."""
+    return not full_bake and not disable_requested
+
+
+def texture_cache_version(tattoos_enabled):
+    """Use distinct cache identities so clean and diagnostic assets never cross-reuse."""
+    if tattoos_enabled:
+        return f"{TEXTURE_VERSION}+tattoo-{TEXTURE_TATTOO_VERSION}"
+    return TEXTURE_VERSION
+
+
+def texture_recipe_marker_path(latQ, latR, output_dir="frontend/app/aerial_tiles"):
+    """Per-island recipe marker; kept local and never uploaded as a texture asset."""
+    return os.path.join(output_dir, ".recipes", gosper_asset_name(latQ, latR, "txt"))
+
+
+def read_texture_recipe_marker(marker_path, unmarked_texture_version=""):
+    """Read an island's recipe, falling back to the pre-marker cache generation."""
+    try:
+        with open(marker_path, "r", encoding="utf-8") as marker:
+            return marker.read().strip()
+    except FileNotFoundError:
+        return unmarked_texture_version
+
+
+def write_texture_recipe_marker(marker_path, recipe_version):
+    """Atomically stamp an island only after both texture encodes succeed."""
+    os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+    temporary_path = f"{marker_path}.{os.getpid()}.tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as marker:
+            marker.write(f"{recipe_version}\n")
+        os.replace(temporary_path, marker_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def _texture_tattoo_world_paths(bounds):
+    """Yield deterministic, world-anchored henna-like registration motifs."""
+    min_x, min_y, max_x, max_y = map(float, bounds)
+    spacing = TEXTURE_TATTOO_SPACING_M
+    radius = TEXTURE_TATTOO_RADIUS_M
+
+    # Include off-canvas motif centers whose strokes enter this texture.  This
+    # makes an overlap render identically even when a motif straddles a canvas.
+    min_i = math.floor((min_x - radius) / spacing - 0.5)
+    max_i = math.ceil((max_x + radius) / spacing - 0.5)
+    min_j = math.floor((min_y - radius) / spacing - 0.5)
+    max_j = math.ceil((max_y + radius) / spacing - 0.5)
+
+    # Three sparse polylines form a small vine/leaf glyph rather than a tile
+    # outline.  Per-cell rotation makes the pattern easy to register visually
+    # without relying on terrain features.
+    motif_paths = (
+        ((-24.0, 0.0), (-16.0, -3.0), (-8.0, -2.0), (0.0, 0.0),
+         (8.0, 2.0), (16.0, 3.0), (24.0, 0.0)),
+        ((-8.0, -2.0), (-7.0, -10.0), (-1.0, -15.0), (6.0, -10.0),
+         (4.0, -4.0), (-1.0, -2.0)),
+        ((8.0, 2.0), (7.0, 10.0), (1.0, 15.0), (-6.0, 10.0),
+         (-4.0, 4.0), (1.0, 2.0)),
+    )
+
+    for j in range(min_j, max_j + 1):
+        center_y = (j + 0.5) * spacing
+        for i in range(min_i, max_i + 1):
+            center_x = (i + 0.5) * spacing
+            angle = ((i * 13 + j * 7) % 8) * (math.pi / 4.0)
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            transformed = []
+            for path in motif_paths:
+                transformed.append(tuple(
+                    (
+                        center_x + x * cos_a - y * sin_a,
+                        center_y + x * sin_a + y * cos_a,
+                    )
+                    for x, y in path
+                ))
+            yield tuple(transformed)
+
+
+def apply_texture_tattoo(image, bounds, resolution_kind):
+    """Draw a solid diagnostic motif onto a pre-encode PIL image in place."""
+    from PIL import ImageDraw
+
+    if resolution_kind not in TEXTURE_TATTOO_COLORS:
+        raise ValueError(f"Unknown texture tattoo resolution kind: {resolution_kind}")
+
+    min_x, min_y, max_x, max_y = map(float, bounds)
+    world_width = max_x - min_x
+    world_height = max_y - min_y
+    if world_width <= 0 or world_height <= 0:
+        raise ValueError(f"Texture tattoo bounds must have positive area: {bounds}")
+
+    px_per_m_x = image.width / world_width
+    px_per_m_y = image.height / world_height
+    stroke_px = max(1, round(TEXTURE_TATTOO_STROKE_M * min(px_per_m_x, px_per_m_y)))
+    color = TEXTURE_TATTOO_COLORS[resolution_kind]
+    draw = ImageDraw.Draw(image)
+
+    def to_pixel(point):
+        world_x, world_y = point
+        return (
+            round((world_x - min_x) * px_per_m_x),
+            round((max_y - world_y) * px_per_m_y),
+        )
+
+    for motif in _texture_tattoo_world_paths(bounds):
+        for path in motif:
+            draw.line(tuple(to_pixel(point) for point in path), fill=color, width=stroke_px, joint="curve")
+    return image
+
+
+def prepare_texture_variants(canvas, bounds, tattoos_enabled=False):
+    """Build the full/low pre-encode images, adding diagnostics after low-res sampling."""
+    from PIL import Image
+
+    low = canvas.resize((TEXTURE_CANVAS_PX // 16, TEXTURE_CANVAS_PX // 16), Image.Resampling.LANCZOS)
+    if tattoos_enabled:
+        # Resize first: otherwise pink full-res pixels would bleed into blue low
+        # diagnostics.  Each variant must carry exactly one unambiguous color.
+        apply_texture_tattoo(canvas, bounds, "full")
+        apply_texture_tattoo(low, bounds, "low")
+    return canvas, low
 
 
 def resolve_basisu_binary():
@@ -573,7 +714,14 @@ def gosper_asset_name(latQ, latR, ext):
     return f"gosper_{latQ}_{latR}.{ext}"
 
 
-def bake_gosper_textures(latQ, latR, valid_tifs, output_dir="frontend/app/aerial_tiles"):
+def bake_gosper_textures(
+    latQ,
+    latR,
+    valid_tifs,
+    output_dir="frontend/app/aerial_tiles",
+    texture_tattoos=False,
+    texture_recipe_version=None,
+):
     import PIL.Image as Image
     from rasterio.windows import from_bounds
     if not os.path.exists(output_dir): os.makedirs(output_dir)
@@ -619,7 +767,7 @@ def bake_gosper_textures(latQ, latR, valid_tifs, output_dir="frontend/app/aerial
     full_path = os.path.join(res_dirs["full"], f_name)
     low_path = os.path.join(res_dirs["low"], f_name)
 
-    c_low = canvas.resize((TEXTURE_CANVAS_PX // 16, TEXTURE_CANVAS_PX // 16), Image.LANCZOS)
+    canvas, c_low = prepare_texture_variants(canvas, info["bounds"], texture_tattoos)
 
     with tempfile.TemporaryDirectory(prefix="waffle_ktx2_") as tmp_dir:
         full_png = os.path.join(tmp_dir, "full.png")
@@ -630,6 +778,8 @@ def bake_gosper_textures(latQ, latR, valid_tifs, output_dir="frontend/app/aerial
         run_basisu_encode(full_png, full_path)
         run_basisu_encode(low_png, low_path)
 
+    recipe_version = texture_recipe_version or texture_cache_version(texture_tattoos)
+    write_texture_recipe_marker(texture_recipe_marker_path(latQ, latR, output_dir), recipe_version)
     upload_to_s3(full_path)
     upload_to_s3(low_path)
 
@@ -951,10 +1101,17 @@ def main():
     parser.add_argument("--grid", type=int, default=DEFAULT_GRID_SIZE,
                         help=f"Region side in sector units, N*819.2 meters (1-16, default {DEFAULT_GRID_SIZE})")
     parser.add_argument("--force", action="store_true", help="Force re-bake of all islands in range")
+    parser.add_argument(
+        "--no-texture-tattoos",
+        action="store_true",
+        help="Disable the mini-bake's default blue-low/pink-full texture registration marks",
+    )
     args = parser.parse_args()
 
     # Validate grid size
     grid_size = max(1, min(16, args.grid))
+    texture_tattoos = texture_tattoos_enabled(args.full, args.no_texture_tattoos)
+    effective_texture_version = texture_cache_version(texture_tattoos)
 
     # Load existing metadata for skip logic
     metadata = {}
@@ -966,8 +1123,12 @@ def main():
     
     prev_baker_version = metadata.get("baker_version", "")
     prev_texture_version = metadata.get("texture_version", "")
+    # Before per-island markers existed, metadata's global version described
+    # every unmarked file.  Preserve that baseline across partial mini-bakes;
+    # otherwise the first tattooed region could make clean files elsewhere look
+    # tattooed (or vice versa) and incorrectly skip them on a later run.
+    unmarked_texture_version = metadata.get("unmarked_texture_version", prev_texture_version)
     can_skip_bin = (prev_baker_version == BAKER_VERSION) and not args.force
-    can_skip_tex = (prev_texture_version == TEXTURE_VERSION) and not args.force
     if args.force:
         print(f"🔥 Force re-bake enabled (bin + textures).")
     else:
@@ -975,10 +1136,10 @@ def main():
             print(f"🔄 Incremental bake: BAKER_VERSION {BAKER_VERSION} matches. Will skip existing .bin files.")
         else:
             print(f"✨ New baker version detected ({prev_baker_version} -> {BAKER_VERSION}). Re-baking all .bin files in range.")
-        if can_skip_tex:
-            print(f"🔄 Incremental bake: TEXTURE_VERSION {TEXTURE_VERSION} matches. Will skip existing textures.")
+        if prev_texture_version == effective_texture_version:
+            print(f"🔄 Incremental bake: selected texture recipe {effective_texture_version} matches the last run; checking per-island markers.")
         else:
-            print(f"✨ New texture version detected ({prev_texture_version} -> {TEXTURE_VERSION}). Re-baking all textures in range.")
+            print(f"✨ Texture recipe changed ({prev_texture_version} -> {effective_texture_version}); checking per-island markers.")
 
     # Resolve + verify the XUASTC encoder up front — fail loudly before doing any
     # other work. There is no fallback codec.
@@ -1001,9 +1162,14 @@ def main():
     if args.full:
         print("🚀 RUNNING FULL GLOBAL BAKE (S3 Enabled)")
         print("⚠️  This will process ~3,486 TIFs and may take several hours.")
+        print("🎨 Texture tattoos: OFF (production bake)")
         S3_ENABLED = True
     else:
         print(f"🧪 RUNNING MINI-BAKE ({grid_size}×{grid_size} grid, S3 Disabled)")
+        if texture_tattoos:
+            print("🎨 Texture tattoos: ON (electric blue low-res / hot pink full-res)")
+        else:
+            print("🎨 Texture tattoos: OFF (--no-texture-tattoos)")
         S3_ENABLED = False
 
     # --- CLEANUP (Non-destructive) ---
@@ -1104,8 +1270,15 @@ def main():
         bin_file = f"frontend/app/tiles_bin/{gosper_asset_name(yq, yr, 'bin')}"
         tex_full_file = f"frontend/app/aerial_tiles/full/{gosper_asset_name(yq, yr, 'ktx2')}"
         tex_low_file = f"frontend/app/aerial_tiles/low/{gosper_asset_name(yq, yr, 'ktx2')}"
+        tex_recipe_file = texture_recipe_marker_path(yq, yr)
+        island_texture_version = read_texture_recipe_marker(tex_recipe_file, unmarked_texture_version)
         skip_bin = can_skip_bin and os.path.exists(bin_file)
-        skip_tex = can_skip_tex and os.path.exists(tex_full_file) and os.path.exists(tex_low_file)
+        skip_tex = (
+            not args.force
+            and island_texture_version == effective_texture_version
+            and os.path.exists(tex_full_file)
+            and os.path.exists(tex_low_file)
+        )
         if skip_bin and skip_tex:
             skipped += 1
             continue
@@ -1119,7 +1292,13 @@ def main():
                 print("   ⏭️  no valid DEM unit samples")
                 continue
         if not skip_tex:
-            bake_gosper_textures(yq, yr, valid_tifs)
+            bake_gosper_textures(
+                yq,
+                yr,
+                valid_tifs,
+                texture_tattoos=texture_tattoos,
+                texture_recipe_version=effective_texture_version,
+            )
         elapsed = time.time() - t0
         bake_times.append(elapsed)
         print(f"   ⏱️  {elapsed:.1f}s")
@@ -1145,7 +1324,9 @@ def main():
 
     # Update metadata
     with open(METADATA_PATH, "w") as f:
-        json.dump({"baker_version": BAKER_VERSION, "texture_version": TEXTURE_VERSION,
+        json.dump({"baker_version": BAKER_VERSION, "texture_version": effective_texture_version,
+                   "texture_tattoos": texture_tattoos,
+                   "unmarked_texture_version": unmarked_texture_version,
                    "last_bake": time.ctime(),
                    "grid_size": grid_size, "islands_baked": len(bake_times)}, f)
 
