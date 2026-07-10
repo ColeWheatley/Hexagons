@@ -182,6 +182,7 @@ self.onmessage = async function (e) {
                     transferables.push(lod.deltas.buffer);
                     transferables.push(lod.norms.buffer);
                     transferables.push(lod.parentPos.buffer);
+                    transferables.push(lod.parentHeight.buffer);
                 }
             });
             transferables.push(result.unitHeights.buffer);
@@ -240,7 +241,7 @@ async function loadTile({ yq, yr, texUrl, binUrl }) {
         if (!lod) return;
         geometryBytes += lod.matrix.byteLength + lod.nz1.byteLength + lod.nz2.byteLength
             + lod.slopes.byteLength + lod.deltas.byteLength + lod.norms.byteLength
-            + lod.parentPos.byteLength;
+            + lod.parentPos.byteLength + lod.parentHeight.byteLength;
     });
 
     return {
@@ -385,6 +386,7 @@ function buildLevelBuffers(parsed) {
         const deltas = new Float32Array(num * 3);
         const norms = new Float32Array(num * 2);
         const parentPos = new Float32Array(num * 2);
+        const parentHeight = new Float32Array(num);
         const over = isUnit ? 1.0 : CAP_OVERSCAN;
         const a = gd.xz.a * over, b = gd.xz.b * over, c = gd.xz.c * over, dd = gd.xz.d * over;
         const parentStride = gd.stride * 7;
@@ -423,20 +425,14 @@ function buildLevelBuffers(parsed) {
                 // hides aggregate skirt meshes — large skirtless caps, the
                 // fast panning mode.
                 //
-                // Level 1 keeps the slope-class gradient (it inherits the
-                // old unit-ring look out to ~4 km) at half relief depth;
-                // deeper levels seal at full relief but stay texture-toned —
-                // full-relief colored banners drowned the far field.
-                if (level === 1) {
-                    const sm = pd.slopeMean[i];
-                    slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
-                    const dDm = (pd.relief[i] * 2 + 6) * 10; // meters -> decimeters
-                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
-                } else {
-                    // slopes stay 0 -> gradient never triggers (<30 deg)
-                    const dDm = (pd.relief[i] * 4 + 12) * 10;
-                    deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
-                }
+                // Every aggregate keeps its subtree slope class, and hangs a
+                // full-relief skirt. The main thread gives aggregates six-sided
+                // skirt geometry, so exposed edges at mixed-size LOD cuts are
+                // sealed and remain immediately identifiable by slope color.
+                const sm = pd.slopeMean[i];
+                slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
+                const dDm = (pd.relief[i] * 4 + 12) * 10; // 4m relief units -> decimeters
+                deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
                 activeSkirts++;
             }
 
@@ -450,11 +446,15 @@ function buildLevelBuffers(parsed) {
             const pu = (d === 0) ? u : ((i / 7) | 0) * parentStride;
             parentPos[nIdx] = px[pu];
             parentPos[nIdx + 1] = pz[pu];
+            parentHeight[w] = (d === 0) ? hh : parsed.depths[d - 1].h[(i / 7) | 0];
 
             w++;
         }
 
-        lods[level] = { matrix, nz1, nz2, slopes, deltas, norms, parentPos, activeSkirts, count: num, level };
+        lods[level] = {
+            matrix, nz1, nz2, slopes, deltas, norms, parentPos, parentHeight,
+            activeSkirts, count: num, level,
+        };
     }
 
     return lods;

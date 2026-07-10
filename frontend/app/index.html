@@ -170,28 +170,23 @@
                                     style="width: 100%;">
                             </div>
 
-                            <!-- GOSPER SCREEN-SPACE LOD -->
+                            <!-- GOSPER FIXED-DISTANCE LOD -->
                             <div class="hud-item"
                                 style="flex-direction: column; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span>HEX SCREEN SIZE</span>
-                                    <span class="value" id="lod-target-px-val">3px</span>
+                                    <span>SETTLED NEAR BANDS</span>
+                                    <span class="value">2 / 5 / 10 km</span>
                                 </div>
-                                <input type="range" id="lod-target-px" min="2" max="24" step="1" value="3"
-                                    style="width: 100%;">
-                                <div style="font-size: 10px; color: #aaa;">every gosper level swaps in when its caps
-                                    shrink below this apparent size</div>
+                                <div style="font-size: 10px; color: #aaa;">unit / L1 / L2, matching the primary viewer</div>
                             </div>
 
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span>MOVING COARSENESS</span>
-                                    <span class="value" id="lod-moving-mult-val">×7.00</span>
+                                    <span>FAR HIERARCHY</span>
+                                    <span class="value">25 / 60 km</span>
                                 </div>
-                                <input type="range" id="lod-moving-mult" min="1" max="14" step="0.05" value="7"
-                                    style="width: 100%;">
                                 <div style="display: flex; justify-content: space-between; font-size: 10px; color: #aaa;">
-                                    <span>×7 = two gosper levels coarser in flight</span>
+                                    <span>moving: uniform L3 (118 m)</span>
                                     <span id="lod-quality-val">q ×7.00</span>
                                 </div>
                             </div>
@@ -287,7 +282,7 @@
         </div>
         <div id="canvas-container"></div>
 
-        <script type="module" src="main.js?v=debug3"></script>
+        <script type="module" src="main.js?v=debug4"></script>
 </body>
 
 </html>

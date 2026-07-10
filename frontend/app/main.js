@@ -1,4 +1,4 @@
-// @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation over Gosper-fractal island tiles ('GSP1'). LOD is screen-space driven: each Gosper level k renders as sqrt(7)^k-scaled, k*19.1066deg-rotated hex caps inside a geometric distance band, selected per-instance in the vertex shader by a hierarchical CDLOD cut (self >= R(k), parent < R(k+1)) that is gapless by construction. A manifest-driven horizon mesh renders every baked island's level-5 aggregate cap out to ~60 km for free. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode tiles.
+// @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation over Gosper-fractal island tiles ('GSP1'). Settled LOD uses the primary viewer's fixed world-distance bands (extended through Gosper's two extra hierarchy levels), selected per-instance by a hierarchical CDLOD cut. Moving mode renders one uniform aggregate size across the whole view. A manifest-driven horizon mesh renders every baked island's level-5 aggregate cap out to ~60 km for free. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode tiles.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
@@ -130,18 +130,14 @@ class PistonViewer {
         this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         this.log(`Platform: ${this.isMobile ? 'Mobile' : 'Desktop'}`);
 
-        // --- SCREEN-SPACE GOSPER LOD ---
-        // A level-k cap (flat-to-flat 6.4*sqrt(7)^k m) is shown while its
-        // apparent size >= hexTargetPx: band radius R(k) = size(k)*pxPerRad /
-        // (hexTargetPx * qualityScale). qualityScale animates from
-        // movingCoarseness (while the camera moves) down to 1 (settled) —
-        // one scalar replaces the old four-band antisintering nudges.
-        //
-        // Owner contract: STATIC = small skirted hexes (units reach ~1.5 km,
-        // matching the old TARGET unitEnd feel), MOVING = large skirtless
-        // caps only. 3 px settled + x7 coarser in flight (= exactly two
-        // gosper levels) reproduces that split.
-        this.hexTargetPx = this.isMobile ? 4 : 3;
+        // --- FIXED-DISTANCE GOSPER LOD ---
+        // Preserve the primary branch's useful settled bands:
+        //   unit 0..2 km, small 2..5 km, medium 5..10 km, large 10 km+
+        // Gosper has two additional hierarchy levels, so the old open-ended
+        // large band continues through 25 km and 60 km before the tile root.
+        // The hierarchical shader cut still uses a single shared boundary for
+        // every parent/child pair, so the bands partition without omissions.
+        this.settledLodRadii = new Float32Array([2000, 5000, 10000, 25000, 60000, 1e9]);
         this.movingCoarseness = 7.0;
         // While panning in 3D we do NOT run the per-distance CDLOD selection:
         // the whole view is a single uniform gosper level — identically sized
@@ -173,7 +169,8 @@ class PistonViewer {
 
         window.addEventListener('resize', this.onResize.bind(this));
 
-        // Shared Geometry — ONE unit cap + skirt; every gosper level renders
+        // Shared Geometry — ONE unit cap plus partial/full skirt variants;
+        // every gosper level renders
         // the same cap with sqrt(7)^k scale + rotation baked into instance
         // matrices by the worker (no per-level geometry variants).
         const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);
@@ -364,33 +361,6 @@ class PistonViewer {
     }
 
     initLODSliders() {
-        // TARGET HEX SIZE (settled screen-space density)
-        const targetPx = document.getElementById('lod-target-px');
-        if (targetPx) {
-            targetPx.value = this.hexTargetPx;
-            const val = document.getElementById('lod-target-px-val');
-            if (val) val.textContent = `${this.hexTargetPx}px`;
-            targetPx.addEventListener('input', () => {
-                this.hexTargetPx = parseInt(targetPx.value);
-                if (val) val.textContent = targetPx.value + 'px';
-                this.needsRender = true;
-                this.needsLODUpdate = true;
-            });
-        }
-
-        // MOVING COARSENESS multiplier
-        const movingMult = document.getElementById('lod-moving-mult');
-        if (movingMult) {
-            movingMult.value = this.movingCoarseness;
-            const val = document.getElementById('lod-moving-mult-val');
-            if (val) val.textContent = `×${this.movingCoarseness.toFixed(2)}`;
-            movingMult.addEventListener('input', () => {
-                this.movingCoarseness = parseFloat(movingMult.value);
-                if (val) val.textContent = `×${this.movingCoarseness.toFixed(2)}`;
-                this.needsRender = true;
-            });
-        }
-
         // Render Distance
         const rdSlider = document.getElementById('render-distance-slider');
         const rdVal = document.getElementById('render-distance-val');
@@ -460,20 +430,19 @@ class PistonViewer {
         if (el) el.textContent = `q ×${this.qualityScale.toFixed(2)}`;
     }
 
-    // --- SCREEN-SPACE LOD BAND RADII ---
-    // lodRadii[k] = FAR edge of level k's band: the camera distance at which
-    // a level-k cap drops below hexTargetPx * qualityScale pixels. A level-k
-    // instance draws iff selfDist > lodRadii[k-1] (anything finer would be
-    // sub-target) AND parentDist <= lodRadii[k] (the parent must refine).
+    // --- FIXED WORLD-DISTANCE LOD BAND RADII ---
+    // lodRadii[k] = FAR edge of level k's band. A level-k
+    // instance draws iff selfDist > lodRadii[k-1] (outside the finer band's
+    // fixed range) AND parentDist <= lodRadii[k] (the parent must refine).
     // The two conditions evaluate the SAME parent distance the parent itself
     // uses for its own self-test, so the hierarchical cut partitions the
     // plane exactly — no holes, no double-draw at ring boundaries.
     computeLodRadii() {
-        const fovRad = this.camera.fov * Math.PI / 180;
-        const pxPerRad = (this.renderer.domElement.clientHeight || window.innerHeight) / (2 * Math.tan(fovRad / 2));
-        const px = Math.max(4, this.hexTargetPx * this.qualityScale);
         for (let k = 0; k < TILE_LEVEL; k++) {
-            this.lodRadii[k] = G.levelSize(k) * pxPerRad / px;
+            // Keep the existing antisintering sweep: immediately after motion
+            // bands start compressed, then expand to the exact primary-style
+            // settled boundaries as qualityScale reaches 1.
+            this.lodRadii[k] = this.settledLodRadii[k] / this.qualityScale;
         }
         // Root caps never expire while their tile is resident — the horizon
         // instance for a resident tile is hidden, so someone must draw it.
@@ -490,7 +459,7 @@ class PistonViewer {
     // root at minimum) covers the footprint. This is the biggest single
     // frametime lever — it restores the old per-band residency the CDLOD
     // shader cut alone does not provide.
-    updateLevelVisibility() {
+    updateLevelVisibility(heightFactor) {
         // Panning: one uniform level across the whole view (all distances),
         // skirtless. No distance-based selection — every tile shows exactly
         // movingLevel, and that level draws ALL its instances (the material
@@ -515,24 +484,26 @@ class PistonViewer {
         const camX = this.camera.position.x;
         const camY = this.camera.position.y;
         const camZ = this.camera.position.z;
-        const margin = this.lodTileMargin;
         const R = this.lodRadii;
         for (const t of this.tiles.values()) {
             const mesh = t.mesh;
             if (!mesh) continue;
-            // MUST match the shader's instDist metric exactly: every instance's
-            // baked translation.y is 0 (see tile_worker.js buildLevelBuffers and
-            // meshGroup.position.set(t.lx, 0, t.lz)) — height is applied later,
-            // post-LOD-test, via the vertex shader's animH offset. So the
-            // shader computes distance((x,0,z), trueCameraPos), which folds in
-            // the camera's full altitude. A horizontal-only (dx,dz) distance
-            // here silently drops that term: for any oblique/top-down view
-            // (camera meaningfully above the terrain) it systematically
-            // UNDERESTIMATES distance for tiles near the camera's XZ footprint,
-            // which incorrectly hid mid LOD bands the shader would still draw
-            // — the "missing intermediate ring" bug. camY must be included.
+            // Match the shader's VISIBLE representative height instead of the
+            // old baked Y=0 proxy. Root hMean is the tile-center representative.
+            // The dynamic margin is a triangle-inequality bound from that point
+            // to any instance center: 505 m conservative XZ half-extent plus
+            // the tile's maximum animated relief about hMean. The old fixed
+            // 650 m margin already exceeded the ~490 m island extent, so tile-
+            // center XZ gating was not the marked hole's cause; this extension
+            // keeps the gate conservative after adding real cap heights.
+            const centerY = ((t.stats?.avg ?? this.floorState.value) - this.floorState.value) * heightFactor;
+            const relief = t.stats ? Math.max(
+                Math.abs(t.stats.avg - t.stats.min),
+                Math.abs(t.stats.max - t.stats.avg),
+            ) * heightFactor : 0;
+            const margin = Math.max(this.lodTileMargin, Math.hypot(TILE_CONTENT_HALF_M, relief) + 16);
             const dx = t.lx - camX;
-            const dy = -camY;
+            const dy = centerY - camY;
             const dz = t.lz - camZ;
             const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
             const near = d - margin;
@@ -602,24 +573,17 @@ class PistonViewer {
         // Quad 1 (S):  Top(1,2) -> Bottom(1,2)
         // Quad 2 (SW): Top(2,3) -> Bottom(2,3)
 
-        const vertices = [];
-        const indices = [];
-        const sideIDs = [];
+        const makeSkirtGeometry = (sideCount) => {
+            const vertices = [];
+            const indices = [];
+            const sideIDs = [];
+            let vIdx = 0;
+            for (let i = 0; i < sideCount; i++) {
+                const th1 = i * Math.PI / 3;
+                const th2 = (i + 1) * Math.PI / 3;
 
-        const angles = [
-            0,                  // 0: East
-            Math.PI / 3,        // 1: SE
-            2 * Math.PI / 3,    // 2: SW
-            Math.PI             // 3: West
-        ];
-
-        let vIdx = 0;
-        for (let i = 0; i < 3; i++) {
-            const th1 = angles[i];
-            const th2 = angles[i + 1];
-
-            const x1 = Math.cos(th1) * radius; const z1 = Math.sin(th1) * radius;
-            const x2 = Math.cos(th2) * radius; const z2 = Math.sin(th2) * radius;
+                const x1 = Math.cos(th1) * radius; const z1 = Math.sin(th1) * radius;
+                const x2 = Math.cos(th2) * radius; const z2 = Math.sin(th2) * radius;
 
             // Top (Y=0), Bottom (Y=-1)
             // 4 Verts per quad to allow distinct attributes if needed,
@@ -630,30 +594,38 @@ class PistonViewer {
             // Bottom Edge: (x1,-1,z1) -> (x2,-1,z2)
 
             // Push Vertices
-            vertices.push(x1, 0, z1);   // 0: Top Left (Start)
-            vertices.push(x2, 0, z2);   // 1: Top Right (End)
-            vertices.push(x1, -1, z1);  // 2: Btm Left
-            vertices.push(x2, -1, z2);  // 3: Btm Right
+                vertices.push(x1, 0, z1);   // 0: Top Left (Start)
+                vertices.push(x2, 0, z2);   // 1: Top Right (End)
+                vertices.push(x1, -1, z1);  // 2: Btm Left
+                vertices.push(x2, -1, z2);  // 3: Btm Right
 
             // Faces (Standard Two-Triangle Quad)
             // 2, 1, 0
             // 2, 3, 1
-            indices.push(vIdx + 2, vIdx + 1, vIdx + 0);
-            indices.push(vIdx + 2, vIdx + 3, vIdx + 1);
+                indices.push(vIdx + 2, vIdx + 1, vIdx + 0);
+                indices.push(vIdx + 2, vIdx + 3, vIdx + 1);
 
-            // Side ID (0, 1, 2)
-            for (let k = 0; k < 4; k++) sideIDs.push(i);
+                // Unit skirts use directional side IDs 0..2. Aggregate
+                // attributes are symmetric on all six sides, so cycling the
+                // same IDs keeps the compact vec3 shader interface.
+                for (let k = 0; k < 4; k++) sideIDs.push(i % 3);
 
-            vIdx += 4;
-        }
+                vIdx += 4;
+            }
 
-        const skirtGeo = new THREE.BufferGeometry();
-        skirtGeo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-        skirtGeo.setAttribute('aSideId', new THREE.Float32BufferAttribute(sideIDs, 1));
-        skirtGeo.setIndex(indices);
-        skirtGeo.computeVertexNormals(); // Nice to have for lighting
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('aSideId', new THREE.Float32BufferAttribute(sideIDs, 1));
+            geometry.setIndex(indices);
+            geometry.computeVertexNormals();
+            return geometry;
+        };
 
-        return { capGeo, skirtGeo };
+        return {
+            capGeo,
+            unitSkirtGeo: makeSkirtGeometry(3),
+            aggregateSkirtGeo: makeSkirtGeometry(6),
+        };
     }
 
     onResize() {
@@ -754,7 +726,8 @@ class PistonViewer {
             const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);
             const geos = this.createHexGeometry(side);
             this.capGeometry = geos.capGeo;
-            this.skirtGeometry = geos.skirtGeo;
+            this.unitSkirtGeometry = geos.unitSkirtGeo;
+            this.aggregateSkirtGeometry = geos.aggregateSkirtGeo;
 
             this.essentialTilesTarget = 1;
 
@@ -915,7 +888,8 @@ class PistonViewer {
         // the geometry. Scale + rotation come baked in the instance matrices
         // (sqrt(7)^k / k*19.1066deg from the worker) — the clones stay unit.
         const capG = this.capGeometry.clone();
-        const skirtG = includeSkirts ? this.skirtGeometry.clone() : null;
+        const skirtSource = lodData.level >= 1 ? this.aggregateSkirtGeometry : this.unitSkirtGeometry;
+        const skirtG = includeSkirts ? skirtSource.clone() : null;
 
         const capMesh = new THREE.InstancedMesh(capG, material, num);
         const skirtMesh = skirtG ? new THREE.InstancedMesh(skirtG, material, num) : null;
@@ -941,6 +915,7 @@ class PistonViewer {
             m.geometry.setAttribute('instanceDeltas', new THREE.InstancedBufferAttribute(lodData.deltas, 3));
             m.geometry.setAttribute('instanceNormal', new THREE.InstancedBufferAttribute(lodData.norms, 2));
             m.geometry.setAttribute('aParentPos', new THREE.InstancedBufferAttribute(lodData.parentPos, 2));
+            m.geometry.setAttribute('aParentHeight', new THREE.InstancedBufferAttribute(lodData.parentHeight, 1));
         });
 
         const group = new THREE.Group();
@@ -956,7 +931,7 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_gosper_v3';
+        material.customProgramCacheKey = () => 'piston_hex_gosper_v4';
 
         const texSide = this.texWorldSide || 980.0;
 
@@ -996,6 +971,7 @@ class PistonViewer {
                 attribute vec3 instanceDeltas;
                 attribute vec2 instanceNormal; // (Nx, Nz)
                 attribute vec2 aParentPos;     // parent gosper node center, tile-local XZ
+                attribute float aParentHeight; // parent representative source elevation (m)
 
                 attribute float aSideId;
 
@@ -1010,9 +986,12 @@ class PistonViewer {
             `).replace('#include <begin_vertex>', `
                 #include <begin_vertex>
 
+                float myH = instanceNZ_2.z - uFloorOffset;
+                float animH = myH * uHeightFactor;
+
                 // HIERARCHICAL CDLOD CUT (per-instance, evaluated on centers)
                 // Draw this level-k node iff:
-                //   selfDist  >  uLodRadii.x  (R(k-1): anything finer would be sub-target px)
+                //   selfDist  >  uLodRadii.x  (R(k-1): outside the finer fixed-distance band)
                 //   parentDist <= uLodRadii.y (R(k): the parent must refine here)
                 // The parent evaluates the identical distance value for its own
                 // self-test, so parent/child regions partition exactly — no
@@ -1020,9 +999,15 @@ class PistonViewer {
                 // relaxes the self test while finer levels aren't built yet.
                 #ifdef USE_INSTANCING
                     vec3 instancePos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-                    vec3 worldInstancePos = (modelMatrix * vec4(instancePos, 1.0)).xyz;
+                    // Instance matrices intentionally keep Y=0 because cap
+                    // elevation is animated in the shader. LOD must measure to
+                    // that visible representative height, not absolute Y=0;
+                    // the latter makes a high camera choose coarse hexes even
+                    // directly above nearby elevated terrain.
+                    vec3 worldInstancePos = (modelMatrix * vec4(instancePos.x, animH, instancePos.z, 1.0)).xyz;
                     float instDist = distance(worldInstancePos, uCameraPos);
-                    vec3 worldParentPos = (modelMatrix * vec4(aParentPos.x, 0.0, aParentPos.y, 1.0)).xyz;
+                    float parentAnimH = (aParentHeight - uFloorOffset) * uHeightFactor;
+                    vec3 worldParentPos = (modelMatrix * vec4(aParentPos.x, parentAnimH, aParentPos.y, 1.0)).xyz;
                     float parentDist = distance(worldParentPos, uCameraPos);
 
                     bool selfCoarseEnough = (instDist > uLodRadii.x) || (uFinestBuilt > 0.5);
@@ -1035,9 +1020,6 @@ class PistonViewer {
                 #else
                     vInstDist = 0.0;
                 #endif
-
-                float myH = instanceNZ_2.z - uFloorOffset;
-                float animH = myH * uHeightFactor;
 
                 bool isCap = (normal.y > 0.9);
                 vIsTop = isCap ? 1.0 : 0.0;
@@ -2327,7 +2309,7 @@ class PistonViewer {
 
         // --- MATERIAL UNIFORM UPDATE ---
         this.computeLodRadii();
-        this.updateLevelVisibility();
+        this.updateLevelVisibility(h);
         let needsUpdateCount = 0;
         for (const m of this.materialsToUpdate) {
             if (m.needsUpdate) needsUpdateCount++;
