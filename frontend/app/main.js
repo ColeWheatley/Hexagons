@@ -106,14 +106,22 @@ class PistonViewer {
 
         // INTERACTION STATE TRACKING
         this.isUserInteracting = false;
+        // True for either flat/top-down or pitched camera movement.  This is
+        // deliberately separate from isMoving3D: the uniform moving LOD is a
+        // whole-scene invariant, not a 3D-only optimization.
+        this.isMovingView = false;
         this.controls.addEventListener('start', () => {
             this.isUserInteracting = true;
-            this.isMoving3D = true;
+            // animate() derives both moving flags from this interaction. Keep
+            // the previous-frame values intact so it can detect the edge and
+            // atomically swap every moving/settled representation.
             this.resetLODs();
         });
         this.controls.addEventListener('end', () => {
             this.isUserInteracting = false;
-            this.isMoving3D = false;
+            // animate() owns the moving -> settled transition.  Do not clear
+            // its previous state here or that frame cannot restore the
+            // settled horizon/skirts reliably.
             this.lastInteractionTime = performance.now();
         });
         this.controls.addEventListener('change', () => {
@@ -217,6 +225,7 @@ class PistonViewer {
         // - 3D sintered: allow building finer LODs once camera is settled.
         this.isMoving3D = false;
         this.wasMoving3D = false;
+        this.wasMovingView = false;
         this.sinterQueue = [];
 
         // Engine state machine (for structured perf logging)
@@ -466,7 +475,7 @@ class PistonViewer {
         // uniform pass forces its CDLOD cut open). This is the intended fast
         // look; it also avoids the mixed-size "disjointed plates" that a
         // per-distance cut produces mid-pan.
-        if (this.isMoving3D) {
+        if (this.isMovingView) {
             const ml = this.movingLevel;
             for (const t of this.tiles.values()) {
                 const mesh = t.mesh;
@@ -749,12 +758,14 @@ class PistonViewer {
     }
 
     // ------------------------------------------------------------------
-    // HORIZON MESH — every baked island's level-5 aggregate, rendered as one
-    // InstancedMesh straight from the manifest (no tile fetches). This is the
-    // "query all of Tirol's max-size hexes for free" payoff: distant terrain
-    // stays mountain-shaped out to HORIZON_DISTANCE at ~6 triangles per
-    // 830 m island. Resident tiles hide their horizon instance (zero-scale
-    // matrix) because the tile's own root cap draws the same hex.
+    // HORIZON MESHES — settled mode renders every baked island's level-5
+    // aggregate as one manifest-only InstancedMesh.  Moving mode swaps that
+    // mesh for a uniform level-3 subdivision (49 caps per island), so a
+    // nonresident/loading island can never leak an 830 m L5 cap into the
+    // resident 118 m L3 moving cut.  The manifest only knows the island root
+    // hMean/normal, so every fallback child repeats those values; this adds no
+    // fictional elevation detail. Resident tiles zero-scale their fallback
+    // instances because their decoded L3 data is authoritative.
     // ------------------------------------------------------------------
     buildHorizon() {
         const tiles = this.manifest.tiles;
@@ -839,10 +850,72 @@ class PistonViewer {
         geo.setAttribute('instanceShade', new THREE.InstancedBufferAttribute(shades, 1));
         mesh.frustumCulled = false;
         mesh.instanceMatrix.needsUpdate = true;
+        mesh.userData.gosperLevel = TILE_LEVEL;
+        mesh.userData.isSettledHorizon = true;
         this.horizonMesh = mesh;
         this.materialsToUpdate.add(material);
         material.userData.isHorizon = true;
         this.scene.add(mesh);
+
+        // One island contains 7^(5-3) = 49 L3 nodes. Their centers are the
+        // first unit of each depth-2 heap subtree (stride 7^3), exactly as in
+        // tile_worker.js. Heights/normals remain the manifest root aggregate.
+        const movingLevel = this.movingLevel;
+        const childrenPerTile = Math.pow(7, TILE_LEVEL - movingLevel);
+        const childStride = Math.pow(7, movingLevel);
+        const offsets = G.offsets(TILE_LEVEL);
+        const localXZ = [];
+        for (let child = 0; child < childrenPerTile; child++) {
+            const unit = child * childStride;
+            const q = offsets[unit * 2], r = offsets[unit * 2 + 1];
+            const [x, y] = G.axialToWorld(q, r);
+            localXZ.push({ x, z: -y });
+        }
+        this.movingHorizonLocalXZ = localXZ;
+        this.movingHorizonChildrenPerTile = childrenPerTile;
+        this.movingHorizonIndex = new Map();
+
+        const movingCount = count * childrenPerTile;
+        const movingGeo = this.capGeometry.clone();
+        const movingHeights = new Float32Array(movingCount);
+        const movingShades = new Float32Array(movingCount);
+        const movingMesh = new THREE.InstancedMesh(movingGeo, material, movingCount);
+        let movingInstance = 0;
+        tiles.forEach((t) => {
+            this.movingHorizonIndex.set(`${t.yq}_${t.yr}`, movingInstance);
+            for (let child = 0; child < childrenPerTile; child++, movingInstance++) {
+                this._writeMovingHorizonMatrix(movingMesh, movingInstance, t, child, false);
+                movingHeights[movingInstance] = t.hMean;
+                movingShades[movingInstance] = shades[this.horizonIndex.get(`${t.yq}_${t.yr}`)];
+            }
+        });
+        movingGeo.setAttribute('instanceH', new THREE.InstancedBufferAttribute(movingHeights, 1));
+        movingGeo.setAttribute('instanceShade', new THREE.InstancedBufferAttribute(movingShades, 1));
+        movingMesh.frustumCulled = false;
+        movingMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        movingMesh.instanceMatrix.needsUpdate = true;
+        movingMesh.visible = false;
+        movingMesh.userData.gosperLevel = movingLevel;
+        movingMesh.userData.isMovingHorizon = true;
+        this.movingHorizonMesh = movingMesh;
+        this.scene.add(movingMesh);
+    }
+
+    _writeMovingHorizonMatrix(mesh, instance, tile, child, hidden) {
+        const m = this._horizonMat4;
+        if (hidden) {
+            m.makeScale(0, 0, 0);
+        } else {
+            const xz = G.levelXZ(this.movingLevel);
+            const local = this.movingHorizonLocalXZ[child];
+            m.set(
+                xz.a, 0, xz.b, tile.lx + local.x,
+                0, 1, 0, 0,
+                xz.c, 0, xz.d, tile.lz + local.z,
+                0, 0, 0, 1
+            );
+        }
+        mesh.setMatrixAt(instance, m);
     }
 
     setHorizonTileHidden(key, hidden) {
@@ -863,6 +936,15 @@ class PistonViewer {
         }
         this.horizonMesh.setMatrixAt(i, m);
         this.horizonMesh.instanceMatrix.needsUpdate = true;
+
+        if (this.movingHorizonMesh && this.movingHorizonIndex?.has(key)) {
+            const base = this.movingHorizonIndex.get(key);
+            for (let child = 0; child < this.movingHorizonChildrenPerTile; child++) {
+                this._writeMovingHorizonMatrix(
+                    this.movingHorizonMesh, base + child, t, child, hidden);
+            }
+            this.movingHorizonMesh.instanceMatrix.needsUpdate = true;
+        }
     }
 
     createTileMaterial(lodIdx, hasTexture, texture) {
@@ -1606,7 +1688,7 @@ class PistonViewer {
             // levels (1: 2401, 0: 16807) defer to the sinter pass when the
             // camera is moving — same deferral pattern as before, driven by
             // the same needsSinteredBuild machinery.
-            const eagerLevels = this.isMoving3D ? [5, 4, 3, 2] : [5, 4, 3, 2, 1, 0];
+            const eagerLevels = this.isMovingView ? [5, 4, 3, 2] : [5, 4, 3, 2, 1, 0];
             const builtLevels = {};
 
             for (const level of eagerLevels) {
@@ -1631,7 +1713,7 @@ class PistonViewer {
                     // Aggregate skirts only render when settled — moving mode
                     // is large SKIRTLESS caps (fast) by owner contract.
                     if (level >= 1 && finalMesh.children[1]) {
-                        finalMesh.children[1].visible = !this.isMoving3D;
+                        finalMesh.children[1].visible = !this.isMovingView;
                     }
                     meshGroup.add(finalMesh);
                     builtLevels[level] = true;
@@ -1671,8 +1753,8 @@ class PistonViewer {
                 material: sharedMaterial, bounds,
                 lods: workerData.lods,
                 builtLevels,
-                finestBuilt: this.isMoving3D ? 2 : 0,
-                needsSinteredBuild: this.isMoving3D,
+                finestBuilt: this.isMovingView ? 2 : 0,
+                needsSinteredBuild: this.isMovingView,
                 unitHeights: workerData.unitHeights,
                 stats: workerData.stats,
                 center: workerData.center,
@@ -2183,6 +2265,32 @@ class PistonViewer {
             },
             violations: this._perfViolationCount,
             allocationCount: this.vramLedger.entries.size,
+            movingLod: this.getMovingLodDebugStats(),
+        };
+    }
+
+    getMovingLodDebugStats() {
+        let residentCaps = 0;
+        for (const tile of this.tiles.values()) {
+            const group = tile.mesh?.children?.find(
+                g => g.userData.gosperLevel === this.movingLevel);
+            if (group?.visible && group.children[0]?.visible) {
+                residentCaps += group.children[0].count;
+            }
+        }
+        const manifestTiles = this.manifest?.tiles?.length || 0;
+        const fallbackTiles = Math.max(0, manifestTiles - this.tiles.size);
+        return {
+            active: this.isMovingView,
+            level: this.movingLevel,
+            flatToFlatMeters: +G.levelSize(this.movingLevel).toFixed(3),
+            residentCaps,
+            fallbackTiles,
+            fallbackCaps: this.movingHorizonMesh?.visible
+                ? fallbackTiles * (this.movingHorizonChildrenPerTile || 0) : 0,
+            settledHorizonVisible: !!this.horizonMesh?.visible,
+            movingHorizonVisible: !!this.movingHorizonMesh?.visible,
+            visibleLevels: this.isMovingView ? [this.movingLevel] : 'settled-multi-lod',
         };
     }
 
@@ -2218,10 +2326,16 @@ class PistonViewer {
         const angle = this.controls.getPolarAngle() * 180 / Math.PI;
         const flat = angle < 5.5;
         const wasMoving3D = this.isMoving3D;
-        this.isMoving3D = !flat && (moved || this.isUserInteracting);
+        const wasMovingView = this.isMovingView;
+        this.isMovingView = moved || this.isUserInteracting;
+        this.isMoving3D = !flat && this.isMovingView;
 
         // --- DERIVE ENGINE STATE (must happen after moved/flat/isMoving3D are set) ---
         this.engineState = this.deriveEngineState(moved, flat);
+        // The first no-motion frame is also the moving -> settled swap frame.
+        // Keep it from taking the STATIC early-return before horizon, skirt,
+        // and resident-level visibility have been restored.
+        if (wasMovingView !== this.isMovingView) this.needsRender = true;
 
         // If transitioning INTO movement, clear the upgrade queue
         if (!wasMoving3D && this.isMoving3D) {
@@ -2279,8 +2393,8 @@ class PistonViewer {
         // skirts render when settled, hide while moving (large skirtless
         // caps = the fast panning mode).
         let visibilityChanges = 0;
-        if (wasMoving3D !== this.isMoving3D) {
-            const showAggSkirts = !this.isMoving3D;
+        if (wasMovingView !== this.isMovingView) {
+            const showAggSkirts = !this.isMovingView;
             for (const t of this.tiles.values()) {
                 if (!t.mesh) continue;
                 for (const g of t.mesh.children) {
@@ -2290,6 +2404,8 @@ class PistonViewer {
                     }
                 }
             }
+            if (this.horizonMesh) this.horizonMesh.visible = !this.isMovingView;
+            if (this.movingHorizonMesh) this.movingHorizonMesh.visible = this.isMovingView;
         }
 
         // --- SINTERING (settled 3D) ---
@@ -2306,6 +2422,7 @@ class PistonViewer {
             }
         }
         this.wasMoving3D = this.isMoving3D;
+        this.wasMovingView = this.isMovingView;
 
         // --- MATERIAL UNIFORM UPDATE ---
         this.computeLodRadii();
@@ -2325,7 +2442,7 @@ class PistonViewer {
 
                 if (m.userData.lodIdx !== undefined) {
                     const k = m.userData.lodIdx;
-                    if (this.isMoving3D && k === this.movingLevel) {
+                    if (this.isMovingView && k === this.movingLevel) {
                         // Uniform panning level: force the cut fully open so
                         // every instance of this level draws at all distances.
                         m.userData.shader.uniforms.uLodRadii.value.set(0.0, 1e12);
