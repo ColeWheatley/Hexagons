@@ -1,8 +1,8 @@
-# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v5.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP1 binary tiles plus island-centered XUASTC LDR 6x6 KTX2 textures with incremental caching.
-# 🧇 Waffle Iron v5.0 - Gosper Island Bake Edition
+# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v6.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP2 binary tiles plus island-centered three-tier XUASTC LDR 6x6 KTX2 textures with incremental caching.
+# 🧇 Waffle Iron v6.0 - Gosper Island Bake Edition
 # =============================================================================
 # FEATURES:
-#   - GSP1 per-island binary layout (locked frontend contract)
+#   - GSP2 per-island binary layout with conservative aggregate vertical bounds
 #   - Gapless "Partial Skirt" Topology (SE, S, SW ownership)
 #   - "Diamond" Area Sampling for faithful edge slopes
 #   - Baked-in Center Normals (Nx, Nz) for smooth Cap lighting
@@ -21,10 +21,10 @@
 #                    Generated on first run from the DEM (2× upsampled dx/dy gradients)
 #
 # OUTPUT FORMATS (baked per Gosper L5 island, also NOT in git):
-#   .bin:   GSP1 header + 5 heap-ordered Gosper depth blocks
+#   .bin:   GSP2 header + 5 heap-ordered Gosper depth blocks
 #   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
-#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). 4096px canvas = 980m square
-#           centered on the island. Saved at full res + 1/16 "low" res for LOD streaming.
+#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). One 980m square per island,
+#           emitted as low/medium/high KTX2 tiers at 128/256/4096px with full mips.
 #
 # HARDWARE PROFILE (reference machine):
 #   MacBook M1, 16 GB shared memory
@@ -56,6 +56,7 @@ from pyproj import Transformer
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 import generate_manifest
+from texture_contract import TEXTURE_RECIPE_VERSION, TEXTURE_TIERS, TEXTURE_TIER_SIZES
 
 def latlon_to_world_meters(lat, lon):
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:31254", always_xy=True)
@@ -71,17 +72,18 @@ S3_PREFIX = "powfinder/app"
 # =============================================================================
 # CONSTANTS & CONFIGURATION
 # =============================================================================
-# Texture canvas is locked to 4096px total (GPU MAX_TEXTURE_SIZE floor, PoT mips).
-# Gosper islands use one uniform world-metric square; the shader maps
-# uv = local_xz / 980 + 0.5.
-TEXTURE_CANVAS_PX = 4096
+# The composite is built once at the high-tier size. Smaller tiers are derived
+# from it before diagnostics are applied, preventing cross-tier color bleed.
+# High includes a complete mip chain and fits the WebGL2 4096 minimum maximum
+# texture size without a duplicate fallback asset.
+TEXTURE_CANVAS_PX = TEXTURE_TIER_SIZES["high"]
 XUASTC_QUALITY = 75  # basisu -quality (0-100); tradeoff vs bitrate — never reduce this for speed
-# basisu -effort (0-10); tradeoff vs encode speed. Benchmarked full-res (4096x4096)
+# basisu -effort (0-10); tradeoff vs encode speed. Benchmarked at 4096x4096
 # single-file encodes on the reference M1: effort=4 -> ~45s, effort=2 -> ~23s,
 # effort=1 -> ~8s (file size differs by <2% across all three at fixed quality=75 —
 # effort mostly buys robustness against harder blocks, not raw size). effort=4
 # alone blows the ~30s/sector bake budget; effort=1 keeps a full sector (canvas
-# composite + full + low encode + .bin bake) at ~11s, matching run_lil_bake.sh's
+# composite + texture encodes + .bin bake) at ~11s, matching run_lil_bake.sh's
 # "rapid iteration" intent. Lowered per the "reduce effort, never quality/block
 # size" rule — see run_basisu_encode() for a second, unrelated speed fix
 # (dropping -parallel, which disables intra-image multithreading for
@@ -93,22 +95,23 @@ DEBUG_MODE = False
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "5.0.0"  # bump this when you change .bin baking logic to trigger re-bake
-TEXTURE_VERSION = "2.1.0"  # candidate-union source selection + geometry coverage validation
-TEXTURE_TATTOO_VERSION = "1"  # diagnostic recipe version; deliberately separate from clean textures
+BAKER_VERSION = "6.0.0"  # GSP2 aggregate extents; forces legacy GSP1 bins to re-bake
+TEXTURE_VERSION = TEXTURE_RECIPE_VERSION
+TEXTURE_TATTOO_VERSION = "2"  # three-tier colors/sizes; separate from clean textures
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
 # world metres, so overlapping island textures paint the same strokes at the
-# same terrain locations.  A 3.8 m stroke is one low-res pixel and sixteen
-# full-res pixels at the production 980 m / {256,4096}px sizes: thin in the
-# landscape, but equally visible after either texture is sampled.
+# same terrain locations.  A 7.7m stroke is approximately 1/2/64 pixels at the
+# production 980m / {128,256,4096}px sizes: sparse in the landscape, with a
+# comparable world-space line weight in all three tiers.
 TEXTURE_TATTOO_COLORS = {
-    "low": (0, 80, 255),      # electric blue
-    "full": (255, 0, 170),   # hot pink
+    "low": (0, 255, 48),       # very vibrant green postage tier
+    "medium": (0, 96, 255),    # electric blue medium tier
+    "high": (255, 0, 170),     # hot pink high tier
 }
 TEXTURE_TATTOO_SPACING_M = 128.0
 TEXTURE_TATTOO_RADIUS_M = 24.0
-TEXTURE_TATTOO_STROKE_M = 3.8
+TEXTURE_TATTOO_STROKE_M = 7.7
 
 DEFAULT_GRID_SIZE = 12  # 12×12 grid for mini-bake (configurable via --grid)
 
@@ -122,12 +125,23 @@ METADATA_PATH = "frontend/app/tiles_bin/metadata.json"
 # baking anything.
 BASISU_BINARY = None
 
-GSP1_HEADER_STRUCT = struct.Struct("<4sHHiiiifffBBBBBxxxI")
+# GSP1 and GSP2 share the 48-byte header and 14-byte unit record. GSP2 replaces
+# the old 8-byte aggregate's saturating 4m relief byte with independent uint16
+# decimetre extents around the reconstructed aggregate mean. A reserved byte
+# pads the record to 12 bytes and must be zero.
+GSP_HEADER_STRUCT = struct.Struct("<4sHHiiiifffBBBBBxxxI")
 GSP1_AGG_STRUCT = struct.Struct("<hBBBBBB")
-GSP1_UNIT_STRUCT = struct.Struct("<hhhhBBBBBB")
+GSP2_AGG_STRUCT = struct.Struct("<hBBBBHHBB")
+GSP_UNIT_STRUCT = struct.Struct("<hhhhBBBBBB")
 GSP1_MAGIC = b"GSP1"
 GSP1_VERSION = 1
+GSP2_MAGIC = b"GSP2"
+GSP2_VERSION = 2
 GSP1_TILE_LEVEL = coord_util.GOSPER_TILE_LEVEL
+# Compatibility aliases retained for tooling that only needs the unchanged
+# header/unit layouts. New bakes always write GSP2.
+GSP1_HEADER_STRUCT = GSP_HEADER_STRUCT
+GSP1_UNIT_STRUCT = GSP_UNIT_STRUCT
 GSP1_UNIT_DTYPE = np.dtype([
     ("dH", "<i2"), ("d1", "<i2"), ("d2", "<i2"), ("d3", "<i2"),
     ("s1", "u1"), ("s2", "u1"), ("s3", "u1"),
@@ -136,6 +150,12 @@ GSP1_UNIT_DTYPE = np.dtype([
 GSP1_AGG_DTYPE = np.dtype([
     ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
     ("nx", "u1"), ("nz", "u1"), ("relief", "u1"), ("flags", "u1"),
+])
+GSP2_AGG_DTYPE = np.dtype([
+    ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
+    ("nx", "u1"), ("nz", "u1"),
+    ("downExtent", "<u2"), ("upExtent", "<u2"),
+    ("flags", "u1"), ("reserved", "u1"),
 ])
 
 
@@ -253,17 +273,34 @@ def apply_texture_tattoo(image, bounds, resolution_kind):
     return image
 
 
-def prepare_texture_variants(canvas, bounds, tattoos_enabled=False):
-    """Build the full/low pre-encode images, adding diagnostics after low-res sampling."""
+def prepare_texture_variants(canvas, bounds, tattoos_enabled=False, tier_sizes=None):
+    """Build all pre-encode tiers, adding diagnostics after each resize.
+
+    ``tier_sizes`` is injectable for lightweight unit tests; production callers
+    use the locked 128/256/4096 contract. The high canvas is returned by
+    reference rather than copied, which avoids a redundant ~48 MiB RGB image.
+    """
     from PIL import Image
 
-    low = canvas.resize((TEXTURE_CANVAS_PX // 16, TEXTURE_CANVAS_PX // 16), Image.Resampling.LANCZOS)
+    sizes = dict(tier_sizes or TEXTURE_TIER_SIZES)
+    required = {tier["name"] for tier in TEXTURE_TIERS}
+    if set(sizes) != required:
+        raise ValueError(f"Texture tier sizes must define exactly {sorted(required)}")
+    expected_high = int(sizes["high"])
+    if canvas.size != (expected_high, expected_high):
+        raise ValueError(f"High texture canvas must be {expected_high}x{expected_high}, got {canvas.size}")
+
+    variants = {
+        "low": canvas.resize((int(sizes["low"]), int(sizes["low"])), Image.Resampling.LANCZOS),
+        "medium": canvas.resize((int(sizes["medium"]), int(sizes["medium"])), Image.Resampling.LANCZOS),
+        "high": canvas,
+    }
     if tattoos_enabled:
-        # Resize first: otherwise pink full-res pixels would bleed into blue low
-        # diagnostics.  Each variant must carry exactly one unambiguous color.
-        apply_texture_tattoo(canvas, bounds, "full")
-        apply_texture_tattoo(low, bounds, "low")
-    return canvas, low
+        # Resize first: otherwise high-tier pink pixels would bleed into the
+        # lower tiers. Each variant carries exactly one unambiguous color.
+        for tier_name, image in variants.items():
+            apply_texture_tattoo(image, bounds, tier_name)
+    return variants
 
 
 def select_aerial_tifs_for_islands(all_tifs, islands):
@@ -704,6 +741,17 @@ def _pack_i16_dm(values):
     return np.clip(np.rint(values), -32767, 32767).astype(np.int16)
 
 
+def _pack_u16_extent_dm(values_m):
+    """Conservatively ceil non-negative metre extents into uint16 decimetres."""
+    values_m = np.asarray(values_m, dtype=np.float64)
+    if not np.all(np.isfinite(values_m)):
+        raise ValueError("GSP2 vertical extents must be finite")
+    scaled = np.ceil(np.maximum(values_m, 0.0) * 10.0)
+    if np.any(scaled > np.iinfo(np.uint16).max):
+        raise OverflowError("GSP2 vertical extent exceeds uint16 decimetre range")
+    return scaled.astype(np.uint16)
+
+
 def _pack_normals_round(nx, nz):
     return (
         _pack_u8_round(nx * 127.0 + 128.0),
@@ -754,6 +802,16 @@ def _aggregate_normals(child_nx, child_nz, child_valid):
 
 def _float32(value):
     return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+
+
+def _float32_outward(value, direction):
+    """Round a bound to float32 without ever moving it toward the interval."""
+    packed = np.float32(value)
+    if direction < 0 and float(packed) > float(value):
+        packed = np.nextafter(packed, np.float32(-np.inf), dtype=np.float32)
+    elif direction > 0 and float(packed) < float(value):
+        packed = np.nextafter(packed, np.float32(np.inf), dtype=np.float32)
+    return float(packed)
 
 
 def gosper_island_info(latQ, latR):
@@ -819,9 +877,11 @@ def bake_gosper_textures(
 
             try:
                 data = src.read(window=window, out_shape=(src.count, h_px, w_px), resampling=rasterio.enums.Resampling.lanczos)
-                patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8"), "RGB")
+                patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8", copy=False), "RGB")
                 canvas.paste(patch, (px0, py0))
                 coverage[py0:py1, px0:px1] = True
+                patch.close()
+                del patch, data
             except Exception as exc:
                 print(f"   ⚠️ aerial source failed for {t['path']}: {exc}")
 
@@ -834,30 +894,46 @@ def bake_gosper_textures(
         unit_valid,
         tile_label=f"gosper_{latQ}_{latR}",
     )
+    # The 4096² coverage mask is ~16 MiB and is not needed during PNG/KTX2
+    # encoding, where the external encoder has its own substantial working set.
+    del coverage
 
-    res_dirs = {k: os.path.join(output_dir, k) for k in ["full", "low"]}
+    tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
+    res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
     for d in res_dirs.values():
-        if not os.path.exists(d): os.makedirs(d)
+        os.makedirs(d, exist_ok=True)
 
     f_name = gosper_asset_name(latQ, latR, "ktx2")
-    full_path = os.path.join(res_dirs["full"], f_name)
-    low_path = os.path.join(res_dirs["low"], f_name)
+    final_paths = {tier: os.path.join(res_dirs[tier], f_name) for tier in tier_names}
+    variants = prepare_texture_variants(canvas, info["bounds"], texture_tattoos)
 
-    canvas, c_low = prepare_texture_variants(canvas, info["bounds"], texture_tattoos)
+    # Keep temporary KTX2s on the destination filesystem, then publish all
+    # three with atomic renames only after every encode succeeds. This avoids a
+    # mixed-generation island if the expensive high-tier encode fails midway.
+    with tempfile.TemporaryDirectory(prefix=".waffle_ktx2_", dir=output_dir) as tmp_dir:
+        input_paths = {tier: os.path.join(tmp_dir, f"{tier}.png") for tier in tier_names}
+        encoded_paths = {tier: os.path.join(tmp_dir, f"{tier}.ktx2") for tier in tier_names}
+        for tier in tier_names:
+            variants[tier].save(input_paths[tier], "PNG")
 
-    with tempfile.TemporaryDirectory(prefix="waffle_ktx2_") as tmp_dir:
-        full_png = os.path.join(tmp_dir, "full.png")
-        low_png = os.path.join(tmp_dir, "low.png")
-        canvas.save(full_png, "PNG")
-        c_low.save(low_png, "PNG")
+        # PIL's high image aliases ``canvas``. Release all raster images before
+        # starting basisu so the 4096px composite is not resident alongside the
+        # encoder's own high-tier buffers.
+        for image in variants.values():
+            image.close()
+        variants.clear()
+        canvas = None
+        gc.collect()
 
-        run_basisu_encode(full_png, full_path)
-        run_basisu_encode(low_png, low_path)
+        for tier in tier_names:
+            run_basisu_encode(input_paths[tier], encoded_paths[tier])
+        for tier in tier_names:
+            os.replace(encoded_paths[tier], final_paths[tier])
 
     recipe_version = texture_recipe_version or texture_cache_version(texture_tattoos)
     write_texture_recipe_marker(texture_recipe_marker_path(latQ, latR, output_dir), recipe_version)
-    upload_to_s3(full_path)
-    upload_to_s3(low_path)
+    for tier in tier_names:
+        upload_to_s3(final_paths[tier])
 
 
 def _read_unit_dem_samples(latQ, latR, dem_ds):
@@ -1032,10 +1108,8 @@ def _build_gsp1_nodes(h_unit, valid_unit, unit_slopes, unit_nx, unit_nz):
     return nodes
 
 
-def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid):
+def _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid):
     root_h = _float32(nodes[0]["h_true"][0])
-    h_min = _float32(nodes[0]["h_min"][0])
-    h_max = _float32(nodes[0]["h_max"][0])
     root_slope_mean = int(_pack_u8_round(nodes[0]["slope_mean"])[0])
     root_slope_max = int(nodes[0]["slope_max"][0])
     root_nx = int(nodes[0]["nx"][0])
@@ -1050,9 +1124,35 @@ def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
         dH_by_depth[depth] = dH
         recon[depth] = parent_recon + dH.astype(np.float64) * 0.1
 
-    blob = bytearray(GSP1_HEADER_STRUCT.pack(
-        GSP1_MAGIC,
-        GSP1_VERSION,
+    # Frustum bounds must enclose the geometry the client reconstructs, not
+    # merely the pre-quantization DEM statistics. Combine both ranges; this
+    # costs at most the sub-decimetre dH error while remaining useful for data
+    # inspection as well as rendering.
+    descendant_bounds = {}
+    for depth in range(1, GSP1_TILE_LEVEL):
+        count = 7 ** depth
+        descendants_per_node = 7 ** (GSP1_TILE_LEVEL - depth)
+        descendant_valid = unit_valid.reshape(count, descendants_per_node)
+        descendant_heights = recon[GSP1_TILE_LEVEL].reshape(count, descendants_per_node)
+        render_min = np.where(descendant_valid, descendant_heights, np.inf).min(axis=1)
+        render_max = np.where(descendant_valid, descendant_heights, -np.inf).max(axis=1)
+        has_data = nodes[depth]["flags"].astype(bool)
+        render_min[~has_data] = nodes[depth]["h_true"][~has_data]
+        render_max[~has_data] = nodes[depth]["h_true"][~has_data]
+        descendant_bounds[depth] = (
+            np.minimum(nodes[depth]["h_min"], render_min),
+            np.maximum(nodes[depth]["h_max"], render_max),
+        )
+
+    reconstructed_units = recon[GSP1_TILE_LEVEL][unit_valid]
+    root_bound_min = min(float(nodes[0]["h_min"][0]), float(reconstructed_units.min()))
+    root_bound_max = max(float(nodes[0]["h_max"][0]), float(reconstructed_units.max()))
+    h_min = _float32_outward(root_bound_min, -1)
+    h_max = _float32_outward(root_bound_max, 1)
+
+    blob = bytearray(GSP_HEADER_STRUCT.pack(
+        GSP2_MAGIC,
+        GSP2_VERSION,
         GSP1_TILE_LEVEL,
         info["centerQ"],
         info["centerR"],
@@ -1072,15 +1172,23 @@ def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
     for depth in range(1, GSP1_TILE_LEVEL):
         node = nodes[depth]
         count = 7 ** depth
-        records = np.empty(count, dtype=GSP1_AGG_DTYPE)
+        records = np.empty(count, dtype=GSP2_AGG_DTYPE)
         records["dH"] = dH_by_depth[depth]
         records["slopeMean"] = _pack_u8_round(node["slope_mean"])
         records["slopeMax"] = node["slope_max"]
         records["nx"] = node["nx"]
         records["nz"] = node["nz"]
-        relief = np.where(node["flags"].astype(bool), (node["h_max"] - node["h_min"]) / 4.0, 0.0)
-        records["relief"] = _pack_u8_round(relief)
+        valid = node["flags"].astype(bool)
+        # Extents are relative to the *reconstructed* dH mean consumed by the
+        # renderer, not the unquantized statistical mean. Ceil quantization
+        # guarantees [mean-down, mean+up] encloses every valid descendant.
+        bound_min, bound_max = descendant_bounds[depth]
+        down_m = np.where(valid, recon[depth] - bound_min, 0.0)
+        up_m = np.where(valid, bound_max - recon[depth], 0.0)
+        records["downExtent"] = _pack_u16_extent_dm(down_m)
+        records["upExtent"] = _pack_u16_extent_dm(up_m)
         records["flags"] = node["flags"]
+        records["reserved"] = 0
         blob.extend(struct.pack("<I", count))
         blob.extend(records.tobytes())
 
@@ -1101,38 +1209,50 @@ def _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, uni
     return blob
 
 
-def read_gsp1_unit_valid(path):
-    """Read the final-depth validity flags needed by texture coverage validation."""
+def read_gsp_unit_valid(path):
+    """Read final-depth validity flags from legacy GSP1 or current GSP2."""
     with open(path, "rb") as source:
         blob = source.read()
-    if len(blob) < GSP1_HEADER_STRUCT.size:
-        raise ValueError(f"short GSP1 file: {path}")
-    header = GSP1_HEADER_STRUCT.unpack_from(blob)
-    if header[0] != GSP1_MAGIC or header[1] != GSP1_VERSION or header[2] != GSP1_TILE_LEVEL:
-        raise ValueError(f"unsupported GSP1 header: {path}")
+    if len(blob) < GSP_HEADER_STRUCT.size:
+        raise ValueError(f"short GSP file: {path}")
+    header = GSP_HEADER_STRUCT.unpack_from(blob)
+    format_key = (header[0], header[1])
+    if format_key == (GSP1_MAGIC, GSP1_VERSION):
+        aggregate_dtype = GSP1_AGG_DTYPE
+    elif format_key == (GSP2_MAGIC, GSP2_VERSION):
+        aggregate_dtype = GSP2_AGG_DTYPE
+    else:
+        raise ValueError(f"unsupported GSP header: {path}")
+    if header[2] != GSP1_TILE_LEVEL:
+        raise ValueError(f"unsupported GSP tile level {header[2]}: {path}")
 
-    offset = GSP1_HEADER_STRUCT.size
+    offset = GSP_HEADER_STRUCT.size
     for depth in range(1, GSP1_TILE_LEVEL):
         if offset + 4 > len(blob):
-            raise ValueError(f"truncated GSP1 depth {depth}: {path}")
+            raise ValueError(f"truncated GSP depth {depth}: {path}")
         count = struct.unpack_from("<I", blob, offset)[0]
         expected = 7 ** depth
         if count != expected:
-            raise ValueError(f"GSP1 depth {depth} count {count}, expected {expected}: {path}")
-        offset += 4 + count * GSP1_AGG_DTYPE.itemsize
+            raise ValueError(f"GSP depth {depth} count {count}, expected {expected}: {path}")
+        offset += 4 + count * aggregate_dtype.itemsize
 
     if offset + 4 > len(blob):
-        raise ValueError(f"truncated GSP1 unit count: {path}")
+        raise ValueError(f"truncated GSP unit count: {path}")
     count = struct.unpack_from("<I", blob, offset)[0]
     expected = 7 ** GSP1_TILE_LEVEL
     if count != expected:
-        raise ValueError(f"GSP1 unit count {count}, expected {expected}: {path}")
+        raise ValueError(f"GSP unit count {count}, expected {expected}: {path}")
     offset += 4
     byte_count = count * GSP1_UNIT_DTYPE.itemsize
     if offset + byte_count != len(blob):
-        raise ValueError(f"GSP1 unit payload length mismatch: {path}")
+        raise ValueError(f"GSP unit payload length mismatch: {path}")
     records = np.frombuffer(blob, dtype=GSP1_UNIT_DTYPE, count=count, offset=offset)
     return (records["flags"] & 1).astype(bool, copy=True)
+
+
+# Compatibility entry point for scripts written before GSP2. It now accepts
+# both versions because the final unit record layout did not change.
+read_gsp1_unit_valid = read_gsp_unit_valid
 
 
 def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin"):
@@ -1147,7 +1267,7 @@ def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/til
     unit_deltas, unit_slopes, unit_nx, unit_nz = _sample_unit_edges_and_normals(
         unit_x, unit_y, h_unit, unit_valid, dem_data, dem_transform, grad_ds, info["bounds"])
     nodes = _build_gsp1_nodes(h_unit, unit_valid, unit_slopes, unit_nx, unit_nz)
-    blob = _pack_gsp1_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
+    blob = _pack_gsp2_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
 
     bin_path = os.path.join(output_dir, gosper_asset_name(latQ, latR, "bin"))
     with open(bin_path, "wb") as f:
@@ -1205,7 +1325,7 @@ def _bounds_union(bounds_iter):
 
 def main():
     global S3_ENABLED, BASISU_BINARY
-    parser = argparse.ArgumentParser(description="🧇 Waffle Iron v5.0 — Gosper Island Incremental Bake")
+    parser = argparse.ArgumentParser(description="🧇 Waffle Iron v6.0 — Gosper Island Incremental Bake")
     parser.add_argument("--full", action="store_true", help="Run full global bake (defaults to Mini-Bake)")
     parser.add_argument("--center", type=str, help="Center island lattice coords as 'yq,yr' (e.g. 0,0)")
     parser.add_argument("--grid", type=int, default=DEFAULT_GRID_SIZE,
@@ -1214,7 +1334,7 @@ def main():
     parser.add_argument(
         "--no-texture-tattoos",
         action="store_true",
-        help="Disable the mini-bake's default blue-low/pink-full texture registration marks",
+        help="Disable the mini-bake's default green-low/blue-medium/pink-high registration marks",
     )
     args = parser.parse_args()
 
@@ -1277,14 +1397,14 @@ def main():
     else:
         print(f"🧪 RUNNING MINI-BAKE ({grid_size}×{grid_size} grid, S3 Disabled)")
         if texture_tattoos:
-            print("🎨 Texture tattoos: ON (electric blue low-res / hot pink full-res)")
+            print("🎨 Texture tattoos: ON (green low / blue medium / pink high)")
         else:
             print("🎨 Texture tattoos: OFF (--no-texture-tattoos)")
         S3_ENABLED = False
 
     # --- CLEANUP (Non-destructive) ---
-    dirs_to_ensure = ["frontend/app/tiles_bin", "frontend/app/aerial_tiles", 
-                      "frontend/app/aerial_tiles/full", "frontend/app/aerial_tiles/low"]
+    dirs_to_ensure = ["frontend/app/tiles_bin", "frontend/app/aerial_tiles"]
+    dirs_to_ensure.extend(f"frontend/app/aerial_tiles/{tier['name']}" for tier in TEXTURE_TIERS)
     for d in dirs_to_ensure:
         os.makedirs(d, exist_ok=True)
 
@@ -1380,16 +1500,17 @@ def main():
         # Skip logic (already baked) — .bin and textures are versioned/skipped
         # independently, so an island can re-bake one without the other.
         bin_file = f"frontend/app/tiles_bin/{gosper_asset_name(yq, yr, 'bin')}"
-        tex_full_file = f"frontend/app/aerial_tiles/full/{gosper_asset_name(yq, yr, 'ktx2')}"
-        tex_low_file = f"frontend/app/aerial_tiles/low/{gosper_asset_name(yq, yr, 'ktx2')}"
+        texture_files = {
+            tier["name"]: f"frontend/app/aerial_tiles/{tier['name']}/{gosper_asset_name(yq, yr, 'ktx2')}"
+            for tier in TEXTURE_TIERS
+        }
         tex_recipe_file = texture_recipe_marker_path(yq, yr)
         island_texture_version = read_texture_recipe_marker(tex_recipe_file, unmarked_texture_version)
         skip_bin = can_skip_bin and os.path.exists(bin_file)
         skip_tex = (
             not args.force
             and island_texture_version == effective_texture_version
-            and os.path.exists(tex_full_file)
-            and os.path.exists(tex_low_file)
+            and all(os.path.exists(path) for path in texture_files.values())
         )
         if skip_bin and skip_tex:
             skipped += 1
@@ -1404,7 +1525,7 @@ def main():
                 print("   ⏭️  no valid DEM unit samples")
                 continue
         if not skip_tex:
-            unit_valid = read_gsp1_unit_valid(bin_file)
+            unit_valid = read_gsp_unit_valid(bin_file)
             bake_gosper_textures(
                 yq,
                 yr,
@@ -1440,6 +1561,7 @@ def main():
     with open(METADATA_PATH, "w") as f:
         json.dump({"baker_version": BAKER_VERSION, "texture_version": effective_texture_version,
                    "texture_tattoos": texture_tattoos,
+                   "texture_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
                    "unmarked_texture_version": unmarked_texture_version,
                    "last_bake": time.ctime(),
                    "grid_size": grid_size, "islands_baked": len(bake_times)}, f)

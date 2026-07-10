@@ -2,7 +2,9 @@
 # @atlas: Orchestration script for rapid iteration local testing. Triggers a small-scale (e.g. 12x12 grid) 'Mini-Bake' focused around Stubai using waffle_iron.py, specifically disabling S3 synchronization to allow for quick frontend layout and texture tuning.
 # 🧇 Waffle Iron - Rapid Iteration Bake
 # This script runs the default Mini-Bake logic (12x12 grid around Stubai)
-# This is fast (~2-3 mins) and ideal for layout/texture testing.
+# This is the smallest representative bake for layout/texture testing. The
+# added 128px postage tier is cheap; forced rebakes remain dominated by the
+# 4096px high XUASTC encode, while incremental cached runs stay quick.
 
 # Ensure we are in the project root
 cd "$(dirname "$0")/.."

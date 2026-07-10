@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate baked GSP1 Gosper island binaries.
+"""Validate legacy GSP1 and current GSP2 Gosper island binaries.
 
 Usage:
   python3 tests/gosper/validate_gsp1.py frontend/app/tiles_bin/gosper_*.bin
@@ -20,19 +20,22 @@ import coordinate_utility as cu
 
 HEADER = struct.Struct("<4sHHiiiifffBBBBBxxxI")
 COUNT = struct.Struct("<I")
-AGG_DTYPE = np.dtype([
+GSP1_AGG_DTYPE = np.dtype([
     ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
     ("nx", "u1"), ("nz", "u1"), ("relief", "u1"), ("flags", "u1"),
+])
+GSP2_AGG_DTYPE = np.dtype([
+    ("dH", "<i2"), ("slopeMean", "u1"), ("slopeMax", "u1"),
+    ("nx", "u1"), ("nz", "u1"),
+    ("downExtent", "<u2"), ("upExtent", "<u2"),
+    ("flags", "u1"), ("reserved", "u1"),
 ])
 UNIT_DTYPE = np.dtype([
     ("dH", "<i2"), ("d1", "<i2"), ("d2", "<i2"), ("d3", "<i2"),
     ("s1", "u1"), ("s2", "u1"), ("s3", "u1"),
     ("nx", "u1"), ("nz", "u1"), ("flags", "u1"),
 ])
-EXPECTED_SIZE = HEADER.size + sum(
-    COUNT.size + (7 ** depth) * (AGG_DTYPE.itemsize if depth < 5 else UNIT_DTYPE.itemsize)
-    for depth in range(1, 6)
-)
+AGG_DTYPES = {(b"GSP1", 1): GSP1_AGG_DTYPE, (b"GSP2", 2): GSP2_AGG_DTYPE}
 FILENAME_RE = re.compile(r"gosper_(-?\d+)_(-?\d+)\.bin$")
 
 
@@ -43,8 +46,15 @@ def require(cond, msg):
 
 def parse_file(path):
     data = open(path, "rb").read()
-    require(len(data) == EXPECTED_SIZE, f"size {len(data)} != {EXPECTED_SIZE}")
+    require(len(data) >= HEADER.size, f"size {len(data)} < header {HEADER.size}")
     header = HEADER.unpack_from(data, 0)
+    aggregate_dtype = AGG_DTYPES.get((header[0], header[1]))
+    require(aggregate_dtype is not None, f"unsupported GSP format {(header[0], header[1])}")
+    expected_size = HEADER.size + sum(
+        COUNT.size + (7 ** depth) * (aggregate_dtype.itemsize if depth < 5 else UNIT_DTYPE.itemsize)
+        for depth in range(1, 6)
+    )
+    require(len(data) == expected_size, f"size {len(data)} != {expected_size}")
     offset = HEADER.size
     records = {}
 
@@ -53,7 +63,7 @@ def parse_file(path):
         offset += COUNT.size
         expected_count = 7 ** depth
         require(count == expected_count, f"depth {depth} count {count} != {expected_count}")
-        dtype = AGG_DTYPE if depth < 5 else UNIT_DTYPE
+        dtype = aggregate_dtype if depth < 5 else UNIT_DTYPE
         nbytes = count * dtype.itemsize
         records[depth] = np.frombuffer(data, dtype=dtype, count=count, offset=offset).copy()
         offset += nbytes
@@ -79,8 +89,7 @@ def validate_header(path, header):
     (magic, version, tile_level, center_q, center_r, yq, yr,
      h_mean, h_min, h_max, s_mean, s_max, nx, nz, flags, reserved) = header
 
-    require(magic == b"GSP1", f"bad magic {magic!r}")
-    require(version == 1, f"bad version {version}")
+    require((magic, version) in AGG_DTYPES, f"bad magic/version {(magic, version)!r}")
     require(tile_level == cu.GOSPER_TILE_LEVEL, f"bad tileLevel {tile_level}")
     require((yq, yr) == (file_yq, file_yr), f"header lat {(yq, yr)} != filename {(file_yq, file_yr)}")
     expected_center = cu.gosper_lattice_to_center(yq, yr)
@@ -134,10 +143,19 @@ def validate_aggregates(recon, flags, records):
         if depth > 0:
             err = np.abs(recon[depth][has_data] - truth[has_data])
             require(err.size == 0 or float(err.max()) <= 0.35, f"depth {depth} aggregate height max error {err.max():.3f}m")
-            relief = records[depth]["relief"].astype(np.float64) * 4.0
-            derived_relief = h_max - h_min
-            rel_err = np.abs(relief[has_data] - derived_relief[has_data])
-            require(rel_err.size == 0 or float(rel_err.max()) <= 8.0, f"depth {depth} relief max error {rel_err.max():.3f}m")
+            if "relief" in records[depth].dtype.names:
+                relief = records[depth]["relief"].astype(np.float64) * 4.0
+                derived_relief = h_max - h_min
+                rel_err = np.abs(relief[has_data] - derived_relief[has_data])
+                require(rel_err.size == 0 or float(rel_err.max()) <= 8.0, f"depth {depth} relief max error {rel_err.max():.3f}m")
+            else:
+                require(np.all(records[depth]["reserved"] == 0), f"depth {depth} nonzero GSP2 reserved byte")
+                lower = recon[depth] - records[depth]["downExtent"].astype(np.float64) * 0.1
+                upper = recon[depth] + records[depth]["upExtent"].astype(np.float64) * 0.1
+                require(np.all(lower[has_data] <= h_min[has_data] + 1e-9), f"depth {depth} downExtent clips descendants")
+                require(np.all(upper[has_data] >= h_max[has_data] - 1e-9), f"depth {depth} upExtent clips descendants")
+                require(np.all(h_min[has_data] - lower[has_data] < 0.16), f"depth {depth} downExtent is unexpectedly loose")
+                require(np.all(upper[has_data] - h_max[has_data] < 0.16), f"depth {depth} upExtent is unexpectedly loose")
         else:
             root_err = abs(float(recon[0][0] - truth[0]))
             require(root_err <= 0.35, f"root height mean error {root_err:.3f}m")
@@ -202,8 +220,8 @@ def validate_file(path, dem_ds=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate GSP1 Gosper island binaries")
-    parser.add_argument("bins", nargs="+", help="GSP1 .bin files")
+    parser = argparse.ArgumentParser(description="Validate GSP1/GSP2 Gosper island binaries")
+    parser.add_argument("bins", nargs="+", help="GSP1 or GSP2 .bin files")
     parser.add_argument("--dem", help="Optional DEM path for direct sample cross-checks")
     args = parser.parse_args()
 

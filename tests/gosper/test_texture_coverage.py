@@ -72,9 +72,9 @@ class TextureCoverageTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
     def test_texture_recipe_bump_invalidates_stale_partial_assets(self):
-        self.assertEqual(waffle.TEXTURE_VERSION, "2.1.0")
-        self.assertEqual(waffle.texture_cache_version(False), "2.1.0")
-        self.assertEqual(waffle.texture_cache_version(True), "2.1.0+tattoo-1")
+        self.assertEqual(waffle.TEXTURE_VERSION, "3.0.0")
+        self.assertEqual(waffle.texture_cache_version(False), "3.0.0")
+        self.assertEqual(waffle.texture_cache_version(True), "3.0.0+tattoo-2")
 
 
 if __name__ == "__main__":

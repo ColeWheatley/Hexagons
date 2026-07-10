@@ -9,9 +9,9 @@ reasoning behind each, plus what was deliberately NOT done._
 The terrain pipeline no longer thinks in 819.2 m rectangular sectors with four
 uniform-scale hex layers. The streaming/storage/LOD unit is now a **level-5
 Gosper island**: 7⁵ = 16,807 unit hexes (6.4 m), recursively grouped 7-at-a-
-time into a 6-level aggregate tree. One `.bin` (`GSP1`) stores the tree as a
+time into a 6-level aggregate tree. One `.bin` (`GSP2`) stores the tree as a
 root height plus per-node decimeter offsets from the parent's reconstructed
-value; one square KTX2 (980 m, 4096 px) textures the island. The renderer
+value; three square KTX2 tiers (980 m, 128/256/4096 px) texture the island. The renderer
 draws every level of every resident island as instanced hex caps — scale
 √7ᵏ, rotation k·19.1066° — and picks the level **per instance in the vertex
 shader** with a hierarchical CDLOD cut driven by a single screen-space rule:
@@ -53,20 +53,23 @@ zero-mean and small → dH compresses (gzipped bins are 32 % smaller than
 HEX4); offsets from a max are all-negative and as large as the relief.
 (b) *rendering*: a max-height cap makes every distant face read as a cliff
 (Cole's own observation); the mean is the only aggregate that keeps distant
-terrain silhouettes honest. (c) *bounds*: the max isn't lost — each
-aggregate record carries `relief` (subtree hMax−hMin, 4 m units) and the
-header carries exact hMin/hMax, so LOD/collision logic still gets bounds.
+terrain silhouettes honest. (c) *bounds*: extrema are not lost — each GSP2
+aggregate carries independent `downExtent`/`upExtent` uint16 decimetre ranges
+around its reconstructed mean, and the header carries exact root hMin/hMax.
 
-### D3 — GSP1 format: offset-coded heights, quantization-aware
+### D3 — GSP2 format: offset-coded heights and conservative bounds
 `recon(node) = recon(parent) + dH·0.1 m`, and the baker computes each dH
 against the parent's **already-quantized** value, so error never
 accumulates: every node lands within ±5 cm of the DEM sample regardless of
 depth (validator asserts ≤0.35 m including aggregation slack; DEM
-cross-check on 200 random units per tile). Records: 8 B aggregates
-(dH, slopeMean, slopeMax, nx, nz, relief, flags), 14 B units (dH, 3 skirt
+cross-check on 200 random units per tile). Records: 12 B aggregates
+(dH, slopeMean, slopeMax, nx, nz, downExtent, upExtent, flags, reserved),
+14 B units (dH, 3 skirt
 deltas, 3 edge slopes, normal, flags). No per-hex coordinates at all —
-heap order IS the address. 257,766 bytes/tile fixed; 192 KB gzipped
-(vs 282 KB for the HEX4 sector covering ~the same area).
+heap order IS the address. Extents are conservatively ceil-quantized from the
+reconstructed mean and enclose source plus rendered descendant heights. GSP2
+is 268,966 bytes/tile fixed; header magic/version identifies legacy GSP1
+during a rolling local rebake.
 
 ### D4 — Render aggregates as rotated, scaled hex caps (embrace the 19.1°)
 A level-k island is a fractal region, not a hexagon; any hex rendering of it
@@ -122,11 +125,14 @@ still never renders.
 `TEXTURE_CONTAINER_FINDINGS.md` stands: rectangular containers, hexes
 address by UV. Only the container center/size changed: a 980 m square
 centered on the island (covers every rendered cap at every level, computed
-exactly from the offset tables + cap circumradii), 4096 px → 0.239 m/px
-(marginally denser than the sector's 0.244). The content/padding split and
+exactly from the offset tables + cap circumradii). The explicit tiers are
+`low` postage 128 px, `medium` 256 px, and `high` 4096 px. Every tier is
+XUASTC LDR 6x6 KTX2 with a complete mip chain; high fits the WebGL2 4096
+minimum maximum texture size without a parallel fallback asset. The content/padding split and
 its uUvScale/uUvOffset machinery are gone — `uv = local_xz/980 + 0.5`.
-Same two-tier low/full XUASTC 6x6 pipeline, byte-for-byte the same encoder
-settings.
+There is no WebP/image fallback path. Mini-bakes default to sparse,
+world-registered green/blue/pink motifs for low/medium/high; production and
+`--no-texture-tattoos` outputs stay clean.
 
 ### D9 — 2D mode is the 3D mode
 The flat per-sector textured quads are deleted. Top-down already animates
@@ -149,7 +155,7 @@ pipeline.)
 
 ### D11 — JS heap fix rides along
 Known issue: ~1 GB heap at 100+ resident tiles from per-hex JS objects
-(`hexDataLayers`). GSP1 tiles ship heights as one `Float32Array(16807)` and
+(`hexDataLayers`). GSP2 tiles ship heights as one `Float32Array(16807)` and
 picking uses a single static heap-index map shared by all tiles
 (offsets are identical per island by construction). Per-tile JS overhead
 drops from ~16 k objects to one typed array (~67 KB).
@@ -212,12 +218,12 @@ Known follow-ups (non-blocking):
 
 ## Numbers
 
-- Payload: 257,766 B/tile fixed (192 KB gzipped) vs HEX4 346,112 B
-  (282 KB gzipped) for ~equal area — **−26 % raw, −32 % gzipped**.
-- Bake: ~12 s/island on the M1 (30-island Codex validation run: avg 12.0 s,
-  max 17.0 s), same regime as the ~11 s/sector HEX4 bake.
+- Binary payload: 268,966 B/tile fixed for GSP2 vs 257,766 B for GSP1; the
+  11.2 KB increase buys non-saturating tight vertical bounds at every aggregate.
+- Texture bake cost remains dominated by the 4096px high composite and encode;
+  the new 128px postage tier adds negligible work beside high and medium.
 - Baked geometry integrity: `tests/gosper/validate_gsp1.py` — structure,
-  dH-chain reconstruction, re-aggregation, relief, flags, plus 200-sample
+  dH-chain reconstruction, re-aggregation, asymmetric bounds, flags, plus 200-sample
   direct DEM cross-check per tile: all green over the full bake.
 - Band radii (settled, 3 px, 900 px viewport): R = [1448, 3832, 10141,
   26834, 71013] m — units to ~1.45 km, L1 to ~3.8 km, whole-tile caps by
