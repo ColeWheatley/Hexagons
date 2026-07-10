@@ -192,21 +192,25 @@ export class PerfProfiler {
                 const stats = v.getDetailedStats('profiler-sample');
                 sample.vram = {
                     totalBytes: stats.vram.totalBytes,
-                    budgetBytes: stats.vram.budgetBytes,
-                    utilization: stats.vram.budgetUtilization,
+                    highTextureBudgetBytes: stats.vram.highTextureBudgetBytes,
+                    highTextureBudgetUtilization: stats.vram.highTextureBudgetUtilization,
                 };
                 sample.tiles = {
                     loaded: stats.tiles.loaded,
                     loadQueue: stats.tiles.loadQueue,
-                    upgradeQueue: stats.tiles.upgradeQueue,
+                    textureQueue: stats.tiles.textureQueue,
+                    textureResultQueue: stats.tiles.textureResultQueue,
                     sinterQueue: stats.tiles.sinterQueue,
                     activeWorkers: stats.tiles.activeWorkers,
                 };
 
                 this.vram.peakLedgerBytes = Math.max(this.vram.peakLedgerBytes, stats.vram.totalBytes);
                 this.vram.endLedgerBytes = stats.vram.totalBytes;
-                this.vram.budgetBytes = stats.vram.budgetBytes;
-                this.vram.peakUtilization = Math.max(this.vram.peakUtilization, stats.vram.budgetUtilization);
+                this.vram.budgetBytes = stats.vram.highTextureBudgetBytes;
+                this.vram.peakUtilization = Math.max(
+                    this.vram.peakUtilization,
+                    stats.vram.highTextureBudgetUtilization,
+                );
             } catch (e) { /* viewer mid-init or method shape changed — skip this sample's VRAM data */ }
         }
 

@@ -97,8 +97,18 @@ async function transcodeKTX2(arrayBuffer) {
         let gpuBytes = 0;
         let transcodeMs = 0;
         const levels = ktx2File.getLevels();
+        const maxTextureSize = Math.max(1, workerSupport?.maxTextureSize || 4096);
+        let firstLevel = 0;
+        while (firstLevel < levels - 1) {
+            const info = ktx2File.getImageLevelInfo(firstLevel, 0, 0);
+            if (info.origWidth <= maxTextureSize && info.origHeight <= maxTextureSize) break;
+            firstLevel++;
+        }
 
-        for (let level = 0; level < levels; level++) {
+        // A high source remains one logical tier. Devices whose hard GL limit
+        // is smaller start at the first supported mip instead of failing upload;
+        // this is capability handling, not quality/device profiling.
+        for (let level = firstLevel; level < levels; level++) {
             const info = ktx2File.getImageLevelInfo(level, 0, 0);
             const dstSize = ktx2File.getImageTranscodedSizeInBytes(level, 0, 0, target.basis);
             const dst = new Uint8Array(dstSize);
@@ -113,8 +123,11 @@ async function transcodeKTX2(arrayBuffer) {
 
         return {
             mipmaps,
-            width: ktx2File.getWidth(),
-            height: ktx2File.getHeight(),
+            width: mipmaps[0].width,
+            height: mipmaps[0].height,
+            sourceWidth: ktx2File.getWidth(),
+            sourceHeight: ktx2File.getHeight(),
+            skippedTopMips: firstLevel,
             formatKey: target.formatKey,
             gpuBytes,
             transcodeMs,
@@ -186,6 +199,23 @@ self.onmessage = async function (e) {
                 }
             });
             transferables.push(result.unitHeights.buffer);
+            if (result.visibilityData) {
+                const seen = new Set(transferables);
+                for (const depth of result.visibilityData.depths) {
+                    for (const array of [depth.h, depth.valid, depth.relief, depth.downExtent, depth.upExtent]) {
+                        if (array?.buffer && !seen.has(array.buffer)) {
+                            transferables.push(array.buffer);
+                            seen.add(array.buffer);
+                        }
+                    }
+                }
+                for (const array of Object.values(result.visibilityData.unit || {})) {
+                    if (array?.buffer && !seen.has(array.buffer)) {
+                        transferables.push(array.buffer);
+                        seen.add(array.buffer);
+                    }
+                }
+            }
 
             // Transfer transcoded mip buffers if a texture was decoded
             if (result.texture) {
@@ -205,19 +235,31 @@ self.onmessage = async function (e) {
     }
 };
 
-async function loadTile({ yq, yr, texUrl, binUrl }) {
+async function fetchFirst(urls) {
+    const candidates = Array.isArray(urls) ? urls : [urls];
+    let last = null;
+    for (const url of candidates.filter(Boolean)) {
+        const response = await fetch(url);
+        last = response;
+        if (response.ok) return { response, url };
+    }
+    return { response: last, url: candidates[candidates.length - 1] };
+}
+
+async function loadTile({ yq, yr, texUrl, texUrls, binUrl }) {
     // Parallel Fetch: Bin + LowTexture
-    const [binRes, texRes] = await Promise.all([
+    const [binRes, texFetch] = await Promise.all([
         fetch(binUrl),
-        fetch(texUrl)
+        fetchFirst(texUrls || texUrl)
     ]);
+    const texRes = texFetch.response;
 
     if (!binRes.ok) throw new Error(`Failed to load bin: ${binUrl}`);
     const binBuf = await binRes.arrayBuffer();
 
     let texture = null;
     let texBytes = 0;
-    if (texRes.ok) {
+    if (texRes?.ok) {
         const texBuf = await texRes.arrayBuffer();
         texBytes = texBuf.byteLength;
         try {
@@ -250,34 +292,47 @@ async function loadTile({ yq, yr, texUrl, binUrl }) {
         stats: parsed.stats,
         center: parsed.center,
         unitHeights: parsed.unitHeights, // Float32Array(16807), heap order — main keeps ONE static (dq,dr)->index map
+        binaryVersion: parsed.binaryVersion,
+        visibilityData: {
+            depths: parsed.depths.map(depth => ({
+                h: depth.h,
+                valid: depth.valid,
+                relief: depth.relief,
+                downExtent: depth.downExtent,
+                upExtent: depth.upExtent,
+            })),
+            unit: parsed.unit,
+        },
         geometryBytes,
         networkBytes: { bin: binBuf.byteLength, tex: texBytes },
     };
 }
 
-async function loadTextureOnly({ url }) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to load tex: ${url}`);
+async function loadTextureOnly({ url, urls }) {
+    const fetched = await fetchFirst(urls || url);
+    const res = fetched.response;
+    if (!res?.ok) throw new Error(`Failed to load tex: ${fetched.url}`);
     const buf = await res.arrayBuffer();
     // Let transcode failures propagate — main.js's upgradeTexture catch
     // already dedups these warnings, no need to swallow here.
     const texture = await transcodeKTX2(buf);
-    return { ...texture, networkBytes: buf.byteLength };
+    return { ...texture, networkBytes: buf.byteLength, sourceUrl: fetched.url };
 }
 
 // =============================================================================
-// GSP1 PARSER — see hex_backend/waffle_iron.py for the authoring side and
-// CODEX_GOAL byte tables. Heights are offset-coded against the parent's
-// reconstructed value: recon(node) = recon(parent) + dH * 0.1.
+// GSP1/GSP2 PARSER. GSP2 adds conservative asymmetric vertical extents to
+// aggregates; unit records stay byte-for-byte compatible. Heights remain
+// offset-coded: recon(node) = recon(parent) + dH * 0.1.
 // =============================================================================
 function parseGSP1(buffer, expectYq, expectYr) {
     const view = new DataView(buffer);
     const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (sig !== 'GSP1') throw new Error(`Invalid signature '${sig}' (want GSP1)`);
+    if (sig !== 'GSP1' && sig !== 'GSP2') throw new Error(`Invalid signature '${sig}' (want GSP1/GSP2)`);
     const version = view.getUint16(4, true);
     const tileLevel = view.getUint16(6, true);
-    if (version !== 1 || tileLevel !== TILE_LEVEL) {
-        throw new Error(`Unsupported GSP1 version ${version} / tileLevel ${tileLevel}`);
+    const isGsp2 = sig === 'GSP2';
+    if ((isGsp2 ? version !== 2 : version !== 1) || tileLevel !== TILE_LEVEL) {
+        throw new Error(`Unsupported ${sig} version ${version} / tileLevel ${tileLevel}`);
     }
     const centerQ = view.getInt32(8, true);
     const centerR = view.getInt32(12, true);
@@ -315,18 +370,27 @@ function parseGSP1(buffer, expectYq, expectYr) {
 
         if (d < TILE_LEVEL) {
             const relief = new Uint8Array(count); // subtree hMax-hMin, 4 m units
+            const downExtent = isGsp2 ? new Uint16Array(count) : null;
+            const upExtent = isGsp2 ? new Uint16Array(count) : null;
             for (let i = 0; i < count; i++) {
                 const dH = view.getInt16(off, true);
                 slopeMean[i] = view.getUint8(off + 2);
                 // off+3 = slopeMax (unused by the renderer for now)
                 nx[i] = view.getUint8(off + 4);
                 nz[i] = view.getUint8(off + 5);
-                relief[i] = view.getUint8(off + 6);
-                valid[i] = view.getUint8(off + 7) & 1;
+                if (isGsp2) {
+                    downExtent[i] = view.getUint16(off + 6, true);
+                    upExtent[i] = view.getUint16(off + 8, true);
+                    relief[i] = Math.min(255, Math.ceil((downExtent[i] + upExtent[i]) * 0.1 / 4));
+                    valid[i] = view.getUint8(off + 10) & 1;
+                } else {
+                    relief[i] = view.getUint8(off + 6);
+                    valid[i] = view.getUint8(off + 7) & 1;
+                }
                 h[i] = parentH[(i / 7) | 0] + dH * 0.1;
-                off += 8;
+                off += isGsp2 ? 12 : 8;
             }
-            depths.push({ h, slopeMean, nx, nz, valid, relief });
+            depths.push({ h, slopeMean, nx, nz, valid, relief, downExtent, upExtent });
         } else {
             const d1 = new Int16Array(count), d2 = new Int16Array(count), d3 = new Int16Array(count);
             const s1 = new Uint8Array(count), s2 = new Uint8Array(count), s3 = new Uint8Array(count);
@@ -351,6 +415,7 @@ function parseGSP1(buffer, expectYq, expectYr) {
 
     return {
         depths, unit,
+        binaryVersion: version,
         unitHeights: depths[TILE_LEVEL].h,
         stats: { min: hMin, max: hMax, avg: hMean, base: hMin },
         center: { q: centerQ, r: centerR, latQ, latR },
@@ -431,7 +496,10 @@ function buildLevelBuffers(parsed) {
                 // sealed and remain immediately identifiable by slope color.
                 const sm = pd.slopeMean[i];
                 slopes[sIdx] = sm; slopes[sIdx + 1] = sm; slopes[sIdx + 2] = sm;
-                const dDm = (pd.relief[i] * 4 + 12) * 10; // 4m relief units -> decimeters
+                const reliefMeters = pd.downExtent && pd.upExtent
+                    ? (pd.downExtent[i] + pd.upExtent[i]) * 0.1
+                    : pd.relief[i] * 4;
+                const dDm = (reliefMeters + 12) * 10;
                 deltas[sIdx] = dDm; deltas[sIdx + 1] = dDm; deltas[sIdx + 2] = dDm;
                 activeSkirts++;
             }

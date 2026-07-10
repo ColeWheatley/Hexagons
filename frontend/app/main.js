@@ -2,17 +2,25 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js?v=view1';
-import { VRAMLedger } from './vram_ledger.js';
-import { CacheManager } from './cache_manager.js';
+import { VRAMLedger } from './vram_ledger.js?v=frustum1';
+import { CacheManager } from './cache_manager.js?v=frustum1';
 import { PerfProfiler } from './perf_profiler.js';
 import { initBenchmark } from './benchmark.js';
 import { ShareableViewState } from './view_state.js?v=view1';
+import {
+    VisibilityClass,
+    createProjectionContext,
+    expandFrustumPlanes,
+    extractFrustumPlanes,
+    planHierarchicalVisibility,
+} from './visibility_planner.js?v=frustum1';
+import { GosperVisibilityAdapter } from './gosper_visibility_adapter.js?v=frustum1';
 import './gosper_core.js';
 
 const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.8.0';
+const APP_VERSION = 'v0.9.0';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
@@ -29,8 +37,20 @@ const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
 const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper island
-const TILE_CONTENT_HALF_M = 505.0;          // conservative half-extent of any rendered cap of a tile
 const GRID_BUCKET_M = 1024.0;               // spatial hash bucket for manifest tiles
+
+// Three deterministic imagery tiers. Quality is selected from projected screen
+// footprint, never a radial distance or inferred device class.
+const TEXTURE_TIER = Object.freeze({ LOW: 'low128', MEDIUM: 'medium256', HIGH: 'high4096' });
+const TEXTURE_RANK = Object.freeze({ low128: 0, medium256: 1, high4096: 2 });
+const TEXTURE_CONFIG = Object.freeze({
+    mediumEnterPx: 96,
+    mediumExitPx: 72,  // 25% downgrade hysteresis
+    highEnterPx: 512,
+    highExitPx: 384,   // 25% downgrade hysteresis
+    maxTextureJobs: 2,
+    maxUploadsPerFrame: 1,
+});
 
 // Round world meters to the nearest unit axial cell (cube rounding).
 function worldToUnitAxial(x, y) {
@@ -126,6 +146,7 @@ class PistonViewer {
         });
         this.controls.addEventListener('change', () => {
             this.needsRender = true;
+            this.needsLODUpdate = true;
             // NOTE: We do NOT reset LODs here anymore to avoid oscillation loops
             // from our own camera altitude adjustments.
         });
@@ -133,10 +154,6 @@ class PistonViewer {
 
         this.needsRender = true;
         this.lastLODCamPos = new THREE.Vector3().copy(this.camera.position);
-
-        // Platform Detection
-        this.isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-        this.log(`Platform: ${this.isMobile ? 'Mobile' : 'Desktop'}`);
 
         // --- FIXED-DISTANCE GOSPER LOD ---
         // Preserve the primary branch's useful settled bands:
@@ -172,9 +189,6 @@ class PistonViewer {
         this.refineRate = 0.80;  // qualityScale multiplier per refined frame (snappy: ~5 frames)
         this.maxFrameTime = 500; // Allow a 0.5s pause for the "Snap" reward
 
-        // Texture High-Res Load Distance
-        this.texThreshold = 2000;
-
         window.addEventListener('resize', this.onResize.bind(this));
 
         // Shared Geometry — ONE unit cap plus partial/full skirt variants;
@@ -188,7 +202,11 @@ class PistonViewer {
         this.manifest = null;
         this.loadingTiles = new Set();
         this.loadQueue = [];
-        this.upgradeQueue = [];
+        this.textureQueue = [];
+        this.textureResultQueue = [];
+        this.textureStates = new Map();
+        this.visibilityByKey = new Map();
+        this.activeTextureJobs = 0;
         this.instantiateQueue = []; // NEW: Results ready for main thread
         this.activeWorkerCount = 0; // NEW: Replaces isProcessingTile
         this.recentlyUpgradedTextures = []; // Track tiles that just got texture upgraded (for render spike correlation)
@@ -244,8 +262,6 @@ class PistonViewer {
         // LOD Pause Toggle
         this.lodPaused = false;
 
-        this.lodPaused = false;
-
         this.initDebugConsole();
         this.initMinimizeButton();
         this.initCollapsibleSections();
@@ -260,19 +276,24 @@ class PistonViewer {
         this.textureSupport = null; // set by initWorkers() from renderer.extensions
         this.initWorkers();
 
-        // Full-res texture VRAM budget gate. Starts at the BC7 worst case (24 MB
-        // for a 4096x4096 mip chain) and is overwritten with the real observed
-        // gpuBytes after the first full-res upgrade completes (ASTC 6x6 ≈ 10MB).
-        this.estimatedFullTexVRAM = 24 * 1024 * 1024;
-
         // Dumb counters for the perf harness — updated on every texture arrival
         // (low-res on tile instantiation, full-res on upgrade). No logging loop.
-        this.texStats = { count: 0, totalTranscodeMs: 0, maxTranscodeMs: 0, formatKey: null, totalGpuBytes: 0 };
+        this.texStats = {
+            count: 0,
+            totalTranscodeMs: 0,
+            maxTranscodeMs: 0,
+            formatKey: null,
+            totalGpuBytes: 0,
+            maxTextureSize: this.renderer.capabilities.maxTextureSize,
+            highUploadSize: null,
+            highSourceSize: null,
+            highSkippedTopMips: 0,
+        };
         this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
-        this.cacheManager = new CacheManager(this.vramLedger);
+        this.cacheManager = new CacheManager();
         this.profiler = new PerfProfiler(this);
 
         this.initWorld();
@@ -297,10 +318,11 @@ class PistonViewer {
             etc2: ext.has('WEBGL_compressed_texture_etc'),
             etc1: ext.has('WEBGL_compressed_texture_etc1'),
             pvrtc: ext.has('WEBGL_compressed_texture_pvrtc') || ext.has('WEBKIT_WEBGL_compressed_texture_pvrtc'),
+            maxTextureSize: this.renderer.capabilities.maxTextureSize,
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js');
+            const w = new Worker('./tile_worker.js?v=frustum1');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -383,15 +405,21 @@ class PistonViewer {
             });
         }
 
-        // Texture Upgrade
+        // Projected high-texture threshold. This is intentionally one global
+        // quality knob rather than a device profile.
         const texSlider = document.getElementById('tex-upgrade-slider');
         const texVal = document.getElementById('tex-upgrade-val');
         if (texSlider) {
-            texSlider.value = this.texThreshold;
-            if (texVal) texVal.textContent = this.texThreshold + "m";
+            texSlider.min = '128';
+            texSlider.max = '2048';
+            texSlider.step = '64';
+            texSlider.value = TEXTURE_CONFIG.highEnterPx;
+            if (texVal) texVal.textContent = TEXTURE_CONFIG.highEnterPx + "px";
             texSlider.addEventListener('input', () => {
-                this.texThreshold = parseInt(texSlider.value);
-                if (texVal) texVal.textContent = this.texThreshold + "m";
+                // Object.freeze protects defaults, so retain a deliberately
+                // tiny per-view override for manual tuning.
+                this.highTextureEnterPx = parseInt(texSlider.value, 10);
+                if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
                 this.needsLODUpdate = true;
             });
         }
@@ -510,7 +538,8 @@ class PistonViewer {
                 Math.abs(t.stats.avg - t.stats.min),
                 Math.abs(t.stats.max - t.stats.avg),
             ) * heightFactor : 0;
-            const margin = Math.max(this.lodTileMargin, Math.hypot(TILE_CONTENT_HALF_M, relief) + 16);
+            const rootRadius = this.visibilityAdapter?.horizontalRadiusByLevel?.[TILE_LEVEL] || 551;
+            const margin = Math.max(this.lodTileMargin, Math.hypot(rootRadius, relief) + 16);
             const dx = t.lx - camX;
             const dy = centerY - camY;
             const dz = t.lz - camZ;
@@ -641,6 +670,8 @@ class PistonViewer {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.needsLODUpdate = true;
+        this.needsRender = true;
     }
 
     updateFogAndClip() {
@@ -696,6 +727,14 @@ class PistonViewer {
                 this.tileBuckets.get(bKey).push(t);
             }
 
+            // Translation boundary: the generic planner receives only opaque
+            // handles and AABBs. Every Gosper-specific address, bound, and
+            // descendant rule lives behind this adapter.
+            this.visibilityAdapter = new GosperVisibilityAdapter({
+                manifest: this.manifest,
+                worldOrigin: this.worldOrigin,
+            });
+
             // Static heap-order lookup: (dq,dr from island center) -> unit index.
             // Identical for every tile, so it's built exactly once; per-tile
             // height picking is then unitHeights[map.get(key)].
@@ -730,6 +769,7 @@ class PistonViewer {
             this.controls.target.set(startX, 0, startZ);
             this.controls.update();
             await this.viewState.restoreFromUrl();
+            this.lastVisibilityCameraPosition = this.camera.position.clone();
 
             // PRE-ALLOCATE GEOMETRIES
             const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);
@@ -1355,83 +1395,371 @@ class PistonViewer {
 
     // --- CORE LOOP ---
 
-    updateLOD() {
-        if (!this.manifestGrid || this.lodPaused) {
-
-            return;
+    _textureState(tileOrKey) {
+        const key = typeof tileOrKey === 'string'
+            ? tileOrKey
+            : `${tileOrKey.yq}_${tileOrKey.yr}`;
+        let state = this.textureStates.get(key);
+        if (!state) {
+            const manifestTile = typeof tileOrKey === 'string'
+                ? this.manifestGrid?.get(key)
+                : tileOrKey;
+            state = {
+                key,
+                manifestTile,
+                assets: new Map(),
+                loading: new Set(),
+                queued: new Set(),
+                failed: new Set(),
+                desiredTier: TEXTURE_TIER.LOW,
+                activeTier: null,
+                classification: 'outside',
+                projectedDiameterPx: 0,
+            };
+            this.textureStates.set(key, state);
         }
+        return state;
+    }
 
-        const camPos = this.camera.position;
-        const distLimit = this.renderSettings.renderDistance; // e.g. 4000m
+    _textureUrls(tier, key) {
+        const file = `gosper_${key}.ktx2`;
+        if (tier === TEXTURE_TIER.LOW) return [`aerial_tiles/low/${file}`];
+        if (tier === TEXTURE_TIER.MEDIUM) return [`aerial_tiles/medium/${file}`];
+        // High is one 4096 source with its full mip chain. Devices below that
+        // hard GL limit start at the first supported mip.
+        return [`aerial_tiles/high/${file}`];
+    }
 
-        // 1. Collect nearby candidates from the coarse spatial buckets
-        const candidates = [];
-        const reach = distLimit + 2000;
-        const b0x = Math.floor((camPos.x - reach) / GRID_BUCKET_M);
-        const b1x = Math.floor((camPos.x + reach) / GRID_BUCKET_M);
-        const b0z = Math.floor((camPos.z - reach) / GRID_BUCKET_M);
-        const b1z = Math.floor((camPos.z + reach) / GRID_BUCKET_M);
-        for (let bx = b0x; bx <= b1x; bx++) {
-            for (let bz = b0z; bz <= b1z; bz++) {
-                const bucket = this.tileBuckets.get(`${bx}_${bz}`);
-                if (!bucket) continue;
-                for (const t of bucket) {
-                    const dx = t.lx - camPos.x;
-                    const dz = t.lz - camPos.z;
-                    const dSq = dx * dx + dz * dz;
-                    if (dSq > reach * reach) continue;
-                    t.d = Math.sqrt(dSq);
-                    candidates.push(t);
-                }
+    _desiredTextureTier(state, projectedDiameterPx, classification) {
+        if (classification === 'outside') return TEXTURE_TIER.LOW;
+
+        const previous = state.desiredTier || TEXTURE_TIER.LOW;
+        const highEnter = this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx;
+        const highExit = highEnter * 0.75;
+
+        // High is useful only for pixels that can actually reach the viewport.
+        // Guard-only nodes still receive/preserve medium imagery for seamless
+        // entry, but cannot start an expensive high upgrade.
+        if (classification === 'visible') {
+            if (previous === TEXTURE_TIER.HIGH && projectedDiameterPx >= highExit) {
+                return TEXTURE_TIER.HIGH;
             }
+            if (projectedDiameterPx >= highEnter) return TEXTURE_TIER.HIGH;
         }
 
-        // 2. Sort ONLY the nearby candidates
-        candidates.sort((a, b) => a.d - b.d);
+        if (previous !== TEXTURE_TIER.LOW && projectedDiameterPx >= TEXTURE_CONFIG.mediumExitPx) {
+            return TEXTURE_TIER.MEDIUM;
+        }
+        if (projectedDiameterPx >= TEXTURE_CONFIG.mediumEnterPx) return TEXTURE_TIER.MEDIUM;
+        return TEXTURE_TIER.LOW;
+    }
 
-        const camDir = new THREE.Vector3();
-        this.camera.getWorldDirection(camDir);
-        camDir.y = 0; camDir.normalize();
+    _queueTextureTier(manifestTile, tier, priority = 0) {
+        if (!manifestTile) return;
+        const state = this._textureState(manifestTile);
+        if (state.assets.has(tier) || state.loading.has(tier) || state.queued.has(tier)) return;
+        // A failed required asset may become available after a new bake/server
+        // restart. Do not spin on the same missing URL in this page session.
+        if (state.failed.has(tier)) return;
+        state.queued.add(tier);
+        this.textureQueue.push({
+            key: state.key,
+            manifestTile,
+            tier,
+            priority,
+            urls: this._textureUrls(tier, state.key),
+        });
+    }
 
-        const processedKeys = new Set();
-        const loadLimit = distLimit + 1000;
+    _scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority = 0) {
+        const state = this._textureState(manifestTile);
+        state.classification = classification;
+        state.projectedDiameterPx = projectedDiameterPx;
+        state.desiredTier = this._desiredTextureTier(state, projectedDiameterPx, classification);
 
-        for (const t of candidates) {
-            const key = `${t.yq}_${t.yr}`;
-            processedKeys.add(key);
+        // The postage tier is the non-grey coverage invariant. Once decoded it
+        // remains resident; no high/geometry decision is allowed to evict it.
+        this._queueTextureTier(manifestTile, TEXTURE_TIER.LOW, priority + 1000);
 
+        if (TEXTURE_RANK[state.desiredTier] >= TEXTURE_RANK[TEXTURE_TIER.MEDIUM]) {
+            this._queueTextureTier(manifestTile, TEXTURE_TIER.MEDIUM, priority + 500);
+        }
+        if (state.desiredTier === TEXTURE_TIER.HIGH && !this.isMovingView) {
+            this._queueTextureTier(manifestTile, TEXTURE_TIER.HIGH, priority);
+        }
+
+        this._reconcileTextureState(state);
+    }
+
+    _bestTextureAsset(state, desiredTier = state.desiredTier, excludedTier = null) {
+        const desiredRank = TEXTURE_RANK[desiredTier];
+        const assets = Array.from(state.assets.entries())
+            .filter(([tier]) => tier !== excludedTier)
+            .sort((a, b) => TEXTURE_RANK[b[0]] - TEXTURE_RANK[a[0]]);
+        const atOrBelow = assets.find(([tier]) => TEXTURE_RANK[tier] <= desiredRank);
+        return atOrBelow || assets[assets.length - 1] || null;
+    }
+
+    _assignTextureToTile(tile, texture, tier) {
+        if (!tile || !texture) return;
+        const materials = new Set([tile.material, ...(tile.clonedMaterials || [])]);
+        for (const material of materials) {
+            if (!material) continue;
+            material.map = texture;
+            material.color.setHex(0xffffff);
+            material.needsUpdate = true;
+        }
+        tile.textureTier = tier;
+        tile.isFullTex = tier === TEXTURE_TIER.HIGH; // benchmark compatibility
+        this.needsRender = true;
+    }
+
+    _reconcileTextureState(state) {
+        const best = this._bestTextureAsset(state);
+        const tile = this.tiles.get(state.key);
+        if (best && (state.activeTier !== best[0] || tile?.material?.map !== best[1].texture)) {
+            state.activeTier = best[0];
+            if (tile) this._assignTextureToTile(tile, best[1].texture, best[0]);
+        }
+
+        if (state.activeTier === TEXTURE_TIER.HIGH) this.cacheManager.touch(state.key);
+
+        // Downgrade only after a lower-tier replacement exists. This invariant
+        // prevents a cache decision from ever turning visible terrain grey.
+        if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
+        }
+
+        // Mini-bakes intentionally pin low+medium. Outside mini mode, medium is
+        // guard-resident and may leave GPU only after low is ready.
+        if (!this.isMiniBake && state.classification === 'outside' &&
+            state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
+        }
+    }
+
+    _dropTextureTier(key, tier, fromHighPool = false) {
+        const state = this.textureStates.get(key);
+        const asset = state?.assets.get(tier);
+        if (!state || !asset) return true;
+
+        if (state.activeTier === tier) {
+            const replacement = this._bestTextureAsset(state, state.desiredTier, tier);
+            if (!replacement) return false;
+            state.activeTier = replacement[0];
             const tile = this.tiles.get(key);
-
-            // Direction Check (texture-priority only — geometry level selection
-            // is fully per-instance in the shader now)
-            const toTile = new THREE.Vector3(t.lx - camPos.x, 0, t.lz - camPos.z).normalize();
-            const dot = camDir.dot(toTile);
-            const isEffectivelyFrontTex = ((dot > -0.2) || (t.d < this.texThreshold)) && (t.d < loadLimit);
-
-            if (!tile && !this.loadingTiles.has(key)) {
-                if (t.d < loadLimit) {
-                    this.loadingTiles.add(key);
-                    this.loadQueue.push({ t, loadFullTexNow: isEffectivelyFrontTex });
-                }
-            } else if (tile) {
-                // Skip texture upgrades during 3D movement.
-                // Upgrades will resume once camera settles (not moving3D)
-                if (!this.isMoving3D && isEffectivelyFrontTex && !tile.isFullTex && !tile.loadingTex && !tile.queuedForUpgrade) {
-                    tile.queuedForUpgrade = true;
-                    this.upgradeQueue.push(tile);
-                }
-            }
+            if (tile) this._assignTextureToTile(tile, replacement[1].texture, replacement[0]);
         }
 
-        // 5. Cleanup: Unload tiles that are NO LONGER in our candidate list
-        for (const key of this.tiles.keys()) {
-            if (!processedKeys.has(key)) {
+        state.assets.delete(tier);
+        asset.texture.dispose();
+        this.vramLedger.removeTexture(key, tier);
+        if (tier === TEXTURE_TIER.HIGH && !fromHighPool) this.cacheManager.removeHigh(key);
+        return true;
+    }
+
+    _installTextureResult(task, result) {
+        const state = this._textureState(task.manifestTile);
+        state.loading.delete(task.tier);
+        state.queued.delete(task.tier);
+        state.failed.delete(task.tier);
+
+        const texture = this.buildCompressedTexture(result);
+        if (task.tier === TEXTURE_TIER.HIGH) {
+            const admitted = this.cacheManager.admitHigh(
+                state.key,
+                result.gpuBytes || 0,
+                victimKey => this._dropTextureTier(victimKey, TEXTURE_TIER.HIGH, true),
+                new Set(state.classification === 'visible' ? [state.key] : []),
+            );
+            if (!admitted) {
+                texture.dispose();
+                state.desiredTier = TEXTURE_TIER.MEDIUM;
+                this._reconcileTextureState(state);
+                return;
+            }
+            this.texStats.highUploadSize = result.width;
+            this.texStats.highSourceSize = result.sourceWidth || result.width;
+            this.texStats.highSkippedTopMips = result.skippedTopMips || 0;
+        }
+
+        const previous = state.assets.get(task.tier);
+        if (previous) {
+            if (state.activeTier === task.tier) {
+                const tile = this.tiles.get(state.key);
+                if (tile) this._assignTextureToTile(tile, texture, task.tier);
+            }
+            previous.texture.dispose();
+        }
+        state.assets.set(task.tier, { texture, bytes: result.gpuBytes || 0, result });
+        this.vramLedger.setTexture(
+            state.key,
+            task.tier,
+            result.gpuBytes || 0,
+            task.manifestTile,
+        );
+        this._reconcileTextureState(state);
+        this.updateTexStats(result);
+
+        if (task.tier === TEXTURE_TIER.HIGH) {
+            this.recentlyUpgradedTextures.push({
+                q: task.manifestTile.yq,
+                r: task.manifestTile.yr,
+                time: performance.now(),
+            });
+        }
+    }
+
+    processTextureResults() {
+        let installed = 0;
+        while (installed < TEXTURE_CONFIG.maxUploadsPerFrame) {
+            const index = this.textureResultQueue.findIndex(
+                item => !this.isMovingView || item.task.tier !== TEXTURE_TIER.HIGH);
+            if (index < 0) break;
+            const { task, result } = this.textureResultQueue.splice(index, 1)[0];
+            this._installTextureResult(task, result);
+            installed++;
+        }
+    }
+
+    _dispatchTextureJobs(maxConcurrent) {
+        this.textureQueue.sort((a, b) => b.priority - a.priority);
+        while (this.activeWorkerCount < maxConcurrent &&
+            this.activeTextureJobs < TEXTURE_CONFIG.maxTextureJobs &&
+            this.textureQueue.length > 0) {
+            const index = this.textureQueue.findIndex(
+                task => !this.isMovingView || task.tier !== TEXTURE_TIER.HIGH);
+            if (index < 0) break;
+            const task = this.textureQueue.splice(index, 1)[0];
+            const state = this._textureState(task.manifestTile);
+            state.queued.delete(task.tier);
+            const pinnedMedium = this.isMiniBake && task.tier === TEXTURE_TIER.MEDIUM;
+            if (!pinnedMedium && TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
+            if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
+            state.loading.add(task.tier);
+            this.activeWorkerCount++;
+            this.activeTextureJobs++;
+            this.postWorkerJob('LOAD_TEXTURE', { urls: task.urls }).then(result => {
+                if (result.networkBytes) {
+                    this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
+                }
+                this.textureResultQueue.push({ task, result });
+                this.needsRender = true;
+            }).catch(error => {
+                state.loading.delete(task.tier);
+                state.failed.add(task.tier);
+                this._texErrorCount++;
+                this._updateTexBadge();
+                if (this._texErrorCount <= 3) {
+                    console.warn(`[TEX_FAIL] ${task.key}/${task.tier}: ${error.message}`);
+                }
+            }).finally(() => {
+                this.activeWorkerCount--;
+                this.activeTextureJobs--;
+                this.processQueues();
+            });
+        }
+    }
+
+    _seedMiniTexturePins() {
+        if (!this.isMiniBake || this.miniTexturePinsSeeded || !this.manifest) return;
+        this.miniTexturePinsSeeded = true;
+        for (const tile of this.manifest.tiles) {
+            this._queueTextureTier(tile, TEXTURE_TIER.LOW, -1000);
+            this._queueTextureTier(tile, TEXTURE_TIER.MEDIUM, -2000);
+        }
+    }
+
+    updateLOD() {
+        if (!this.visibilityAdapter || this.lodPaused) return;
+
+        this.camera.updateMatrixWorld();
+        this.projScreenMatrix.multiplyMatrices(
+            this.camera.projectionMatrix,
+            this.camera.matrixWorldInverse,
+        );
+        const visibleFrustum = extractFrustumPlanes(this.projScreenMatrix);
+
+        // Guard expansion is expressed against the actual rectangular camera
+        // frustum, so portrait naturally remains tall/narrow and landscape
+        // wide/short. A small motion lead makes panning cross the prefetch band
+        // before it reaches the screen; there is no radial/conical policy.
+        const previous = this.lastVisibilityCameraPosition || this.camera.position;
+        const motion = [
+            (this.camera.position.x - previous.x) * 4,
+            (this.camera.position.y - previous.y) * 4,
+            (this.camera.position.z - previous.z) * 4,
+        ];
+        const guardMarginMeters = Math.max(300, Math.min(5000, Math.abs(this.camera.position.y) * 0.25));
+        const guardFrustum = expandFrustumPlanes(visibleFrustum, {
+            marginMeters: guardMarginMeters,
+            predictedTranslation: motion,
+        });
+
+        const forward = new THREE.Vector3();
+        this.camera.getWorldDirection(forward);
+        const drawingBuffer = new THREE.Vector2();
+        this.renderer.getDrawingBufferSize(drawingBuffer);
+        const projection = createProjectionContext({
+            position: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
+            forward: [forward.x, forward.y, forward.z],
+            verticalFovRadians: THREE.MathUtils.degToRad(this.camera.fov),
+            viewportHeightPx: drawingBuffer.y,
+            near: this.camera.near,
+        });
+
+        this.visibilityAdapter.setVerticalTransform({
+            factor: this.heightFactor,
+            floor: this.floorState.value,
+        });
+        const plan = planHierarchicalVisibility({
+            hierarchy: this.visibilityAdapter,
+            visibleFrustum,
+            guardFrustum,
+            projection,
+            maxDepth: 0,
+        });
+        const summary = this.visibilityAdapter.summarizePlanByIsland(plan);
+        this.visibilityPlanStats = {
+            ...plan.stats,
+            guardMarginMeters,
+            viewportWidthPx: drawingBuffer.x,
+            viewportHeightPx: drawingBuffer.y,
+        };
+        this.lastVisibilityCameraPosition.copy(this.camera.position);
+        this.visibilityByKey.clear();
+
+        for (let island = 0; island < this.visibilityAdapter.islandCount; island++) {
+            const key = this.visibilityAdapter.getIslandKey(island);
+            const manifestTile = this.manifestGrid.get(key);
+            if (!manifestTile) continue;
+            const code = summary.classification[island];
+            const classification = code === VisibilityClass.VISIBLE
+                ? 'visible'
+                : (code === VisibilityClass.GUARD ? 'guard' : 'outside');
+            const projectedDiameterPx = summary.projectedDiameterPx[island] || 0;
+            const distanceMeters = summary.distanceMeters[island];
+            const priority = (classification === 'visible' ? 1e9 : (classification === 'guard' ? 1e6 : 0))
+                + Math.min(999999, projectedDiameterPx * 100)
+                - Math.min(99999, Number.isFinite(distanceMeters) ? distanceMeters : 99999);
+
+            const visibility = { classification, projectedDiameterPx, distanceMeters, priority };
+            this.visibilityByKey.set(key, visibility);
+            this._scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority);
+
+            if (classification !== 'outside') {
+                if (!this.tiles.has(key) && !this.loadingTiles.has(key)) {
+                    this.loadingTiles.add(key);
+                    this.loadQueue.push({ t: manifestTile, priority });
+                }
+            } else if (this.tiles.has(key)) {
                 this.unloadTile(key);
             }
         }
 
+        this._seedMiniTexturePins();
         this.processQueues();
-        this.checkInitialLoad(candidates);
+        this.checkInitialLoad();
     }
 
     checkInitialLoad(sorted) {
@@ -1448,55 +1776,20 @@ class PistonViewer {
 
     processQueues() {
         const maxConcurrent = this.workers.length;
-        const ESTIMATED_TILE_VRAM = 3 * 1024 * 1024; // ~2.7 MB instance buffers + low-res texture
-
-        this.cacheManager.beginTurn();
-
-        // Sort closest-first so the LRU swap logic can break early:
-        // if the closest new tile isn't worth swapping, nothing behind it is either.
-        this.loadQueue.sort((a, b) => a.t.d - b.t.d);
+        // Geometry is prioritized over refinement textures. The visibility
+        // planner supplies priority; no radial residency circle participates.
+        this.loadQueue.sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
         while (this.activeWorkerCount < maxConcurrent && this.loadQueue.length > 0) {
             const task = this.loadQueue.shift();
             const key = `${task.t.yq}_${task.t.yr}`;
 
-            // Hygiene
-            if (this.tiles.has(key) || task.t.d > this.renderSettings.renderDistance + 1000) {
+            // Camera may have moved while the task waited. Outside-guard work
+            // is stale and safe to discard; retained textures are independent.
+            if (this.tiles.has(key) || this.visibilityByKey.get(key)?.classification === 'outside') {
                 this.loadingTiles.delete(key);
                 continue;
             }
-
-            // --- LRU CACHE LOGIC ---
-            if (!this.cacheManager.canAllocate(ESTIMATED_TILE_VRAM)) {
-                // Budget is full. Only load if this tile is more valuable
-                // than the worst loaded tile (distance + frustum check).
-                this.projScreenMatrix.multiplyMatrices(
-                    this.camera.projectionMatrix, this.camera.matrixWorldInverse);
-                this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
-
-                const swapped = this.cacheManager.requestSwap(
-                    task.t.d,
-                    this.camera.position,
-                    this.frustum,
-                    this.tiles,
-                    this.unloadTile.bind(this)
-                );
-
-                if (!swapped) {
-                    // What we have is already optimal. Drain the rest of the
-                    // queue — since it's sorted closest-first, nothing behind
-                    // this tile can swap either.
-                    this.loadingTiles.delete(key);
-                    for (const remaining of this.loadQueue) {
-                        this.loadingTiles.delete(`${remaining.t.yq}_${remaining.t.yr}`);
-                    }
-                    this.loadQueue.length = 0;
-                    break;
-                }
-            }
-
-            // Record download (flags re-downloads of previously evicted tiles)
-            this.cacheManager.recordDownload(key);
 
             this.activeWorkerCount++;
             this.fetchTileOnWorker(task).then(result => {
@@ -1505,64 +1798,20 @@ class PistonViewer {
                 this.processQueues(); // Keep the pipe full
             });
         }
-
-        // 2. Texture Upgrades (Lower Priority)
-        // Compressed full-res texture VRAM — starts at the BC7 worst case and is
-        // corrected to the real observed size after the first upgrade (see
-        // this.estimatedFullTexVRAM, set in the constructor / upgradeTexture()).
-        const ESTIMATED_FULL_TEX_VRAM = this.estimatedFullTexVRAM;
-
-        if (!this.isMoving3D && this.activeWorkerCount < maxConcurrent && this.loadQueue.length === 0 && this.upgradeQueue.length > 0) {
-            const tile = this.upgradeQueue.shift();
-            tile.queuedForUpgrade = false;
-            const tileKey = `${tile.yq}_${tile.yr}`;
-
-            // Budget check for texture upgrade
-            if (!this.cacheManager.canAllocate(ESTIMATED_FULL_TEX_VRAM)) {
-                this.projScreenMatrix.multiplyMatrices(
-                    this.camera.projectionMatrix, this.camera.matrixWorldInverse);
-                this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
-
-                // Try up to 3 swaps to free enough for the full-res texture
-                let attempts = 0;
-                while (!this.cacheManager.canAllocate(ESTIMATED_FULL_TEX_VRAM) && attempts < 3) {
-                    const swapped = this.cacheManager.requestSwap(
-                        Infinity, // only evict out-of-frustum tiles for tex upgrades
-                        this.camera.position,
-                        this.frustum,
-                        this.tiles,
-                        this.unloadTile.bind(this),
-                        tileKey // don't evict the tile we're upgrading
-                    );
-                    if (!swapped) break;
-                    attempts++;
-                }
-
-                if (!this.cacheManager.canAllocate(ESTIMATED_FULL_TEX_VRAM)) {
-                    this.cacheManager.endTurn();
-                    return; // Will retry next frame
-                }
-            }
-
-            this.activeWorkerCount++;
-            this.upgradeTexture(tile).finally(() => {
-                this.activeWorkerCount--;
-                this.processQueues();
-            });
-        }
-
-        this.cacheManager.endTurn();
+        if (this.loadQueue.length === 0) this._dispatchTextureJobs(maxConcurrent);
     }
 
     async fetchTileOnWorker(task) {
+        const state = this._textureState(task.t);
+        const needsLow = !state.assets.has(TEXTURE_TIER.LOW) && !state.loading.has(TEXTURE_TIER.LOW);
+        if (needsLow) state.loading.add(TEXTURE_TIER.LOW);
         try {
             const { t } = task;
-            const lowTexUrl = `aerial_tiles/low/gosper_${t.yq}_${t.yr}.ktx2`;
             const binUrl = `tiles_bin/gosper_${t.yq}_${t.yr}.bin?v=1`;
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
                 yq: t.yq, yr: t.yr,
-                texUrl: lowTexUrl,
+                texUrls: needsLow ? this._textureUrls(TEXTURE_TIER.LOW, state.key) : [],
                 binUrl: binUrl
             });
 
@@ -1573,6 +1822,10 @@ class PistonViewer {
         } catch (e) {
             console.error("Tile Fetch Error", e);
             this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
+            if (needsLow) {
+                state.loading.delete(TEXTURE_TIER.LOW);
+                state.failed.add(TEXTURE_TIER.LOW);
+            }
             return null;
         }
     }
@@ -1627,10 +1880,13 @@ class PistonViewer {
         }
         const s = this.texStats;
         const fails = this._texErrorCount;
-        const ok = s.count > 0 && fails === 0;
+        const counts = { low128: 0, medium256: 0, high4096: 0 };
+        for (const state of this.textureStates.values()) {
+            for (const tier of state.assets.keys()) counts[tier]++;
+        }
         this._texBadgeEl.style.color = fails > 0 ? '#ff7675' : (s.count > 0 ? '#7ee787' : '#aaa');
         this._texBadgeEl.textContent = s.count > 0
-            ? `TEX ${s.formatKey || '?'} · ${s.count} ok / ${fails} fail`
+            ? `TEX ${s.formatKey || '?'} · 128:${counts.low128} 256:${counts.medium256} 4096:${counts.high4096} · ${fails} fail`
             : (fails > 0 ? `TEX · 0 ok / ${fails} fail` : 'TEX · loading...');
     }
 
@@ -1651,7 +1907,7 @@ class PistonViewer {
 
     // Moved Mesh Creation Logic Here
     instantiateTile(task, workerData) {
-        const { t, loadFullTexNow } = task;
+        const { t } = task;
         const key = `${t.yq}_${t.yr}`;
 
         // Final Hygiene Check (Camera might have moved while worker was working)
@@ -1662,24 +1918,48 @@ class PistonViewer {
             this.vramLedger.addNetworkPayload(key, workerData.networkBytes);
         }
 
-        try {
-            // 1. Texture Strategy (One texture per tile)
-            const tex = workerData.texture;
+        if (this.visibilityByKey.get(key)?.classification === 'outside') {
+            const state = this._textureState(t);
+            state.loading.delete(TEXTURE_TIER.LOW);
+            if (workerData.texture) {
+                this._installTextureResult({ key, manifestTile: t, tier: TEXTURE_TIER.LOW }, workerData.texture);
+            }
+            this.loadingTiles.delete(key);
+            return;
+        }
 
-            // 2. Create ONE material for this entire tile (shared across LODs)
-            // This cuts shader compilation overhead
-            let initialTex = null;
+        try {
+            const textureState = this._textureState(t);
+            textureState.loading.delete(TEXTURE_TIER.LOW);
+            if (workerData.visibilityData) {
+                this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
+            }
+
+            // The geometry worker may have brought the mandatory postage
+            // texture with it. Install it into the independent texture cache
+            // before creating any material.
+            const tex = workerData.texture;
             if (tex) {
-                initialTex = this.buildCompressedTexture(tex);
-                this.updateTexStats(tex);
-            } else {
+                this._installTextureResult({
+                    key,
+                    manifestTile: t,
+                    tier: TEXTURE_TIER.LOW,
+                }, tex);
+            } else if (!textureState.assets.size) {
                 // Worker treats a low-res transcode failure as non-fatal (tile
                 // still renders, magenta material) — count it in the debug
                 // badge anyway so an on-device failure isn't invisible.
                 this._texErrorCount++;
                 this._updateTexBadge();
             }
-            const sharedMaterial = this.createTileMaterial(0, !!tex, initialTex);
+
+            const initialAsset = this._bestTextureAsset(textureState);
+            const initialTex = initialAsset?.[1]?.texture || null;
+            textureState.activeTier = initialAsset?.[0] || null;
+
+            // Create one shared base material for the tile. Texture ownership
+            // remains with textureState, not this material or the geometry.
+            const sharedMaterial = this.createTileMaterial(0, !!initialTex, initialTex);
             this.materialsToUpdate.add(sharedMaterial);
 
             const meshGroup = new THREE.Group();
@@ -1734,7 +2014,7 @@ class PistonViewer {
             containerGroup.visible = true;
             this.needsRender = true;
 
-            const half = (this.texWorldSide || 980) / 2;
+            const half = this.visibilityAdapter?.horizontalRadiusByLevel?.[TILE_LEVEL] || 551;
             const bounds = new THREE.Box3(
                 new THREE.Vector3(t.lx - half, TILE_BOUNDS_MIN_Y, t.lz - half),
                 new THREE.Vector3(t.lx + half, TILE_BOUNDS_MAX_Y, t.lz + half)
@@ -1758,9 +2038,8 @@ class PistonViewer {
                 unitHeights: workerData.unitHeights,
                 stats: workerData.stats,
                 center: workerData.center,
-                isFullTex: false,
-                loadingTex: false,
-                queuedForUpgrade: false,
+                textureTier: textureState.activeTier,
+                isFullTex: textureState.activeTier === TEXTURE_TIER.HIGH,
                 isTransitioning: false,
                 clonedMaterials: gatheredMaterials
             };
@@ -1772,28 +2051,18 @@ class PistonViewer {
             // --- LEDGER: Register tile's GPU footprint ---
             // Geometry bytes pre-computed on worker thread (Graft 3)
             const geometryBytes = workerData.geometryBytes || 0;
-            // Texture: low-res KTX2, transcoded on the worker to a compressed
-            // GPU format — use the worker-reported byte count directly instead
-            // of estimating from raw RGBA dimensions.
-            let textureBytes = 0;
-            if (workerData.texture && workerData.texture.gpuBytes) {
-                textureBytes = workerData.texture.gpuBytes;
-            }
-            this.vramLedger.register(key, {
-                geometryBytes, textureBytes,
+            this.vramLedger.registerGeometry(key, {
+                geometryBytes,
                 q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
-
-            if (loadFullTexNow && !tileObj.isFullTex && !tileObj.loadingTex && !tileObj.queuedForUpgrade) {
-                tileObj.queuedForUpgrade = true;
-                this.upgradeQueue.push(tileObj);
-            }
+            this._reconcileTextureState(textureState);
 
             this.loadingTiles.delete(key);
 
         } catch (e) {
             console.error("Instantiation Error", key, e);
             this.loadingTiles.delete(key);
+            this.visibilityAdapter?.detachDecodedIsland(key);
         }
     }
 
@@ -1851,73 +2120,6 @@ class PistonViewer {
         });
     }
 
-    async upgradeTexture(tile) {
-        tile.loadingTex = true;
-        const key = `${tile.yq}_${tile.yr}`;
-        const url = `aerial_tiles/full/gosper_${tile.yq}_${tile.yr}.ktx2`;
-        try {
-            const texStart = performance.now();
-            const result = await this.postWorkerJob('LOAD_TEXTURE', { url });
-            const texLoadTime = performance.now() - texStart;
-
-            // --- LEDGER: Track upgraded texture network payload ---
-            if (result.networkBytes) {
-                this.vramLedger.addNetworkPayload(key, { bin: 0, tex: result.networkBytes });
-            }
-
-            const fullTex = this.buildCompressedTexture(result);
-            this.updateTexStats(result);
-
-            const assignStart = performance.now();
-
-            // --- INCINERATOR: Dispose old low-res texture before replacing ---
-            if (tile.material.map && tile.material.map !== fullTex) {
-                tile.material.map.dispose();
-            }
-
-            // ASSIGN TO MAIN MATERIAL
-            tile.material.map = fullTex;
-            tile.material.needsUpdate = true;
-
-            // ASSIGN TO ALL CLONED MATERIALS (old map refs disposed via main material above)
-            let clonedCount = 0;
-            if (tile.clonedMaterials) {
-                tile.clonedMaterials.forEach(m => {
-                    // Clones share the same texture instance, no need to dispose each
-                    m.map = fullTex;
-                    m.needsUpdate = true;
-                    clonedCount++;
-                });
-            }
-
-            const assignTime = performance.now() - assignStart; // Measure ENTIRE assignment block in ms
-
-            // --- LEDGER: Update texture VRAM (old low-res → new full-res) ---
-            this.vramLedger.updateTexture(key, result.gpuBytes);
-            // Correct the upgrade-gate estimate to the real observed size now
-            // that we know it (ASTC 6x6 ≈ 10MB, BC7 ≈ 22MB — the 24MB default
-            // was only ever a worst-case placeholder).
-            this.estimatedFullTexVRAM = result.gpuBytes;
-
-            tile.isFullTex = true;
-
-            // Track for render spike correlation
-            this.recentlyUpgradedTextures.push({ q: tile.yq, r: tile.yr, time: performance.now() });
-
-            // (tex-upgrade timing captured by aggregate frame violation)
-
-            this.needsRender = true;
-        } catch (e) {
-            this._texErrorCount++;
-            this._updateTexBadge();
-            if (this._texErrorCount <= 3) {
-                console.warn(`[TEX_FAIL] ${tile.yq},${tile.yr}: ${e.message}`);
-                if (this._texErrorCount === 3) console.warn('[TEX_FAIL] Further texture errors suppressed.');
-            }
-        }
-        tile.loadingTex = false;
-    }
-
     // parseBinaryV3 removed (handled by worker)
     // swapGeometry removed — level selection is fully per-instance in the
     // shader (CDLOD cut), and the flattened-cap look IS the 2D mode.
@@ -1930,26 +2132,24 @@ class PistonViewer {
         this._disposeTileGPU(tile);
 
         // --- LEDGER: Deregister VRAM tracking ---
-        this.vramLedger.deregister(key);
+        this.vramLedger.deregisterGeometry(key);
 
         this.tiles.delete(key);
         this.loadingTiles.delete(key);
+        this.visibilityAdapter?.detachDecodedIsland(key);
 
         // The manifest-driven horizon cap takes over for this island again.
         this.setHorizonTileHidden(key, false);
     }
 
-    /**
-     * THE INCINERATOR — Rigorous GPU resource teardown.
-     * Explicitly disposes all WebGL resources (BufferGeometry, Material, Texture)
-     * and nullifies references to force immediate GPU memory release.
-     * @param {object} tile - Tile object from this.tiles
-     */
+    /** Dispose geometry/material ownership only. Texture assets live in the
+     * independent residency cache and survive geometry eviction. */
     _disposeTileGPU(tile) {
         // 1. Remove from scene FIRST (prevents any further draws)
         if (tile.container) this.scene.remove(tile.container);
 
-        // 2. Deep-traverse all 3D meshes — dispose geometry, materials, textures
+        // 2. Deep-traverse all 3D meshes — dispose geometry and materials. Maps
+        // are detached but never disposed here: textureStates owns them.
         if (tile.mesh) {
             tile.mesh.traverse(obj => {
                 if (obj.isMesh) {
@@ -1961,7 +2161,7 @@ class PistonViewer {
                         ? (Array.isArray(obj.material) ? obj.material : [obj.material])
                         : [];
                     for (const mat of materials) {
-                        if (mat.map) { mat.map.dispose(); mat.map = null; }
+                        if (mat.map) mat.map = null;
                         this.materialsToUpdate.delete(mat);
                         mat.dispose();
                     }
@@ -1971,10 +2171,7 @@ class PistonViewer {
 
         // 4. Shared material (may have its own texture ref)
         if (tile.material) {
-            if (tile.material.map) {
-                tile.material.map.dispose();
-                tile.material.map = null;
-            }
+            if (tile.material.map) tile.material.map = null;
             this.materialsToUpdate.delete(tile.material);
             tile.material.dispose();
         }
@@ -1983,7 +2180,7 @@ class PistonViewer {
         if (tile.clonedMaterials) {
             tile.clonedMaterials.forEach(m => {
                 this.materialsToUpdate.delete(m);
-                if (m.map) { m.map.dispose(); m.map = null; }
+                if (m.map) m.map = null;
                 m.dispose();
             });
         }
@@ -2156,7 +2353,8 @@ class PistonViewer {
         if (this.isMoving3D) return ENGINE_STATES.MOVING_3D;
         if (moved || this.isUserInteracting) return flat ? ENGINE_STATES.MOVING_2D : ENGINE_STATES.MOVING_3D;
         const recentUpgrade = this.recentlyUpgradedTextures.some(u => performance.now() - u.time < 100);
-        if (this.sinterQueue.length > 0 || this.upgradeQueue.length > 0 ||
+        if (this.sinterQueue.length > 0 || this.textureQueue.length > 0 ||
+            this.textureResultQueue.length > 0 ||
             this.activeWorkerCount > 0 || this.isRefining || recentUpgrade) return ENGINE_STATES.SINTERING;
         return ENGINE_STATES.STATIC;
     }
@@ -2177,32 +2375,36 @@ class PistonViewer {
             return `${(b / 1073741824).toFixed(2)} GB`;
         };
 
-        const _classVec = new THREE.Vector3();
-        const renderDist = this.renderSettings.renderDistance;
         let visCount = 0, bufCount = 0, vesCount = 0;
         let visBytes = 0, bufBytes = 0, vesBytes = 0;
         let visFull = 0, visLow = 0, bufFull = 0, bufLow = 0, vesFull = 0, vesLow = 0;
 
         for (const [key, tile] of this.tiles) {
             const entry = this.vramLedger.entries.get(key);
-            const bytes = entry ? (entry.geometryBytes + entry.textureBytes) : 0;
-            const inFrustum = tile.bounds && this.frustum.intersectsBox(tile.bounds);
-            const isFull = !!tile.isFullTex;
+            const bytes = (entry?.geometryBytes || 0) + this.vramLedger.textureBytesFor(key);
+            const classification = this.visibilityByKey.get(key)?.classification || 'outside';
+            const isFull = tile.textureTier === TEXTURE_TIER.HIGH;
 
-            if (inFrustum) {
+            if (classification === 'visible') {
                 visCount++; visBytes += bytes;
                 if (isFull) visFull++; else visLow++;
+            } else if (classification === 'guard') {
+                bufCount++; bufBytes += bytes;
+                if (isFull) bufFull++; else bufLow++;
             } else {
-                _classVec.set(entry?.lx || 0, 0, entry?.lz || 0);
-                const dist = _classVec.distanceTo(this.camera.position);
-                if (dist <= renderDist) {
-                    bufCount++; bufBytes += bytes;
-                    if (isFull) bufFull++; else bufLow++;
-                } else {
-                    vesCount++; vesBytes += bytes;
-                    if (isFull) vesFull++; else vesLow++;
-                }
+                vesCount++; vesBytes += bytes;
+                if (isFull) vesFull++; else vesLow++;
             }
+        }
+
+        const residentTiers = { low128: 0, medium256: 0, high4096: 0 };
+        const activeTiers = { low128: 0, medium256: 0, high4096: 0, none: 0 };
+        const desiredTiers = { low128: 0, medium256: 0, high4096: 0 };
+        for (const state of this.textureStates.values()) {
+            for (const tier of state.assets.keys()) residentTiers[tier]++;
+            if (state.activeTier) activeTiers[state.activeTier]++;
+            else activeTiers.none++;
+            desiredTiers[state.desiredTier]++;
         }
 
         return {
@@ -2219,14 +2421,15 @@ class PistonViewer {
                 geometryBytes: this.vramLedger.totalGeometryBytes,
                 textureBytes: this.vramLedger.totalTextureBytes,
                 totalBytes: this.vramLedger.totalVRAMBytes,
-                budgetBytes: this.cacheManager.budget,
-                budgetUtilization: +(this.cacheManager.utilization).toFixed(4),
+                highTextureBudgetBytes: this.cacheManager.budget,
+                highTextureBytes: this.cacheManager.highBytes,
+                highTextureBudgetUtilization: +(this.cacheManager.utilization).toFixed(4),
                 // Human-readable
                 geometry: fmt(this.vramLedger.totalGeometryBytes),
                 textures: fmt(this.vramLedger.totalTextureBytes),
                 total: fmt(this.vramLedger.totalVRAMBytes),
-                budget: fmt(this.cacheManager.budget),
-                headroom: fmt(this.cacheManager.headroom),
+                highTextureBudget: fmt(this.cacheManager.budget),
+                highTextureHeadroom: fmt(this.cacheManager.headroom),
             },
             network: {
                 totalPayloadBytes: this.vramLedger.totalNetworkBytes,
@@ -2255,7 +2458,8 @@ class PistonViewer {
             tiles: {
                 loaded: this.tiles.size,
                 loadQueue: this.loadQueue.length,
-                upgradeQueue: this.upgradeQueue.length,
+                textureQueue: this.textureQueue.length,
+                textureResultQueue: this.textureResultQueue.length,
                 sinterQueue: this.sinterQueue.length,
                 activeWorkers: this.activeWorkerCount,
                 materialsTracked: this.materialsToUpdate.size,
@@ -2263,6 +2467,26 @@ class PistonViewer {
                 evictedBytes: fmt(this.cacheManager.evictedBytes),
                 redownloads: this.cacheManager.redownloadCount,
             },
+            textureResidency: {
+                resident: residentTiers,
+                active: activeTiers,
+                desired: desiredTiers,
+                loading: Array.from(this.textureStates.values())
+                    .reduce((sum, state) => sum + state.loading.size, 0),
+                queued: this.textureQueue.length,
+                resultQueue: this.textureResultQueue.length,
+                thresholdsPx: {
+                    mediumEnter: TEXTURE_CONFIG.mediumEnterPx,
+                    mediumExit: TEXTURE_CONFIG.mediumExitPx,
+                    highEnter: this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
+                    highExit: (this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx) * 0.75,
+                },
+                maxTextureSize: this.texStats.maxTextureSize,
+                highSourceSize: this.texStats.highSourceSize,
+                highUploadSize: this.texStats.highUploadSize,
+                highSkippedTopMips: this.texStats.highSkippedTopMips,
+            },
+            visibilityPlanner: this.visibilityPlanStats || null,
             violations: this._perfViolationCount,
             allocationCount: this.vramLedger.entries.size,
             movingLod: this.getMovingLodDebugStats(),
@@ -2300,6 +2524,7 @@ class PistonViewer {
 
         // --- BACKGROUND MAINTENANCE ---
         track('processInstantiationQueue', () => this.processInstantiationQueue());
+        track('processTextureResults', () => this.processTextureResults());
         track('processQueues', () => this.processQueues());
 
         const now = performance.now();
@@ -2325,6 +2550,8 @@ class PistonViewer {
         // CALCULATE isMoving3D EARLY so updateLOD() can skip texture upgrades during movement
         const angle = this.controls.getPolarAngle() * 180 / Math.PI;
         const flat = angle < 5.5;
+        const h = Math.min(1, Math.max(0, (angle - 5.5) / (25.0 - 5.5)));
+        this.heightFactor = h;
         const wasMoving3D = this.isMoving3D;
         const wasMovingView = this.isMovingView;
         this.isMovingView = moved || this.isUserInteracting;
@@ -2335,13 +2562,20 @@ class PistonViewer {
         // The first no-motion frame is also the moving -> settled swap frame.
         // Keep it from taking the STATIC early-return before horizon, skirt,
         // and resident-level visibility have been restored.
-        if (wasMovingView !== this.isMovingView) this.needsRender = true;
+        if (wasMovingView !== this.isMovingView) {
+            this.needsRender = true;
+            this.needsLODUpdate = true;
+        }
 
         // If transitioning INTO movement, clear the upgrade queue
         if (!wasMoving3D && this.isMoving3D) {
-            this.upgradeQueue.length = 0;
-            for (const tile of this.tiles.values()) {
-                tile.queuedForUpgrade = false;
+            this.textureQueue = this.textureQueue.filter(task => {
+                if (task.tier !== TEXTURE_TIER.HIGH) return true;
+                this.textureStates.get(task.key)?.queued.delete(TEXTURE_TIER.HIGH);
+                return false;
+            });
+            for (const state of this.textureStates.values()) {
+                state.queued.delete(TEXTURE_TIER.HIGH);
             }
         }
 
@@ -2364,9 +2598,6 @@ class PistonViewer {
         this.updateRenderStats(now);
         this.updateFps();
         this.updateFrametimeGraph();
-
-        const linear = Math.min(1, Math.max(0, (angle - 5.5) / (25.0 - 5.5)));
-        const h = linear;
 
         if (this.isMoving3D) {
             this.lastInteractionTime = now;
