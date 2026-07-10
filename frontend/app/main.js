@@ -6,6 +6,7 @@ import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
 import { PerfProfiler } from './perf_profiler.js';
 import { initBenchmark } from './benchmark.js';
+import { ShareableViewState } from './view_state.js';
 import './gosper_core.js';
 
 const G = window.GosperCore;
@@ -120,6 +121,7 @@ class PistonViewer {
             // NOTE: We do NOT reset LODs here anymore to avoid oscillation loops
             // from our own camera altitude adjustments.
         });
+        this.viewState = new ShareableViewState(this);
 
         this.needsRender = true;
         this.lastLODCamPos = new THREE.Vector3().copy(this.camera.position);
@@ -734,6 +736,7 @@ class PistonViewer {
             this.camera.position.set(startX, 1200, startZ);
             this.controls.target.set(startX, 0, startZ);
             this.controls.update();
+            await this.viewState.restoreFromUrl();
 
             // PRE-ALLOCATE GEOMETRIES
             const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);

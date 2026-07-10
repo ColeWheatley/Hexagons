@@ -197,6 +197,21 @@ h1 {
     font-family: monospace;
 }
 
+.view-link-btn {
+    border: 1px solid rgba(116, 185, 255, 0.55);
+    border-radius: 3px;
+    padding: 2px 7px;
+    color: #74b9ff;
+    background: rgba(116, 185, 255, 0.08);
+    font: 10px monospace;
+    cursor: pointer;
+}
+
+.view-link-btn:hover {
+    color: #fff;
+    border-color: #fff;
+}
+
 /* === DEBUG: Frametime graph === */
 .frametime-item {
     flex-direction: column;

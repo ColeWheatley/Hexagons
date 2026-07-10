@@ -47,18 +47,24 @@ export function worldToGosperTile(worldX, worldY) {
 
 // Projection Calibration
 let projParams = null;
+let projectionPromise = null;
 
 export async function initProjection() {
-    try {
-        const res = await fetch('assets/skigebiete.json');
-        const data = await res.json();
-        const areas = data.ski_areas;
+    if (projParams) return true;
+    if (projectionPromise) return projectionPromise;
 
-        // Use Kappl and St. Anton as baselines
-        const p1 = areas.find(a => a.name === "Kappl");
-        const p2 = areas.find(a => a.name === "St. Anton am Arlberg");
+    projectionPromise = (async () => {
+        try {
+            const res = await fetch('assets/skigebiete.json');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const areas = data.ski_areas;
 
-        if (p1 && p2) {
+            // Use Kappl and St. Anton as baselines
+            const p1 = areas.find(a => a.name === "Kappl");
+            const p2 = areas.find(a => a.name === "St. Anton am Arlberg");
+
+            if (!p1 || !p2) throw new Error('projection reference points are missing');
             const dLon = p2.gps.lon - p1.gps.lon;
             const dLat = p2.gps.lat - p1.gps.lat;
             const dX = p2.epsg_31254.x - p1.epsg_31254.x;
@@ -76,10 +82,14 @@ export async function initProjection() {
                 refLat: p1.gps.lat
             };
             console.log("Coordinate System Calibrated:", projParams);
+            return true;
+        } catch (e) {
+            projectionPromise = null; // a later retry may succeed
+            console.error("Failed to init projection", e);
+            return false;
         }
-    } catch (e) {
-        console.error("Failed to init projection", e);
-    }
+    })();
+    return projectionPromise;
 }
 
 export function latLonToWorld(lat, lon) {
@@ -87,4 +97,14 @@ export function latLonToWorld(lat, lon) {
     const dx = (lon - projParams.refLon) * projParams.scaleX;
     const dy = (lat - projParams.refLat) * projParams.scaleY;
     return { x: projParams.refX + dx, y: projParams.refY + dy };
+}
+
+// Inverse of the same local calibration used by latLonToWorld(). This is a
+// human-readable navigation coordinate, not a survey-grade CRS transform.
+export function worldToLatLon(x, y) {
+    if (!projParams) return null;
+    return {
+        lat: projParams.refLat + (y - projParams.refY) / projParams.scaleY,
+        lon: projParams.refLon + (x - projParams.refX) / projParams.scaleX,
+    };
 }
