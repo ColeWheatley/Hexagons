@@ -666,9 +666,15 @@ class PistonViewer {
         const dist = this.renderSettings.renderDistance;
         const fogEnd = dist;
         const fogStart = dist * 0.6;
-        if (!this.scene.fog) this.scene.fog = new THREE.Fog(0x0a0a0a, fogStart, fogEnd); // Match Bg
-        this.scene.fog.near = fogStart;
-        this.scene.fog.far = fogEnd;
+        if (this.isMiniBake) {
+            // Mini-bakes cover a compact debugging area, so a kilometre-scale
+            // fog wall only hides the geometry/LOD boundaries under inspection.
+            this.scene.fog = null;
+        } else {
+            if (!this.scene.fog) this.scene.fog = new THREE.Fog(0x0a0a0a, fogStart, fogEnd); // Match Bg
+            this.scene.fog.near = fogStart;
+            this.scene.fog.far = fogEnd;
+        }
         // Streamed tiles fade into fog at renderDistance; the horizon mesh is
         // fog-exempt (manual haze) and needs the far plane out past Tirol.
         this.camera.far = Math.max(dist + 2000, HORIZON_DISTANCE + 5000);
@@ -687,6 +693,12 @@ class PistonViewer {
             if (this.manifest.type !== 'gosper_l5') {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
+            const mapSpan = Math.max(
+                this.manifest.bounds.max_x - this.manifest.bounds.min_x,
+                this.manifest.bounds.max_y - this.manifest.bounds.min_y,
+            );
+            this.isMiniBake = mapSpan <= 30000;
+            this.updateFogAndClip();
             this.texWorldSide = this.manifest.tex_world_side_m; // uniform square canvas, world meters
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
