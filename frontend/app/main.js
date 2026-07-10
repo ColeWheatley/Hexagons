@@ -1726,7 +1726,14 @@ class PistonViewer {
             viewportWidthPx: drawingBuffer.x,
             viewportHeightPx: drawingBuffer.y,
         };
-        this.lastVisibilityCameraPosition.copy(this.camera.position);
+        // initWorld() yields while restoring a shareable URL. The animation
+        // loop can legitimately run this first visibility pass during that
+        // gap, before the post-restore snapshot has been assigned.
+        if (this.lastVisibilityCameraPosition) {
+            this.lastVisibilityCameraPosition.copy(this.camera.position);
+        } else {
+            this.lastVisibilityCameraPosition = this.camera.position.clone();
+        }
         this.visibilityByKey.clear();
 
         for (let island = 0; island < this.visibilityAdapter.islandCount; island++) {
