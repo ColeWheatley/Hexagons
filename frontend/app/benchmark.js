@@ -8,6 +8,8 @@
 //   initBenchmark(window.pistonViewer, APP_VERSION);
 // If ?bench= is absent, initBenchmark() is a no-op (URLSearchParams check returns immediately).
 
+const SCENARIO_GROUND_MARGIN = 80; // meters of clearance above the local terrain ceiling
+
 function lerp(a, b, t) { return a + (b - a) * t; }
 function clamp01(t) { return Math.max(0, Math.min(1, t)); }
 function clampNum(v, min, max) { return Math.max(min, Math.min(max, v)); }
@@ -61,6 +63,37 @@ function computeLocalBounds(manifest) {
         minZ: -(maxYWorld - b.min_y),
         maxZ: -(minYWorld - b.min_y),
     };
+}
+
+/** Local-space {x, z, hMax} for every manifest tile, built once per scenario run — the manifest
+ * carries hMax per island (see generate_manifest.py) so this is known upfront for the WHOLE
+ * bake, unlike currently-resident tiles which only cover whatever has streamed in so far. Used
+ * by groundCeilingNear() to keep the camera from clipping into terrain that hasn't loaded yet. */
+function buildHeightLookup(manifest) {
+    const b = manifest?.bounds;
+    const tiles = manifest?.tiles;
+    if (!b || !tiles) return [];
+    return tiles.filter((t) => Number.isFinite(t.hMax)).map((t) => ({
+        x: t.x - b.min_x,
+        z: -(t.y - b.min_y),
+        hMax: t.hMax,
+    }));
+}
+
+/** Max terrain hMax among manifest tiles within `radius` of (x,z) — the height ceiling the
+ * camera must stay above at that location. Falls back to the global max (over the WHOLE
+ * lookup) when nothing is within radius, so isolated/edge positions stay conservative rather
+ * than unclamped. */
+function groundCeilingNear(lookup, x, z, radius) {
+    if (lookup.length === 0) return null;
+    const r2 = radius * radius;
+    let localMax = -Infinity, globalMax = -Infinity;
+    for (const t of lookup) {
+        if (t.hMax > globalMax) globalMax = t.hMax;
+        const dx = t.x - x, dz = t.z - z;
+        if (dx * dx + dz * dz <= r2 && t.hMax > localMax) localMax = t.hMax;
+    }
+    return localMax > -Infinity ? localMax : globalMax;
 }
 
 /** Jump targets for the `stress` scenario: the viewer's actual starting focus point (guaranteed
@@ -220,6 +253,7 @@ function runScenario(viewer, name, scenario, appVersion) {
         initialRadius: startSpherical.radius,
         localBounds: computeLocalBounds(viewer.manifest),
         totalDuration: scenario.duration,
+        heightLookup: buildHeightLookup(viewer.manifest),
     };
     if (name === 'stress') ctx.locations = pickStressLocations(viewer);
 
@@ -249,6 +283,24 @@ function runScenario(viewer, name, scenario, appVersion) {
         if (elapsed >= scenario.duration) { finish(); return; }
 
         const { camPos, target } = scenario.fn(elapsed, ctx);
+
+        // Terrain-clip guard: scenarios pick camPos.y from a fixed spherical
+        // radius/phi around a target whose OWN y is always 0 (a horizontal
+        // reference, not real elevation — see main.js's controls.target
+        // convention). That math has no idea how tall the terrain actually
+        // is at the camera's XZ position, so a scenario tuned for one region
+        // can put the camera under a peak elsewhere in the manifest (verified:
+        // orbit's steady-state y ~724m and stress's near-zoom y ~162m both
+        // sit below this bake's ~1000-1300m normalized terrain heights).
+        // Clamp against the real height ceiling using the SAME (h - floorState)
+        // normalization the renderer itself uses, worst-cased at heightFactor
+        // 1.0 (full 3D) so the guard never under-clamps mid-tilt.
+        const ceilH = groundCeilingNear(ctx.heightLookup, camPos.x, camPos.z, 1500);
+        if (ceilH !== null) {
+            const minY = (ceilH - viewer.floorState.value) * 1.0 + SCENARIO_GROUND_MARGIN;
+            if (camPos.y < minY) camPos.y = minY;
+        }
+
         viewer.camera.position.set(camPos.x, camPos.y, camPos.z);
         viewer.controls.target.set(target.x, target.y, target.z);
         // Same flags a real interaction would set — see main.js's controls 'change' listener
