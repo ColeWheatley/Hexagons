@@ -1,12 +1,12 @@
 // @atlas: The core 'PistonViewer' Three.js orchestrator. Manages the 60fps render loop, MapControls interaction, and instanced mesh generation over Gosper-fractal island tiles ('GSP1'). Settled LOD uses the primary viewer's fixed world-distance bands (extended through Gosper's two extra hierarchy levels), selected per-instance by a hierarchical CDLOD cut. Moving mode renders one uniform aggregate size across the whole view. A manifest-driven horizon mesh renders every baked island's level-5 aggregate cap out to ~60 km for free. Uses a strict state machine (MOVING vs SINTERING) to preserve frame budgets while asynchronously dispatching Web Workers to decode tiles.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js';
+import { HexSearch } from './search.js?v=view1';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
 import { PerfProfiler } from './perf_profiler.js';
 import { initBenchmark } from './benchmark.js';
-import { ShareableViewState } from './view_state.js';
+import { ShareableViewState } from './view_state.js?v=view1';
 import './gosper_core.js';
 
 const G = window.GosperCore;
