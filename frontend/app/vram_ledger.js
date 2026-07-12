@@ -47,10 +47,14 @@ export class VRAMLedger {
             key,
             tier,
             bytes: bytes || 0,
+            kind: source.kind || 'texture',
             q: source.q,
             r: source.r,
+            pageX: source.pageX,
+            pageY: source.pageY,
             lx: source.lx,
             lz: source.lz,
+            bounds: source.bounds || null,
         });
         this.totalTextureBytes += bytes || 0;
     }
@@ -61,6 +65,21 @@ export class VRAMLedger {
         if (!entry) return;
         this.totalTextureBytes -= entry.bytes;
         this.textureEntries.delete(id);
+    }
+
+    updateTextureLocation(key, location) {
+        if (!location) return;
+        for (const entry of this.textureEntries.values()) {
+            if (entry.key !== key) continue;
+            entry.kind = location.kind || entry.kind;
+            entry.q = location.q;
+            entry.r = location.r;
+            entry.pageX = location.pageX;
+            entry.pageY = location.pageY;
+            entry.lx = location.lx;
+            entry.lz = location.lz;
+            entry.bounds = location.bounds || null;
+        }
     }
 
     textureBytesFor(key) {
@@ -90,11 +109,19 @@ export class VRAMLedger {
             midBytes: 0,
             farBytes: 0,
             tileBreakdown: { inFrustum: 0, outFrustum: 0 },
+            texturePageBreakdown: {
+                inFrustum: 0,
+                outFrustum: 0,
+                inFrustumAllocations: 0,
+                outFrustumAllocations: 0,
+            },
+            geometryBytes: this.totalGeometryBytes,
+            textureBytes: this.totalTextureBytes,
         };
 
         for (const [key, entry] of this.entries) {
             const tile = tilesMap?.get(key);
-            const tileBytes = entry.geometryBytes + this.textureBytesFor(key);
+            const tileBytes = entry.geometryBytes;
             const inFrustum = !tile?.bounds || !frustum || frustum.intersectsBox(tile.bounds);
             if (inFrustum) {
                 result.inFrustumBytes += tileBytes;
@@ -111,6 +138,31 @@ export class VRAMLedger {
             else if (dist < 5000) result.midBytes += tileBytes;
             else result.farBytes += tileBytes;
         }
+
+        // Texture pages are allocations in their own spatial identity domain.
+        // Count each shared GPU object once, never once per geometry consumer.
+        const inFrustumPageKeys = new Set();
+        const outFrustumPageKeys = new Set();
+        for (const entry of this.textureEntries.values()) {
+            const inFrustum = !entry.bounds || !frustum || frustum.intersectsBox(entry.bounds);
+            if (inFrustum) {
+                result.inFrustumBytes += entry.bytes;
+                result.texturePageBreakdown.inFrustumAllocations++;
+                inFrustumPageKeys.add(entry.key);
+            } else {
+                result.outFrustumBytes += entry.bytes;
+                result.texturePageBreakdown.outFrustumAllocations++;
+                outFrustumPageKeys.add(entry.key);
+            }
+            const dx = (entry.lx || 0) - cameraPosition.x;
+            const dz = (entry.lz || 0) - cameraPosition.z;
+            const dist = Math.hypot(dx, cameraPosition.y, dz);
+            if (dist < 2000) result.nearBytes += entry.bytes;
+            else if (dist < 5000) result.midBytes += entry.bytes;
+            else result.farBytes += entry.bytes;
+        }
+        result.texturePageBreakdown.inFrustum = inFrustumPageKeys.size;
+        result.texturePageBreakdown.outFrustum = outFrustumPageKeys.size;
         return result;
     }
 

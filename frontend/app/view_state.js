@@ -3,7 +3,7 @@
 // coordinates remain explicitly renderer-scene meters: the terrain renderer
 // dynamically subtracts a view-dependent floor and morphs height with pitch,
 // so camera.position.y is not an absolute elevation above sea level.
-import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utility.js?v=frustum9';
+import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utility.js?v=texhud1';
 
 const SCHEMA_VERSION = '1';
 const SETTLE_DEBOUNCE_MS = 450;

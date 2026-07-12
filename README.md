@@ -70,9 +70,10 @@ python3 hex_backend/waffle_iron.py --full
 ## Running the Viewer
 
 ```bash
-# From the project root
-npx http-server frontend/app -p 8099
-# OR (if node is not available or for a quick test)
+# From the project root. Disabling the development cache is important: the
+# HTML file is the bootstrap for the versioned module graph.
+npx http-server frontend/app -p 8099 -c-1
+# OR (if node is unavailable, use a fresh query string after each restart)
 python3 -m http.server 8099 --directory frontend/app
 ```
 

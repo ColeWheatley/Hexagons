@@ -44,6 +44,33 @@ export function shouldRefreshMotionFromControlsChange(isUserInteracting) {
     return Boolean(isUserInteracting);
 }
 
+export function writeCameraPose(camera, target, out = new Float64Array(10)) {
+    if (!camera?.position || !camera?.quaternion || !target) {
+        throw new TypeError('camera position/quaternion and controls target are required');
+    }
+    out[0] = camera.position.x;
+    out[1] = camera.position.y;
+    out[2] = camera.position.z;
+    out[3] = camera.quaternion.x;
+    out[4] = camera.quaternion.y;
+    out[5] = camera.quaternion.z;
+    out[6] = camera.quaternion.w;
+    out[7] = target.x;
+    out[8] = target.y;
+    out[9] = target.z;
+    return out;
+}
+
+export function cameraPoseChanged(previous, current, epsilon = 1e-7) {
+    if (!previous || !current || previous.length !== 10 || current.length !== 10) {
+        throw new TypeError('camera poses must contain 10 values');
+    }
+    for (let index = 0; index < 10; index++) {
+        if (Math.abs(previous[index] - current[index]) > epsilon) return true;
+    }
+    return false;
+}
+
 export function geometryLevelsForMode(isMovingView, binaryVersion = 2) {
     // GSP1 cannot be range-rebuilt after settling, so retain its complete
     // compatibility geometry and merely hide non-L3 levels while moving.

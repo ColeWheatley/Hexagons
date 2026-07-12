@@ -4,12 +4,12 @@
 // GSP1/GSP2/GSP3 aggregate bounds, and contiguous descendant ranges. The planner
 // sees only opaque uint32 handles and its generic hierarchy interface.
 
-import './gosper_core.js?v=frustum9';
-import { VisibilityClass } from './visibility_planner.js?v=frustum9';
+import './gosper_core.js?v=texhud1';
+import { VisibilityClass } from './visibility_planner.js?v=texhud1';
 
 const DEFAULT_CORE = globalThis.GosperCore;
 const BRANCHING = 7;
-const CAP_OVERSCAN = 1.15;
+export const GOSPER_CAP_OVERSCAN = 1.15;
 const ROOT_HEIGHT_ROUNDING_M = 0.1;
 // Aggregate worker buffers add 12 m and the shader can add another 12 m.
 const AGGREGATE_SKIRT_SAFETY_M = 24;
@@ -62,7 +62,7 @@ export class GosperVisibilityAdapter {
         manifestTiles = null,
         worldOrigin = { x: 0, y: 0 },
         core = DEFAULT_CORE,
-        capOverscan = CAP_OVERSCAN,
+        capOverscan = GOSPER_CAP_OVERSCAN,
         rootHeightRoundingM = ROOT_HEIGHT_ROUNDING_M,
         aggregateSkirtSafetyM = AGGREGATE_SKIRT_SAFETY_M,
         unitSkirtSafetyM = UNIT_SKIRT_SAFETY_M,

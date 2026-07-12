@@ -1,42 +1,69 @@
 // @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=frustum9';
-import { VRAMLedger } from './vram_ledger.js?v=frustum9';
-import { CacheManager } from './cache_manager.js?v=frustum9';
-import { PerfProfiler } from './perf_profiler.js?v=frustum9';
-import { initBenchmark } from './benchmark.js?v=frustum9';
-import { ShareableViewState } from './view_state.js?v=frustum9';
+import { HexSearch } from './search.js?v=texhud1';
+import { VRAMLedger } from './vram_ledger.js?v=texhud1';
+import { CacheManager } from './cache_manager.js?v=texhud1';
+import { PerfProfiler } from './perf_profiler.js?v=texhud1';
+import { initBenchmark } from './benchmark.js?v=texhud1';
+import { ShareableViewState } from './view_state.js?v=texhud1';
 import {
     VisibilityClass,
     createProjectionContext,
     expandFrustumPlanes,
     extractFrustumPlanes,
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=frustum9';
-import { GosperVisibilityAdapter } from './gosper_visibility_adapter.js?v=frustum9';
+} from './visibility_planner.js?v=texhud1';
+import {
+    GOSPER_CAP_OVERSCAN,
+    GosperVisibilityAdapter,
+} from './gosper_visibility_adapter.js?v=texhud1';
 import {
     gosperGeometrySelectionNeedsRebuild,
     planGosperGeometrySelection,
-} from './gosper_geometry_selection.js?v=frustum9';
+} from './gosper_geometry_selection.js?v=texhud1';
 import {
     applyLodPauseTransition,
     CameraMotionLatch,
+    cameraPoseChanged,
     geometryBuildCanCommit,
     geometryLevelsForMode,
     shouldForceCoarseGeometry,
     shouldRefreshMotionFromControlsChange,
-} from './geometry_transition_state.js?v=frustum9';
+    writeCameraPose,
+} from './geometry_transition_state.js?v=texhud1';
 import {
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
-} from './vertical_bootstrap.js?v=frustum9';
-import './gosper_core.js?v=frustum9';
+} from './vertical_bootstrap.js?v=texhud1';
+import { TexturePageGrid } from './texture_page_grid.js?v=texhud1';
+import {
+    PAGE_TEXTURE_RANK,
+    PAGE_TEXTURE_TIER,
+    TexturePageResidency,
+    selectTextureDispatchTaskIndex,
+} from './texture_page_residency.js?v=texhud1';
+import {
+    TEXTURE_HUD_ROWS,
+    collectDisplayedTexturePages,
+    collectTextureTierResidency,
+} from './texture_hud_telemetry.js?v=texhud1';
+import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=texhud1';
+import {
+    buildTexturePageShaderSwitch,
+    MAX_TEXTURE_PAGE_BINDINGS,
+} from './texture_page_shader.js?v=texhud1';
+import {
+    computeGosperSourceFootprint,
+    gosperIslandSourceBounds,
+    sourceFootprintFromGeometryContract,
+} from './gosper_page_binding_adapter.js?v=texhud1';
+import './gosper_core.js?v=texhud1';
 
 const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.9.8';
+const APP_VERSION = 'v0.10.0-rc2';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
@@ -56,8 +83,8 @@ const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper i
 
 // Three deterministic imagery tiers. Quality is selected from projected screen
 // footprint, never a radial distance or inferred device class.
-const TEXTURE_TIER = Object.freeze({ LOW: 'low128', MEDIUM: 'medium256', HIGH: 'high4096' });
-const TEXTURE_RANK = Object.freeze({ low128: 0, medium256: 1, high4096: 2 });
+const TEXTURE_TIER = PAGE_TEXTURE_TIER;
+const TEXTURE_RANK = PAGE_TEXTURE_RANK;
 const TEXTURE_CONFIG = Object.freeze({
     mediumEnterPx: 96,
     mediumExitPx: 72,  // 25% downgrade hysteresis
@@ -149,7 +176,7 @@ class PistonViewer {
         this.isUserInteracting = false;
         // One whole-scene motion invariant for flat and pitched views alike.
         this.isMovingView = false;
-        this.cameraMotion = new CameraMotionLatch(200);
+        this.cameraMotion = new CameraMotionLatch(300);
         this.controls.addEventListener('start', () => {
             this.isUserInteracting = true;
             // Real controls input enters before wheel's synchronous end event
@@ -171,6 +198,17 @@ class PistonViewer {
                 this.notifyCameraMotion(performance.now());
             }
         });
+        // MapControls normally dispatches start/change/end for a wheel burst,
+        // but browser/trackpad event ordering differs. Capture raw wheel input
+        // as an idempotent moving assertion before MapControls mutates pose.
+        this.renderer.domElement.addEventListener('wheel', () => {
+            this.notifyCameraMotion(performance.now());
+        }, { capture: true, passive: true });
+        this.lastObservedCameraPose = writeCameraPose(
+            this.camera,
+            this.controls.target,
+        );
+        this.observedCameraPose = new Float64Array(10);
         this.viewState = new ShareableViewState(this);
 
         this.needsRender = true;
@@ -221,6 +259,11 @@ class PistonViewer {
         this.textureQueue = [];
         this.textureResultQueue = [];
         this.textureStates = new Map();
+        this.texturePageGrid = null;
+        this.texturePageResidency = null;
+        this.texturePageVisibilityAdapter = null;
+        this.texturePagePlanStats = null;
+        this.missingPageTexture = this.createMissingPageTexture();
         this.visibilityByKey = new Map();
         this.currentVisibilityContext = null;
         this.geometryFrontierStats = {
@@ -313,9 +356,157 @@ class PistonViewer {
         this.cacheManager = new CacheManager();
         this.profiler = new PerfProfiler(this);
 
+        this.initTouchMomentumTracking();
         this.initWorld();
         this.animate();
         window.pistonViewer = this;
+    }
+
+    initTouchMomentumTracking() {
+        const el = this.renderer?.domElement;
+        if (!el) return;
+
+        // Disabling standard two-finger controls in MapControls
+        if (this.controls && this.controls.touches) {
+            this.controls.touches.TWO = null;
+        }
+
+        this.activeTouches = new Map();
+        this.lastTouchDistance = null;
+        this.lastTouchAngle = null;
+        this.lastTouchMidpointY = null;
+
+        const noteTouch = (event) => {
+            if (event.pointerType !== 'touch') return;
+            this.activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+            if (this.activeTouches.size === 2) {
+                // Reset stored values for start of two-finger gesture
+                this.lastTouchDistance = null;
+                this.lastTouchAngle = null;
+                this.lastTouchMidpointY = null;
+            }
+        };
+
+        const handlePointerMove = (event) => {
+            if (event.pointerType !== 'touch') return;
+            if (this.activeTouches.has(event.pointerId)) {
+                this.activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+                if (this.activeTouches.size === 2) {
+                    if (event.cancelable) event.preventDefault();
+                    this.handleTwoFingerGesture(event);
+                }
+            }
+        };
+
+        const clearTouch = (event) => {
+            if (event.pointerType !== 'touch') return;
+            this.activeTouches.delete(event.pointerId);
+            if (this.activeTouches.size < 2) {
+                this.lastTouchDistance = null;
+                this.lastTouchAngle = null;
+                this.lastTouchMidpointY = null;
+            }
+        };
+
+        el.addEventListener('pointerdown', noteTouch, { passive: true });
+        el.addEventListener('pointermove', handlePointerMove, { passive: false });
+        el.addEventListener('pointerup', clearTouch, { passive: true });
+        el.addEventListener('pointercancel', clearTouch, { passive: true });
+        el.addEventListener('lostpointercapture', clearTouch, { passive: true });
+    }
+
+    handleTwoFingerGesture(event) {
+        const touchIds = Array.from(this.activeTouches.keys());
+        if (touchIds.length !== 2) return;
+
+        const id1 = touchIds[0];
+        const id2 = touchIds[1];
+        const t1 = this.activeTouches.get(id1);
+        const t2 = this.activeTouches.get(id2);
+
+        const dist = Math.hypot(t2.x - t1.x, t2.y - t1.y);
+        const angle = Math.atan2(t2.y - t1.y, t2.x - t1.x);
+        const midpointX = (t1.x + t2.x) / 2;
+        const midpointY = (t1.y + t2.y) / 2;
+
+        if (this.lastTouchDistance === undefined || this.lastTouchDistance === null) {
+            this.lastTouchDistance = dist;
+            this.lastTouchAngle = angle;
+            this.lastTouchMidpointY = midpointY;
+            return;
+        }
+
+        const distRatio = dist / this.lastTouchDistance;
+        let angleDelta = angle - this.lastTouchAngle;
+        while (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
+        while (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
+
+        const midpointDeltaY = midpointY - this.lastTouchMidpointY;
+
+        const camera = this.camera;
+        const target = this.controls.target;
+        
+        let cameraMoved = false;
+
+        // Find pivot for Yaw and Zoom using the centerpoint of the two fingers
+        const ndcX = (midpointX / this.renderer.domElement.clientWidth) * 2 - 1;
+        const ndcY = -(midpointY / this.renderer.domElement.clientHeight) * 2 + 1;
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -target.y);
+        const pivot = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(plane, pivot)) {
+            pivot.copy(target); // Fallback if no intersection
+        }
+
+        // 1. Zoom (dolly) towards the pivot
+        if (distRatio !== 1 && isFinite(distRatio) && Math.abs(distRatio - 1) > 0.001) {
+            const currentDist = camera.position.distanceTo(target);
+            let newDist = currentDist / distRatio;
+            newDist = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newDist));
+            const effectiveDistRatio = currentDist / newDist;
+            
+            camera.position.sub(pivot).divideScalar(effectiveDistRatio).add(pivot);
+            target.sub(pivot).divideScalar(effectiveDistRatio).add(pivot);
+            cameraMoved = true;
+        }
+
+        // 2. Rotate (yaw) around the pivot
+        if (angleDelta !== 0 && isFinite(angleDelta) && Math.abs(angleDelta) > 0.001) {
+            const up = this.controls.up || new THREE.Vector3(0, 1, 0);
+            // Reversed direction (swapped CW/CCW)
+            const q = new THREE.Quaternion().setFromAxisAngle(up, angleDelta);
+            camera.position.sub(pivot).applyQuaternion(q).add(pivot);
+            target.sub(pivot).applyQuaternion(q).add(pivot);
+            cameraMoved = true;
+        }
+
+        // 3. Tilt (pitch / polar angle) via vertical drag
+        if (midpointDeltaY !== 0 && isFinite(midpointDeltaY) && Math.abs(midpointDeltaY) > 0.1) {
+            const factor = Math.PI / this.renderer.domElement.clientHeight;
+            const tiltDelta = midpointDeltaY * factor;
+            
+            const spherical = new THREE.Spherical().setFromVector3(camera.position.clone().sub(target));
+            spherical.phi -= tiltDelta;
+            const minPolar = this.controls.minPolarAngle !== undefined ? this.controls.minPolarAngle : 0;
+            const maxPolar = this.controls.maxPolarAngle !== undefined ? this.controls.maxPolarAngle : Math.PI;
+            spherical.phi = Math.max(minPolar, Math.min(maxPolar, spherical.phi));
+            spherical.makeSafe();
+            
+            camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(spherical));
+            cameraMoved = true;
+        }
+
+        if (cameraMoved) {
+            camera.lookAt(target);
+            this.controls.update();
+            this.needsRender = true;
+            this.notifyCameraMotion(performance.now());
+        }
+
+        this.lastTouchDistance = dist;
+        this.lastTouchAngle = angle;
+        this.lastTouchMidpointY = midpointY;
     }
 
     initWorkers() {
@@ -339,7 +530,7 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=frustum9');
+            const w = new Worker('./tile_worker.js?v=texhud1');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -724,7 +915,10 @@ class PistonViewer {
             if (this.manifest.type !== 'gosper_l5') {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
-            const textureContract = this.manifest.textures;
+            // Safe migration: prefer geometry-independent global pages when
+            // present, while leaving the previous island texture contract
+            // readable until the replacement has been visually certified.
+            const textureContract = this.manifest.texture_pages || this.manifest.textures;
             if (!textureContract || textureContract.container !== 'ktx2' ||
                 textureContract.codec !== 'xuastc-ldr-6x6') {
                 throw new Error('Manifest needs the XUASTC KTX2 three-tier texture contract');
@@ -752,6 +946,39 @@ class PistonViewer {
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
 
+            if (this.manifest.texture_pages) {
+                this.texturePageGrid = new TexturePageGrid(
+                    this.manifest.texture_pages,
+                    { expectedCrs: 'EPSG:31254' },
+                );
+                if (this.texturePageGrid.crs !== 'EPSG:31254' || this.texturePageGrid.pageSize !== 1024) {
+                    throw new Error('Texture pages must use the EPSG:31254 global 1024m grid');
+                }
+                if (this.renderer.capabilities.maxTextures < MAX_TEXTURE_PAGE_BINDINGS) {
+                    throw new Error(
+                        `Global texture pages need ${MAX_TEXTURE_PAGE_BINDINGS} fragment samplers; device exposes ${this.renderer.capabilities.maxTextures}`,
+                    );
+                }
+                this.texturePageResidency = new TexturePageResidency({
+                    pages: this.texturePageGrid.pages,
+                    mini: this.isMiniBake,
+                    mediumEnterPx: TEXTURE_CONFIG.mediumEnterPx,
+                    mediumExitPx: TEXTURE_CONFIG.mediumExitPx,
+                    highEnterPx: TEXTURE_CONFIG.highEnterPx,
+                });
+                // Preserve the existing HUD/telemetry surface while changing
+                // its identity domain from render islands to imagery pages.
+                this.textureStates = this.texturePageResidency.states;
+                this.texturePageVisibilityAdapter = new TexturePageVisibilityAdapter({
+                    pages: this.texturePageGrid.pages,
+                    worldOrigin: this.worldOrigin,
+                });
+                this.geometryPageFootprint = sourceFootprintFromGeometryContract(
+                    this.manifest.geometry,
+                    computeGosperSourceFootprint(G, { capOverscan: GOSPER_CAP_OVERSCAN }),
+                );
+            }
+
             // Canonical lattice-key lookup. Frustum hierarchy traversal owns
             // visibility; the obsolete radial spatial buckets are gone.
             this.manifestGrid = new Map();   // "yq_yr" -> manifest tile
@@ -762,7 +989,19 @@ class PistonViewer {
                 }
                 t.lx = t.x - this.worldOrigin.x;
                 t.lz = -(t.y - this.worldOrigin.y);
-                this.manifestGrid.set(`${t.yq}_${t.yr}`, t);
+                const tileKey = `${t.yq}_${t.yr}`;
+                this.manifestGrid.set(tileKey, t);
+                if (this.texturePageGrid) {
+                    const bindings = this.texturePageGrid.pagesForBounds(
+                        gosperIslandSourceBounds(t.x, t.y, this.geometryPageFootprint),
+                        { includeMissing: true, maxPages: MAX_TEXTURE_PAGE_BINDINGS },
+                    );
+                    t.texturePageKeys = bindings.map(page => page.key);
+                    this.texturePageResidency.attachConsumer(
+                        tileKey,
+                        bindings.filter(page => page.available).map(page => page.key),
+                    );
+                }
             }
 
             // Translation boundary: the generic planner receives only opaque
@@ -1051,9 +1290,31 @@ class PistonViewer {
         }
     }
 
+    createMissingPageTexture() {
+        // Geometry must remain visible when a page is absent or fails to
+        // transcode. Bright magenta is deliberately impossible to mistake for
+        // aerial imagery; this one shared sentinel is never page-cache owned.
+        const pixels = new Uint8Array([255, 0, 255, 255]);
+        const texture = new THREE.DataTexture(pixels, 1, 1, THREE.RGBAFormat);
+        texture.minFilter = THREE.NearestFilter;
+        texture.magFilter = THREE.NearestFilter;
+        texture.generateMipmaps = false;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        texture.userData.isMissingTexturePage = true;
+        return texture;
+    }
+
     createTileMaterial(lodIdx, hasTexture, texture) {
         let material;
-        if (hasTexture) {
+        if (this.texturePageGrid) {
+            // Keeping USE_MAP compiled from the first frame lets page arrivals
+            // update sampler uniforms without recompiling every tile shader.
+            material = new THREE.MeshBasicMaterial({
+                map: texture || this.missingPageTexture,
+                side: THREE.DoubleSide,
+            });
+        } else if (hasTexture) {
             material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
         } else {
             material = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
@@ -1117,9 +1378,88 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_gosper_v4';
+        const pageMode = Boolean(this.texturePageGrid);
+        material.customProgramCacheKey = () => pageMode
+            ? 'piston_hex_global_pages_v1'
+            : 'piston_hex_gosper_v4';
 
         const texSide = this.texWorldSide || 980.0;
+        const pageSize = this.texturePageGrid?.pageSize || 1024;
+        const sourceOrigin = this.worldOrigin;
+        const missingPageTexture = this.missingPageTexture;
+        const vertexMapUvPatch = pageMode ? `
+                #ifdef USE_MAP
+                    // The fragment shader computes absolute source-grid UVs.
+                    // A stable placeholder keeps Three's USE_MAP variant live.
+                    vMapUv = vec2(0.5);
+                #endif
+                #include <project_vertex>
+            ` : `
+                #ifdef USE_MAP
+                    vec3 tempPosUv = vec3(position);
+                    #ifdef USE_INSTANCING
+                        tempPosUv = (instanceMatrix * vec4(tempPosUv, 1.0)).xyz;
+                    #endif
+                    vec2 rawUv = (tempPosUv.xz / uTileSize) + 0.5;
+                    vMapUv = rawUv * uUvScale + uUvOffset;
+                #endif
+                #include <project_vertex>
+            `;
+        const pageShaderSwitch = pageMode
+            ? buildTexturePageShaderSwitch(MAX_TEXTURE_PAGE_BINDINGS)
+            : { declarations: '', samplingBranches: '' };
+        const pageFragmentDeclarations = pageShaderSwitch.declarations;
+        const pageSamplingBranches = pageShaderSwitch.samplingBranches;
+        const fragmentMapPatch = pageMode ? `
+                #ifdef USE_MAP
+                    // Scene coordinates are rebased for float precision. Undo
+                    // that rebase into absolute EPSG metres, then select one of
+                    // up to nine explicitly bound pages. Half-open tests make exact
+                    // east/north boundaries select only their next page.
+                    vec2 sourceXY = vec2(
+                        vWorldPos.x + uSourceOrigin.x,
+                        uSourceOrigin.y - vWorldPos.z
+                    );
+                    vec4 texColor = vec4(1.0, 0.0, 1.0, 1.0);
+                    bool sampledPage = false;
+                    ${pageSamplingBranches}
+                    if (!sampledPage) texColor = vec4(1.0, 0.0, 1.0, 1.0);
+
+                    float ao = 1.0 - (vSkirtY * 0.4);
+                    float jitter = 1.0;
+                    if (vIsTop < 0.5) jitter = 0.92 + (vSideId * 0.04);
+                    float lighting = ao * jitter;
+                    vec3 baseColor = texColor.rgb;
+                    if (vIsTop < 0.5) {
+                         if (uGradientMode > 0.5 && vSlope >= 30.0) {
+                             baseColor = gradientColor(vSlope);
+                         } else {
+                             baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
+                         }
+                    }
+                    diffuseColor = vec4(baseColor * lighting, 1.0);
+                #endif
+            ` : `
+                #ifdef USE_MAP
+                    float u = (vLocalPos.x / uTileSize) + 0.5;
+                    float v = (-vLocalPos.z / uTileSize) + 0.5;
+                    vec2 planarUv = vec2(u, v) * uUvScale + uUvOffset;
+                    vec4 texColor = texture2D(map, planarUv);
+                    float ao = 1.0 - (vSkirtY * 0.4);
+                    float jitter = 1.0;
+                    if (vIsTop < 0.5) jitter = 0.92 + (vSideId * 0.04);
+                    float lighting = ao * jitter;
+                    vec3 baseColor = texColor.rgb;
+                    if (vIsTop < 0.5) {
+                         if (uGradientMode > 0.5 && vSlope >= 30.0) {
+                             baseColor = gradientColor(vSlope);
+                         } else {
+                             baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
+                         }
+                    }
+                    diffuseColor = vec4(baseColor * lighting, 1.0);
+                #endif
+            `;
 
         material.onBeforeCompile = function (shader) {
             this.userData.shader = shader;
@@ -1130,6 +1470,30 @@ class PistonViewer {
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
             shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 1e9) }; // (bandMin for self, bandMax for parent)
             shader.uniforms.uFinestBuilt = { value: 0.0 }; // 1 = finest level built so far: ignore bandMin
+            if (pageMode) {
+                const bindings = this.userData.texturePageBindings || [];
+                shader.uniforms.uPageSize = { value: pageSize };
+                shader.uniforms.uSourceOrigin = {
+                    value: new THREE.Vector2(sourceOrigin.x, sourceOrigin.y),
+                };
+                for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
+                    const binding = bindings[slot] || {};
+                    if (slot > 0) {
+                        shader.uniforms[`uPageMap${slot}`] = {
+                            value: binding.texture || missingPageTexture,
+                        };
+                    }
+                    shader.uniforms[`uPageOrigin${slot}`] = {
+                        value: new THREE.Vector2(
+                            binding.page?.minX || 0,
+                            binding.page?.minY || 0,
+                        ),
+                    };
+                    shader.uniforms[`uPageValid${slot}`] = {
+                        value: binding.valid ? 1 : 0,
+                    };
+                }
+            }
 
             // Gosper island textures are one uniform world-metric square
             // (tex_world_side_m, canvas-centered on the island) — no padding
@@ -1267,18 +1631,7 @@ class PistonViewer {
                     vLocalPos = transformed;
                     vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
                 #endif
-            `).replace('#include <project_vertex>', `
-                #ifdef USE_MAP
-                    // Brute Force Planar Mapping at END of vertex shader to ensure vMapUv is set
-                    vec3 tempPosUv = vec3(position);
-                    #ifdef USE_INSTANCING
-                        tempPosUv = (instanceMatrix * vec4(tempPosUv, 1.0)).xyz;
-                    #endif
-                    vec2 rawUv = (tempPosUv.xz / uTileSize) + 0.5;
-                    vMapUv = rawUv * uUvScale + uUvOffset;
-                #endif
-                #include <project_vertex>
-            `);
+            `).replace('#include <project_vertex>', vertexMapUvPatch);
 
             shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
                 #include <common>
@@ -1288,6 +1641,7 @@ class PistonViewer {
                 uniform float uGradientMode;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
+                ${pageFragmentDeclarations}
                 varying vec3 vLocalPos;
                 varying vec3 vWorldPos;
                 varying float vSlope;
@@ -1310,39 +1664,7 @@ class PistonViewer {
                     if (s < 55.0) return vec3(0.9, 0.2, 0.2); // Red
                     return vec3(0.6, 0.2, 0.8); // Violet
                 }
-            `).replace('#include <map_fragment>', `
-                #ifdef USE_MAP
-                    // Recalculate planar UVs in Fragment to be 100% sure we bypass standard UVs
-                    float u = (vLocalPos.x / uTileSize) + 0.5;
-                    float v = (-vLocalPos.z / uTileSize) + 0.5; // Flip Z for North/South alignment 
-                    vec2 planarUv = vec2(u, v) * uUvScale + uUvOffset;
-                    
-                    vec4 texColor = texture2D(map, planarUv);
-                    
-                    // LIGHTING
-                    float ao = 1.0 - (vSkirtY * 0.4); 
-                    float jitter = 1.0;
-                    if (vIsTop < 0.5) jitter = 0.92 + (vSideId * 0.04); 
-                    float lighting = ao * jitter;
-
-                    // COLOR — slope-class gradient on SKIRTS only; caps stay
-                    // pure aerial texture at every level.
-                    vec3 baseColor = texColor.rgb;
-                    if (vIsTop < 0.5) { // SKIRT
-                         if (uGradientMode > 0.5 && vSlope >= 30.0) {
-                             baseColor = gradientColor(vSlope);
-                         } else {
-                             // Darken skirts near the camera (the bestagon
-                             // relief cue) but fade the darkening out with
-                             // distance — sub-8px skirts otherwise stripe
-                             // the far field into a dark blur.
-                             baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
-                         }
-                    }
-
-                    diffuseColor = vec4(baseColor * lighting, 1.0);
-                #endif
-            `);
+            `).replace('#include <map_fragment>', fragmentMapPatch);
         };
 
         // Ensure recompilation picks up onBeforeCompile + customProgramCacheKey.
@@ -1459,15 +1781,24 @@ class PistonViewer {
 
     // --- CORE LOOP ---
 
-    _textureState(tileOrKey) {
-        const key = typeof tileOrKey === 'string'
-            ? tileOrKey
-            : `${tileOrKey.yq}_${tileOrKey.yr}`;
+    _textureResourceKey(resourceOrKey) {
+        if (typeof resourceOrKey === 'string') return resourceOrKey;
+        if (this.texturePageGrid) return resourceOrKey?.key;
+        return `${resourceOrKey?.yq}_${resourceOrKey?.yr}`;
+    }
+
+    _textureState(resourceOrKey) {
+        const key = this._textureResourceKey(resourceOrKey);
+        if (this.texturePageGrid) {
+            const state = this.texturePageResidency?.state(key);
+            if (!state) throw new Error(`Unknown texture page ${key}`);
+            return state;
+        }
         let state = this.textureStates.get(key);
         if (!state) {
-            const manifestTile = typeof tileOrKey === 'string'
+            const manifestTile = typeof resourceOrKey === 'string'
                 ? this.manifestGrid?.get(key)
-                : tileOrKey;
+                : resourceOrKey;
             state = {
                 key,
                 manifestTile,
@@ -1487,11 +1818,16 @@ class PistonViewer {
     }
 
     _textureUrls(tier, key) {
-        const manifestTile = this.manifestGrid?.get(key);
-        if (!manifestTile) throw new Error(`Unknown texture tile ${key}`);
         const contractTier = tier === TEXTURE_TIER.LOW
             ? 'low'
             : (tier === TEXTURE_TIER.MEDIUM ? 'medium' : 'high');
+        if (this.texturePageGrid) {
+            const url = this.texturePageGrid.urlFor(key, contractTier);
+            if (!url) throw new Error(`Texture page ${key} has no ${contractTier} asset`);
+            return [appendCacheKey(url, this.textureContract.cache_key)];
+        }
+        const manifestTile = this.manifestGrid?.get(key);
+        if (!manifestTile) throw new Error(`Unknown texture tile ${key}`);
         const template = this.textureContract.url_template;
         const url = template
             .replace('{tier}', contractTier)
@@ -1526,9 +1862,9 @@ class PistonViewer {
         return TEXTURE_TIER.LOW;
     }
 
-    _queueTextureTier(manifestTile, tier, priority = 0) {
-        if (!manifestTile) return;
-        const state = this._textureState(manifestTile);
+    _queueTextureTier(textureResource, tier, priority = 0) {
+        if (!textureResource) return;
+        const state = this._textureState(textureResource);
         if (state.assets.has(tier) || state.loading.has(tier)) return;
         if (state.queued.has(tier)) {
             // Mini mode seeds every medium at background priority. Promote
@@ -1545,36 +1881,47 @@ class PistonViewer {
         state.queued.add(tier);
         this.textureQueue.push({
             key: state.key,
-            manifestTile,
+            textureResource,
             tier,
             priority,
             urls: this._textureUrls(tier, state.key),
         });
     }
 
-    _scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority = 0) {
-        const state = this._textureState(manifestTile);
-        state.classification = classification;
-        state.projectedDiameterPx = projectedDiameterPx;
-        state.perceptibility = Number.isFinite(priority) ? priority : 0;
-        state.desiredTier = this._desiredTextureTier(state, projectedDiameterPx, classification);
+    _scheduleTextureQuality(
+        textureResource,
+        classification,
+        projectedDiameterPx,
+        priority = 0,
+        demandPreplanned = false,
+    ) {
+        const state = this._textureState(textureResource);
+        if (!demandPreplanned) {
+            state.classification = classification;
+            state.projectedDiameterPx = projectedDiameterPx;
+            state.perceptibility = Number.isFinite(priority) ? priority : 0;
+            state.desiredTier = this._desiredTextureTier(state, projectedDiameterPx, classification);
+        }
         this.cacheManager.updatePriority(state.key, state.perceptibility);
 
         // The postage tier is the non-grey coverage invariant. Once decoded it
         // remains resident; no high/geometry decision is allowed to evict it.
-        this._queueTextureTier(manifestTile, TEXTURE_TIER.LOW, priority + 1000);
+        this._queueTextureTier(textureResource, TEXTURE_TIER.LOW, priority + 1000);
 
         if (TEXTURE_RANK[state.desiredTier] >= TEXTURE_RANK[TEXTURE_TIER.MEDIUM]) {
-            this._queueTextureTier(manifestTile, TEXTURE_TIER.MEDIUM, priority + 500);
+            this._queueTextureTier(textureResource, TEXTURE_TIER.MEDIUM, priority + 500);
         }
         if (state.desiredTier === TEXTURE_TIER.HIGH && !this.isMovingView) {
-            this._queueTextureTier(manifestTile, TEXTURE_TIER.HIGH, priority);
+            this._queueTextureTier(textureResource, TEXTURE_TIER.HIGH, priority);
         }
 
         this._reconcileTextureState(state);
     }
 
     _bestTextureAsset(state, desiredTier = state.desiredTier, excludedTier = null) {
+        if (this.texturePageResidency) {
+            return this.texturePageResidency.bestAsset(state, desiredTier, excludedTier);
+        }
         const desiredRank = TEXTURE_RANK[desiredTier];
         const assets = Array.from(state.assets.entries())
             .filter(([tier]) => tier !== excludedTier)
@@ -1600,8 +1947,135 @@ class PistonViewer {
         this.needsRender = true;
     }
 
+    _texturePageSlots(pageKeys) {
+        if ((pageKeys || []).length > MAX_TEXTURE_PAGE_BINDINGS) {
+            throw new RangeError(
+                `geometry intersects ${pageKeys.length} pages; maximum is ${MAX_TEXTURE_PAGE_BINDINGS}`,
+            );
+        }
+        return (pageKeys || []).map(key => {
+            const available = this.texturePageGrid.pageByKey.get(key);
+            if (available) return available;
+            const [pageX, pageY] = String(key).split('_').map(Number);
+            return this.texturePageGrid.cell(pageX, pageY);
+        });
+    }
+
+    _textureLedgerLocation(textureResource) {
+        if (!this.texturePageGrid) return textureResource;
+        const centerX = (textureResource.minX + textureResource.maxX) * 0.5;
+        const centerY = (textureResource.minY + textureResource.maxY) * 0.5;
+        const minSceneY = (textureResource.renderMin - this.floorState.value) * this.heightFactor;
+        const maxSceneY = (textureResource.renderMax - this.floorState.value) * this.heightFactor;
+        return {
+            kind: 'texture-page',
+            pageX: textureResource.pageX,
+            pageY: textureResource.pageY,
+            lx: centerX - this.worldOrigin.x,
+            lz: -(centerY - this.worldOrigin.y),
+            bounds: new THREE.Box3(
+                new THREE.Vector3(
+                    textureResource.minX - this.worldOrigin.x,
+                    Math.min(minSceneY, maxSceneY),
+                    -(textureResource.maxY - this.worldOrigin.y),
+                ),
+                new THREE.Vector3(
+                    textureResource.maxX - this.worldOrigin.x,
+                    Math.max(minSceneY, maxSceneY),
+                    -(textureResource.minY - this.worldOrigin.y),
+                ),
+            ),
+        };
+    }
+
+    _applyTexturePageBindings(material, pageKeys) {
+        if (!material || !this.texturePageGrid) return;
+        const pages = this._texturePageSlots(pageKeys);
+        const bindings = [];
+        for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
+            const page = pages[slot] || null;
+            const state = page?.available ? this.texturePageResidency.state(page.key) : null;
+            const best = state ? this._bestTextureAsset(state) : null;
+            if (state) state.activeTier = best?.[0] || null;
+            bindings.push({
+                page,
+                texture: best?.[1]?.texture || this.missingPageTexture,
+                valid: Boolean(page?.available && best?.[1]?.texture),
+                tier: best?.[0] || null,
+            });
+        }
+        material.userData.texturePageBindings = bindings;
+        material.map = bindings[0]?.texture || this.missingPageTexture;
+        material.color.setHex(0xffffff);
+
+        const shader = material.userData.shader;
+        if (shader) {
+            if (shader.uniforms.map) shader.uniforms.map.value = material.map;
+            for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
+                const binding = bindings[slot];
+                if (slot > 0) shader.uniforms[`uPageMap${slot}`].value = binding.texture;
+                shader.uniforms[`uPageOrigin${slot}`].value.set(
+                    binding.page?.minX || 0,
+                    binding.page?.minY || 0,
+                );
+                shader.uniforms[`uPageValid${slot}`].value = binding.valid ? 1 : 0;
+            }
+        }
+    }
+
+    _refreshTilePageTextures(tile) {
+        if (!tile || !this.texturePageGrid) return;
+        const materials = new Set([tile.material, ...(tile.clonedMaterials || [])]);
+        for (const material of materials) {
+            this._applyTexturePageBindings(material, tile.texturePageKeys);
+        }
+
+        // The tile-to-page shim is a conservative AABB and may include a grid
+        // cell that exact rotated-cap SAT proves no fragment can ever sample.
+        // Such intentionally absent cells still occupy a deterministic shader
+        // slot, but they are not failed residency and must not poison quality
+        // telemetry for the pages that really intersect rendered geometry.
+        const residentPageKeys = tile.texturePageKeys.filter(
+            key => this.texturePageResidency.state(key),
+        );
+        const tiers = residentPageKeys.map(key => {
+            const state = this.texturePageResidency.state(key);
+            return this._bestTextureAsset(state)?.[0] || null;
+        });
+        tile.textureTier = tiers.length > 0 && tiers.every(Boolean)
+            ? tiers.reduce((lowest, tier) => TEXTURE_RANK[tier] < TEXTURE_RANK[lowest] ? tier : lowest)
+            : null;
+        tile.isFullTex = tiers.length > 0 && tiers.every(tier => tier === TEXTURE_TIER.HIGH);
+        for (let slot = 0; slot < residentPageKeys.length; slot++) {
+            if (tiers[slot] === TEXTURE_TIER.HIGH) this.cacheManager.touch(residentPageKeys[slot]);
+        }
+        this.needsRender = true;
+    }
+
+    _refreshTexturePageConsumers(state) {
+        if (!this.texturePageGrid) return;
+        for (const tileKey of state.consumers) {
+            const tile = this.tiles.get(tileKey);
+            if (tile) this._refreshTilePageTextures(tile);
+        }
+    }
+
     _reconcileTextureState(state) {
         const best = this._bestTextureAsset(state);
+        if (this.texturePageGrid) {
+            if (best && state.activeTier !== best[0]) {
+                state.activeTier = best[0];
+                this._refreshTexturePageConsumers(state);
+            }
+            if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
+                this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
+            }
+            if (!this.isMiniBake && state.classification === 'outside' &&
+                state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
+                this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
+            }
+            return;
+        }
         const tile = this.tiles.get(state.key);
         if (best && (state.activeTier !== best[0] || tile?.material?.map !== best[1].texture)) {
             state.activeTier = best[0];
@@ -1627,6 +2101,25 @@ class PistonViewer {
         const asset = state?.assets.get(tier);
         if (!state || !asset) return true;
 
+        if (this.texturePageGrid) {
+            const replacement = state.activeTier === tier
+                ? this._bestTextureAsset(state, state.desiredTier, tier)
+                : null;
+            const dropped = this.texturePageResidency.dropAsset(
+                key,
+                tier,
+                replacement,
+                {
+                    rebind: current => this._refreshTexturePageConsumers(current),
+                    dispose: retired => retired.texture.dispose(),
+                },
+            );
+            if (!dropped) return false;
+            this.vramLedger.removeTexture(key, tier);
+            if (tier === TEXTURE_TIER.HIGH && !fromHighPool) this.cacheManager.removeHigh(key);
+            return true;
+        }
+
         if (state.activeTier === tier) {
             const replacement = this._bestTextureAsset(state, state.desiredTier, tier);
             if (!replacement) return false;
@@ -1643,7 +2136,7 @@ class PistonViewer {
     }
 
     _installTextureResult(task, result) {
-        const state = this._textureState(task.manifestTile);
+        const state = this._textureState(task.textureResource);
         state.loading.delete(task.tier);
         state.queued.delete(task.tier);
         state.failed.delete(task.tier);
@@ -1675,28 +2168,34 @@ class PistonViewer {
             this.texStats.highSkippedTopMips = result.skippedTopMips || 0;
         }
 
+        const asset = { texture, bytes: result.gpuBytes || 0, result };
         const previous = state.assets.get(task.tier);
-        if (previous) {
-            if (state.activeTier === task.tier) {
+        if (this.texturePageGrid) {
+            this.texturePageResidency.replaceAsset(state.key, task.tier, asset, {
+                rebind: current => this._refreshTexturePageConsumers(current),
+                dispose: retired => retired.texture.dispose(),
+            });
+        } else {
+            state.assets.set(task.tier, asset);
+            if (previous && state.activeTier === task.tier) {
                 const tile = this.tiles.get(state.key);
                 if (tile) this._assignTextureToTile(tile, texture, task.tier);
             }
-            previous.texture.dispose();
+            if (previous) previous.texture.dispose();
         }
-        state.assets.set(task.tier, { texture, bytes: result.gpuBytes || 0, result });
         this.vramLedger.setTexture(
             state.key,
             task.tier,
             result.gpuBytes || 0,
-            task.manifestTile,
+            this._textureLedgerLocation(task.textureResource),
         );
         this._reconcileTextureState(state);
         this.updateTexStats(result);
 
         if (task.tier === TEXTURE_TIER.HIGH) {
             this.recentlyUpgradedTextures.push({
-                q: task.manifestTile.yq,
-                r: task.manifestTile.yr,
+                q: task.textureResource.yq ?? task.textureResource.pageX,
+                r: task.textureResource.yr ?? task.textureResource.pageY,
                 time: performance.now(),
             });
         }
@@ -1709,7 +2208,7 @@ class PistonViewer {
                 item => !this.isMovingView || item.task.tier !== TEXTURE_TIER.HIGH);
             if (index < 0) break;
             const { task, result } = this.textureResultQueue.splice(index, 1)[0];
-            const state = this._textureState(task.manifestTile);
+            const state = this._textureState(task.textureResource);
             if (task.tier === TEXTURE_TIER.HIGH && state.desiredTier !== TEXTURE_TIER.HIGH) {
                 // Demand changed during transcode. These are still CPU-side
                 // bytes, so avoid a pointless GPU upload and immediate drop.
@@ -1723,15 +2222,26 @@ class PistonViewer {
     }
 
     _dispatchTextureJobs(maxConcurrent) {
-        this.textureQueue.sort((a, b) => b.priority - a.priority);
         while (this.activeWorkerCount < maxConcurrent &&
             this.activeTextureJobs < TEXTURE_CONFIG.maxTextureJobs &&
             this.textureQueue.length > 0) {
-            const index = this.textureQueue.findIndex(
-                task => !this.isMovingView || task.tier !== TEXTURE_TIER.HIGH);
+            const index = selectTextureDispatchTaskIndex(
+                this.textureQueue,
+                this.textureStates,
+                {
+                    isMoving: this.isMovingView,
+                    // The mini corpus has one tiny coverage asset per page.
+                    // Do not let a medium/high request occupy either texture
+                    // worker slot until that complete green floor is resident
+                    // (or a page has terminally failed). Larger manifests do
+                    // not pre-seed every low page, so they cannot use this
+                    // whole-corpus barrier.
+                    lowCoverageFirst: Boolean(this.texturePageGrid && this.isMiniBake),
+                },
+            );
             if (index < 0) break;
             const task = this.textureQueue.splice(index, 1)[0];
-            const state = this._textureState(task.manifestTile);
+            const state = this._textureState(task.textureResource);
             state.queued.delete(task.tier);
             const pinnedMedium = this.isMiniBake && task.tier === TEXTURE_TIER.MEDIUM;
             if (!pinnedMedium && TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
@@ -1764,9 +2274,17 @@ class PistonViewer {
     _seedMiniTexturePins() {
         if (!this.isMiniBake || this.miniTexturePinsSeeded || !this.manifest) return;
         this.miniTexturePinsSeeded = true;
-        for (const tile of this.manifest.tiles) {
-            this._queueTextureTier(tile, TEXTURE_TIER.LOW, -1000);
-            this._queueTextureTier(tile, TEXTURE_TIER.MEDIUM, -2000);
+        const resources = this.texturePageGrid
+            ? this.texturePageGrid.pages
+            : this.manifest.tiles;
+        // Seed the complete coverage floor before placing any upgrades in the
+        // queue. The dispatch barrier below remains authoritative if later
+        // demand promotion changes numeric priorities.
+        for (const resource of resources) {
+            this._queueTextureTier(resource, TEXTURE_TIER.LOW, -1000);
+        }
+        for (const resource of resources) {
+            this._queueTextureTier(resource, TEXTURE_TIER.MEDIUM, -2000);
         }
     }
 
@@ -1803,6 +2321,76 @@ class PistonViewer {
             ],
             detailMarginMeters,
         });
+    }
+
+    _updateTexturePageDemand({ visibleFrustum, guardFrustum, projection }) {
+        const adapter = this.texturePageVisibilityAdapter;
+        const residency = this.texturePageResidency;
+        if (!adapter || !residency) return;
+
+        adapter.setVerticalTransform({
+            factor: this.heightFactor,
+            floor: this.floorState.value,
+        });
+        const plan = planHierarchicalVisibility({
+            hierarchy: adapter,
+            visibleFrustum,
+            guardFrustum,
+            projection,
+            maxDepth: 0,
+        });
+        this.texturePagePlanStats = plan.stats;
+        residency.beginDemandPass();
+
+        const consume = (bucket, classification) => {
+            for (let index = 0; index < bucket.nodeIds.length; index++) {
+                const page = adapter.getPage(bucket.nodeIds[index]);
+                const projectedDiameterPx = bucket.projectedDiameterPx[index] || 0;
+                const distanceMeters = bucket.distanceMeters[index];
+                const viewDepthMeters = bucket.viewDepthMeters[index];
+                const viewCosine = Number.isFinite(distanceMeters) && distanceMeters > 0
+                    ? Math.max(0, Math.min(1, viewDepthMeters / distanceMeters))
+                    : 1;
+                const centerWeight = Math.pow(viewCosine, 8);
+                const projectedPriority = Number.isFinite(projectedDiameterPx)
+                    ? projectedDiameterPx * (0.1 + 0.9 * centerWeight) * 100
+                    : 999999;
+                const priority = (classification === 'visible'
+                    ? 1e9
+                    : (classification === 'guard' ? 1e6 : 0))
+                    + Math.min(999999, projectedPriority)
+                    - Math.min(99999, Number.isFinite(distanceMeters) ? distanceMeters : 99999);
+                residency.contribute(page, {
+                    classification,
+                    projectedDiameterPx,
+                    perceptibility: priority,
+                });
+            }
+        };
+        consume(plan.outside, 'outside');
+        consume(plan.guard, 'guard');
+        consume(plan.visible, 'visible');
+        residency.finishDemandPass({
+            highEnterPx: this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
+        });
+
+        for (const state of residency.states.values()) {
+            if (state.assets.size > 0) {
+                // Pitch/floor changes move the rendered page AABB. Keep spatial
+                // accounting current without changing page allocation identity.
+                this.vramLedger.updateTextureLocation(
+                    state.key,
+                    this._textureLedgerLocation(state.page),
+                );
+            }
+            this._scheduleTextureQuality(
+                state.page,
+                state.classification,
+                state.projectedDiameterPx,
+                state.perceptibility,
+                true,
+            );
+        }
     }
 
     updateLOD() {
@@ -1852,6 +2440,7 @@ class PistonViewer {
             guardFrustum,
             projection,
         });
+        this._updateTexturePageDemand({ visibleFrustum, guardFrustum, projection });
         const plan = planHierarchicalVisibility({
             hierarchy: this.visibilityAdapter,
             visibleFrustum,
@@ -1918,7 +2507,9 @@ class PistonViewer {
                 priority,
             };
             this.visibilityByKey.set(key, visibility);
-            this._scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority);
+            if (!this.texturePageGrid) {
+                this._scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority);
+            }
 
             // GSP2+ supports deferred geometry, so a settled resident tile
             // can refine the generic root plan to L3 and keep only descendant
@@ -2248,8 +2839,10 @@ class PistonViewer {
     }
 
     async fetchTileOnWorker(task) {
-        const state = this._textureState(task.t);
-        const needsLow = !state.assets.has(TEXTURE_TIER.LOW) && !state.loading.has(TEXTURE_TIER.LOW);
+        const tileKey = `${task.t.yq}_${task.t.yr}`;
+        const state = this.texturePageGrid ? null : this._textureState(task.t);
+        const needsLow = Boolean(state) &&
+            !state.assets.has(TEXTURE_TIER.LOW) && !state.loading.has(TEXTURE_TIER.LOW);
         if (needsLow) state.loading.add(TEXTURE_TIER.LOW);
         try {
             const { t } = task;
@@ -2263,21 +2856,23 @@ class PistonViewer {
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
                 yq: t.yq, yr: t.yr,
-                texUrls: needsLow ? this._textureUrls(TEXTURE_TIER.LOW, state.key) : [],
+                // Global imagery pages have their own worker queue and cache;
+                // geometry loading never smuggles in an island-owned texture.
+                texUrls: needsLow ? this._textureUrls(TEXTURE_TIER.LOW, tileKey) : [],
                 binUrl,
                 expectedGspVersion,
             });
             if (workerData.binaryVersion !== expectedGspVersion) {
                 throw new Error(
-                    `Binary cache mismatch for ${state.key}: manifest GSP${expectedGspVersion}, parsed GSP${workerData.binaryVersion}`,
+                    `Binary cache mismatch for ${tileKey}: manifest GSP${expectedGspVersion}, parsed GSP${workerData.binaryVersion}`,
                 );
             }
 
             if (workerData.binaryVersion >= 2) {
                 if (!(workerData.geometrySource instanceof ArrayBuffer) || !workerData.visibilityData) {
-                    throw new Error(`GSP2+ tile ${state.key} did not provide deferred geometry source/bounds`);
+                    throw new Error(`GSP2+ tile ${tileKey} did not provide deferred geometry source/bounds`);
                 }
-                this.visibilityAdapter.attachDecodedIsland(state.key, workerData.visibilityData);
+                this.visibilityAdapter.attachDecodedIsland(tileKey, workerData.visibilityData);
 
                 // Always produce the tiny complete coarse layers, even if the
                 // root left the guard during phase one. If it re-enters before
@@ -2285,7 +2880,7 @@ class PistonViewer {
                 // still empty and costs only 57 aggregate records.
                 const geometrySelection = this._planTileGeometry(t, {
                     coarseOnly: this.isMovingView
-                        || this.visibilityByKey.get(state.key)?.classification === 'outside',
+                        || this.visibilityByKey.get(tileKey)?.classification === 'outside',
                 });
                 // Deliberately do not transfer geometrySource here. The
                 // structured clone sent to the worker leaves one compact
@@ -2298,7 +2893,7 @@ class PistonViewer {
                     rangesByDepth: geometrySelection.rangesByDepth,
                 });
                 if (geometryResult.binaryVersion !== expectedGspVersion) {
-                    throw new Error(`deferred geometry version mismatch for ${state.key}`);
+                    throw new Error(`deferred geometry version mismatch for ${tileKey}`);
                 }
                 workerData.lods = geometryResult.lods;
                 workerData.geometryBytes = geometryResult.geometryBytes;
@@ -2311,11 +2906,11 @@ class PistonViewer {
 
         } catch (e) {
             console.error("Tile Fetch Error", e);
-            this.visibilityAdapter?.detachDecodedIsland(state.key);
+            this.visibilityAdapter?.detachDecodedIsland(tileKey);
             this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
             if (needsLow) {
-                state.loading.delete(TEXTURE_TIER.LOW);
-                state.failed.add(TEXTURE_TIER.LOW);
+                state?.loading.delete(TEXTURE_TIER.LOW);
+                state?.failed.add(TEXTURE_TIER.LOW);
             }
             return null;
         }
@@ -2352,33 +2947,95 @@ class PistonViewer {
         this._updateTexBadge();
     }
 
-    // On-screen debug badge (bottom-left, always visible without opening the
-    // HUD panel) confirming KTX2 transcode is actually succeeding on-device —
-    // written for verifying real hardware (phones) where devtools aren't handy.
+    // On-screen page telemetry (bottom-left, always visible without opening
+    // devtools). "Displayed" is binding-driven and deduplicated across every
+    // visible geometry consumer; fetched-only and manifest-only pages do not
+    // inflate it.
     _updateTexBadge() {
         if (!this._texBadgeEl) {
             const el = document.createElement('div');
             el.id = 'tex-debug-badge';
             el.style.cssText = [
-                'position:fixed', 'bottom:10px', 'left:10px',
-                'background:rgba(10,10,10,0.75)', 'color:#7ee787',
-                "font:11px/1.4 'Courier New',monospace",
-                'padding:6px 10px', 'border-radius:6px', 'border:1px solid rgba(255,255,255,0.15)',
-                'z-index:9999', 'pointer-events:none', 'white-space:pre',
+                'position:fixed',
+                'bottom:max(8px,env(safe-area-inset-bottom))',
+                'left:max(8px,env(safe-area-inset-left))',
+                'max-width:calc(100vw - 16px)',
+                'background:rgba(7,20,34,0.82)',
+                "font:10px/1.35 'Courier New',monospace",
+                'font-variant-numeric:tabular-nums',
+                'padding:5px 7px', 'border-radius:6px',
+                'border:1px solid rgba(151,193,224,0.24)',
+                'box-shadow:0 2px 10px rgba(0,0,0,0.2)',
+                'z-index:9999', 'pointer-events:none', 'white-space:nowrap',
+                'display:grid', 'gap:2px',
             ].join(';');
+            const rowElements = new Map();
+            for (const rowSpec of TEXTURE_HUD_ROWS) {
+                const row = document.createElement('div');
+                row.className = 'tex-debug-row';
+                row.dataset.tier = rowSpec.tier;
+                row.dataset.sizePx = String(rowSpec.size);
+                row.style.cssText = [
+                    'display:grid', 'grid-template-columns:7px 68px auto',
+                    'align-items:center', 'column-gap:5px',
+                ].join(';');
+
+                const swatch = document.createElement('span');
+                swatch.dataset.role = 'tier-swatch';
+                swatch.style.cssText = [
+                    'display:block', 'width:6px', 'height:6px', 'border-radius:50%',
+                    `background:${rowSpec.color}`, `box-shadow:0 0 5px ${rowSpec.color}`,
+                ].join(';');
+
+                const label = document.createElement('span');
+                label.dataset.role = 'tier-label';
+                label.style.cssText = `color:${rowSpec.color};font-weight:700`;
+                label.textContent = `${rowSpec.label} ${rowSpec.size}px`;
+
+                const metrics = document.createElement('span');
+                metrics.dataset.role = 'tier-metrics';
+                metrics.style.color = '#d7e6f2';
+
+                row.append(swatch, label, metrics);
+                el.appendChild(row);
+                rowElements.set(rowSpec.tier, { row, metrics });
+            }
             document.body.appendChild(el);
             this._texBadgeEl = el;
+            this._texBadgeRows = rowElements;
         }
-        const s = this.texStats;
-        const fails = this._texErrorCount;
-        const counts = { low128: 0, medium256: 0, high4096: 0 };
-        for (const state of this.textureStates.values()) {
-            for (const tier of state.assets.keys()) counts[tier]++;
+
+        const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
+        const residency = collectTextureTierResidency(this.textureStates);
+        const snapshot = TEXTURE_HUD_ROWS.map(({ tier }) => ({
+            tier,
+            displayed: displayed[tier].size,
+            loaded: residency.loaded[tier],
+            pending: residency.pending[tier],
+            failed: residency.failed[tier],
+        }));
+        const signature = JSON.stringify([this.texStats.formatKey, snapshot]);
+        if (signature === this._texBadgeSignature) return;
+        this._texBadgeSignature = signature;
+
+        for (const counts of snapshot) {
+            const { row, metrics } = this._texBadgeRows.get(counts.tier);
+            row.dataset.displayed = String(counts.displayed);
+            row.dataset.loaded = String(counts.loaded);
+            row.dataset.pending = String(counts.pending);
+            row.dataset.failed = String(counts.failed);
+            metrics.textContent = `displayed ${counts.displayed} · loaded ${counts.loaded} · q/inflight ${counts.pending} · fail ${counts.failed}`;
+            metrics.style.color = counts.failed > 0 ? '#ff9c9c' : '#d7e6f2';
         }
-        this._texBadgeEl.style.color = fails > 0 ? '#ff7675' : (s.count > 0 ? '#7ee787' : '#aaa');
-        this._texBadgeEl.textContent = s.count > 0
-            ? `TEX ${s.formatKey || '?'} · 128:${counts.low128} 256:${counts.medium256} 4096:${counts.high4096} · ${fails} fail`
-            : (fails > 0 ? `TEX · 0 ok / ${fails} fail` : 'TEX · loading...');
+        const format = this.texStats.formatKey || 'loading';
+        this._texBadgeEl.dataset.format = format;
+        this._texBadgeEl.title = `Texture pages · ${format}`;
+        this._texBadgeEl.setAttribute(
+            'aria-label',
+            `Texture pages ${format}. ${snapshot.map(counts =>
+                `${counts.tier}: ${counts.displayed} displayed, ${counts.loaded} loaded, ${counts.pending} queued or inflight, ${counts.failed} failed`
+            ).join('. ')}`,
+        );
     }
 
     processInstantiationQueue() {
@@ -2410,10 +3067,14 @@ class PistonViewer {
         }
 
         if (this.visibilityByKey.get(key)?.classification === 'outside') {
-            const state = this._textureState(t);
-            state.loading.delete(TEXTURE_TIER.LOW);
-            if (workerData.texture) {
-                this._installTextureResult({ key, manifestTile: t, tier: TEXTURE_TIER.LOW }, workerData.texture);
+            const state = this.texturePageGrid ? null : this._textureState(t);
+            state?.loading.delete(TEXTURE_TIER.LOW);
+            if (workerData.texture && state) {
+                this._installTextureResult({
+                    key,
+                    textureResource: t,
+                    tier: TEXTURE_TIER.LOW,
+                }, workerData.texture);
             }
             this.visibilityAdapter?.detachDecodedIsland(key);
             this.loadingTiles.delete(key);
@@ -2424,8 +3085,8 @@ class PistonViewer {
             if (!workerData.lods) {
                 throw new Error(`tile ${key} reached instantiation before deferred geometry was built`);
             }
-            const textureState = this._textureState(t);
-            textureState.loading.delete(TEXTURE_TIER.LOW);
+            const textureState = this.texturePageGrid ? null : this._textureState(t);
+            textureState?.loading.delete(TEXTURE_TIER.LOW);
             if (workerData.visibilityData) {
                 this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
             }
@@ -2434,13 +3095,13 @@ class PistonViewer {
             // texture with it. Install it into the independent texture cache
             // before creating any material.
             const tex = workerData.texture;
-            if (tex) {
+            if (tex && textureState) {
                 this._installTextureResult({
                     key,
-                    manifestTile: t,
+                    textureResource: t,
                     tier: TEXTURE_TIER.LOW,
                 }, tex);
-            } else if (!textureState.assets.size) {
+            } else if (!this.texturePageGrid && !textureState.assets.size) {
                 // Worker treats a low-res transcode failure as non-fatal (tile
                 // still renders, magenta material) — count it in the debug
                 // badge anyway so an on-device failure isn't invisible.
@@ -2448,13 +3109,16 @@ class PistonViewer {
                 this._updateTexBadge();
             }
 
-            const initialAsset = this._bestTextureAsset(textureState);
+            const initialAsset = textureState ? this._bestTextureAsset(textureState) : null;
             const initialTex = initialAsset?.[1]?.texture || null;
-            textureState.activeTier = initialAsset?.[0] || null;
+            if (textureState) textureState.activeTier = initialAsset?.[0] || null;
 
             // Create one shared base material for the tile. Texture ownership
             // remains with textureState, not this material or the geometry.
             const sharedMaterial = this.createTileMaterial(0, !!initialTex, initialTex);
+            if (this.texturePageGrid) {
+                this._applyTexturePageBindings(sharedMaterial, t.texturePageKeys);
+            }
             this.materialsToUpdate.add(sharedMaterial);
 
             const meshGroup = new THREE.Group();
@@ -2549,8 +3213,9 @@ class PistonViewer {
                 geometryRebuildNext: null,
                 geometryAwaitingFinal: false,
                 geometrySource: workerData.geometrySource || null,
-                textureTier: textureState.activeTier,
-                isFullTex: textureState.activeTier === TEXTURE_TIER.HIGH,
+                texturePageKeys: this.texturePageGrid ? [...t.texturePageKeys] : null,
+                textureTier: textureState?.activeTier || null,
+                isFullTex: textureState?.activeTier === TEXTURE_TIER.HIGH,
                 isTransitioning: false,
                 clonedMaterials: gatheredMaterials
             };
@@ -2571,7 +3236,11 @@ class PistonViewer {
                 geometryBytes,
                 q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
-            this._reconcileTextureState(textureState);
+            if (this.texturePageGrid) {
+                this._refreshTilePageTextures(tileObj);
+            } else {
+                this._reconcileTextureState(textureState);
+            }
 
             this.loadingTiles.delete(key);
 
@@ -2914,9 +3583,15 @@ class PistonViewer {
                 farBytes: spatial.farBytes,
                 inFrustumTiles: spatial.tileBreakdown.inFrustum,
                 outFrustumTiles: spatial.tileBreakdown.outFrustum,
+                inFrustumTexturePages: spatial.texturePageBreakdown.inFrustum,
+                outFrustumTexturePages: spatial.texturePageBreakdown.outFrustum,
+                inFrustumTextureAllocations: spatial.texturePageBreakdown.inFrustumAllocations,
+                outFrustumTextureAllocations: spatial.texturePageBreakdown.outFrustumAllocations,
+                geometryBytes: spatial.geometryBytes,
+                texturePageBytes: spatial.textureBytes,
                 // Human-readable
-                inFrustum: `${spatial.tileBreakdown.inFrustum} tiles (${fmt(spatial.inFrustumBytes)})`,
-                outFrustum: `${spatial.tileBreakdown.outFrustum} tiles (${fmt(spatial.outFrustumBytes)})`,
+                inFrustum: `${spatial.tileBreakdown.inFrustum} geometry tiles + ${spatial.texturePageBreakdown.inFrustum} texture pages (${fmt(spatial.inFrustumBytes)})`,
+                outFrustum: `${spatial.tileBreakdown.outFrustum} geometry tiles + ${spatial.texturePageBreakdown.outFrustum} texture pages (${fmt(spatial.outFrustumBytes)})`,
                 near: fmt(spatial.nearBytes),
                 mid: fmt(spatial.midBytes),
                 far: fmt(spatial.farBytes),
@@ -2934,6 +3609,7 @@ class PistonViewer {
                 redownloads: this.cacheManager.redownloadCount,
             },
             textureResidency: {
+                identity: this.texturePageGrid ? 'global-page' : 'legacy-island',
                 resident: residentTiers,
                 active: activeTiers,
                 desired: desiredTiers,
@@ -2953,9 +3629,12 @@ class PistonViewer {
                 highSkippedTopMips: this.texStats.highSkippedTopMips,
             },
             visibilityPlanner: this.visibilityPlanStats || null,
+            texturePagePlanner: this.texturePagePlanStats || null,
             geometryFrontier: this.geometryFrontierStats || null,
             violations: this._perfViolationCount,
-            allocationCount: this.vramLedger.entries.size,
+            allocationCount: this.vramLedger.entries.size + this.vramLedger.textureEntries.size,
+            geometryAllocationCount: this.vramLedger.entries.size,
+            texturePageAllocationCount: this.vramLedger.textureEntries.size,
             movingLod: this.getMovingLodDebugStats(),
         };
     }
@@ -3001,6 +3680,13 @@ class PistonViewer {
         // CameraMotionLatch carries that motion through this rendered frame.
         this.controls.enableDamping = this.isUserInteracting;
         const moved = this.controls.update();
+        writeCameraPose(this.camera, this.controls.target, this.observedCameraPose);
+        if (cameraPoseChanged(this.lastObservedCameraPose, this.observedCameraPose)) {
+            // Event-independent safety net for wheel, pinch, pan, orbit, and
+            // programmatic controls mutations. enterMotion is idempotent, so
+            // an earlier start/wheel event does not advance the epoch twice.
+            this.notifyCameraMotion(now);
+        }
 
         // Camera pitch affects presentation and telemetry, not the moving LOD contract.
         const angle = this.controls.getPolarAngle() * 180 / Math.PI;
@@ -3039,6 +3725,7 @@ class PistonViewer {
         const cameraYBeforeVisibility = this.camera.position.y;
         this.updateFloorState(h);
         this.maintainCameraAltitudeDuringAnimation(h);
+        writeCameraPose(this.camera, this.controls.target, this.lastObservedCameraPose);
         if (this.floorState.value !== floorBeforeVisibility ||
             this.camera.position.y !== cameraYBeforeVisibility) {
             this.needsLODUpdate = true;
@@ -3052,6 +3739,11 @@ class PistonViewer {
             if (camDist > 50) this.lastLODCamPos.copy(this.camera.position);
             this.needsLODUpdate = false;
         }
+
+        // Queue/loading state can change without a successful transcode. Keep
+        // startup telemetry live even on an otherwise idle render tick; after
+        // the loader closes, render frames and texture callbacks own updates.
+        if (!this.loaderHidden) this._updateTexBadge();
 
         // --- RENDER CHECK ---
         // STATIC state: must NOT render. Early-out if nothing moved and no flags set.
@@ -3081,6 +3773,7 @@ class PistonViewer {
         // --- MATERIAL UNIFORM UPDATE ---
         this.computeLodRadii();
         this.updateLevelVisibility(h);
+        this._updateTexBadge();
         let needsUpdateCount = 0;
         for (const m of this.materialsToUpdate) {
             if (m.needsUpdate) needsUpdateCount++;
