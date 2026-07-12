@@ -36,6 +36,14 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(sizes, {"low": 128, "medium": 256, "high": 4096})
         self.assertEqual(tuple(sizes), ("low", "medium", "high"))
 
+    def test_global_page_recipe_is_independent_from_legacy_island_recipe(self):
+        self.assertEqual(texture_contract.TEXTURE_RECIPE_VERSION, "3.0.0")
+        self.assertEqual(texture_contract.TEXTURE_PAGE_RECIPE_VERSION, "4.0.2")
+        self.assertNotEqual(
+            texture_contract.TEXTURE_URL_TEMPLATE,
+            texture_contract.TEXTURE_PAGE_URL_TEMPLATE,
+        )
+
     def test_encoder_contract_is_xuastc_with_full_mips_and_no_fallback(self):
         old_binary = waffle.BASISU_BINARY
         waffle.BASISU_BINARY = "/test/basisu-v2"

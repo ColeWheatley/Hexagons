@@ -219,7 +219,24 @@ class GSP3BoundsTests(unittest.TestCase):
                     center_q, center_r, yq, yr,
                     1000.0, 900.0, 1100.0, 0, 0, 128, 128, 1, 0,
                 )
-                (binary_dir / f"gosper_{yq}_{yr}.bin").write_bytes(header)
+                aggregate_dtype = {
+                    1: waffle.GSP1_AGG_DTYPE,
+                    2: waffle.GSP2_AGG_DTYPE,
+                    3: waffle.GSP3_AGG_DTYPE,
+                }[version]
+                blob = bytearray(header)
+                for depth in range(1, waffle.GSP1_TILE_LEVEL):
+                    count = 7 ** depth
+                    blob.extend(struct.pack("<I", count))
+                    aggregates = np.zeros(count, dtype=aggregate_dtype)
+                    aggregates["flags"] = 1
+                    blob.extend(aggregates.tobytes())
+                unit_count = 7 ** waffle.GSP1_TILE_LEVEL
+                blob.extend(struct.pack("<I", unit_count))
+                units = np.zeros(unit_count, dtype=waffle.GSP1_UNIT_DTYPE)
+                units["flags"] = 1
+                blob.extend(units.tobytes())
+                (binary_dir / f"gosper_{yq}_{yr}.bin").write_bytes(blob)
 
             old_values = (
                 generate_manifest.BINARY_DIR,
@@ -240,6 +257,14 @@ class GSP3BoundsTests(unittest.TestCase):
             manifest = json.loads(output.read_text())
             self.assertEqual([tile["gspVersion"] for tile in manifest["tiles"]], [1, 2, 3])
             self.assertEqual(manifest["binary"]["cache_key"], "6.0.1")
+            self.assertEqual(
+                manifest["geometry"]["tile_source_footprint_half_m"],
+                {"x": 551.0, "y": 551.0},
+            )
+            self.assertEqual(
+                manifest["geometry"]["footprint_semantics"],
+                "conservative_render_coverage",
+            )
             self.assertEqual(manifest["binary"]["supported_versions"], [1, 2, 3])
             self.assertEqual(
                 manifest["binary"]["aggregate_record_bytes"],
@@ -247,6 +272,16 @@ class GSP3BoundsTests(unittest.TestCase):
             )
             self.assertEqual(manifest["textures"]["recipe_version"], "3.0.0+tattoo-2")
             self.assertTrue(manifest["textures"]["diagnostic_tattoos"])
+            self.assertEqual(manifest["texture_pages"]["recipe_version"], "4.0.2")
+            self.assertEqual(manifest["texture_pages"]["grid"]["crs"], "EPSG:31254")
+            self.assertEqual(manifest["texture_pages"]["grid"]["page_size_m"], 1024.0)
+            for page in manifest["texture_pages"]["pages"]:
+                self.assertLessEqual(page["hMin"], page["hMax"])
+                self.assertLess(page["renderMin"], page["hMin"])
+                self.assertGreaterEqual(page["renderMax"], page["hMax"])
+                self.assertGreaterEqual(page["hMin"] - page["renderMin"], 412.0)
+                self.assertGreater(page["coverage_tile_count"], 0)
+                self.assertIn("texture_", page["urls"]["high"])
 
 
 if __name__ == "__main__":

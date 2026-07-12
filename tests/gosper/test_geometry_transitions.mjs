@@ -18,12 +18,14 @@ await module.evaluate();
 const {
     applyLodPauseTransition,
     CameraMotionLatch,
+    cameraPoseChanged,
     MOVING_GEOMETRY_LEVELS,
     SETTLED_GEOMETRY_LEVELS,
     geometryBuildCanCommit,
     geometryLevelsForMode,
     shouldForceCoarseGeometry,
     shouldRefreshMotionFromControlsChange,
+    writeCameraPose,
 } = module.namespace;
 
 // MapControls wheel may complete start/change/end before requestAnimationFrame.
@@ -34,6 +36,38 @@ wheel.note(1000);
 assert.equal(wheel.sample({ now: 1001 }), true);
 assert.equal(wheel.sample({ now: 1200 }), true);
 assert.equal(wheel.sample({ now: 1200.001 }), false);
+
+// Wheel-only fallback: even if MapControls emits no start/change callback, the
+// changed camera pose is observed before the next frame chooses display mode.
+const poseCamera = {
+    position: { x: 0, y: 1000, z: 0 },
+    quaternion: { x: 0, y: 0, z: 0, w: 1 },
+};
+const poseTarget = { x: 0, y: 0, z: 0 };
+const beforeWheelPose = writeCameraPose(poseCamera, poseTarget);
+poseCamera.position.y = 900;
+const afterWheelPose = writeCameraPose(poseCamera, poseTarget);
+assert.equal(cameraPoseChanged(beforeWheelPose, afterWheelPose), true);
+const wheelOnly = new CameraMotionLatch(300);
+let wheelOnlyMoving = false;
+if (cameraPoseChanged(beforeWheelPose, afterWheelPose)) {
+    wheelOnlyMoving = wheelOnly.enterMotion(10, wheelOnlyMoving) || wheelOnlyMoving;
+}
+assert.equal(wheelOnlyMoving, true);
+assert.deepEqual(Array.from(geometryLevelsForMode(wheelOnlyMoving, 3)), [5, 4, 3]);
+assert.equal(shouldForceCoarseGeometry(wheelOnlyMoving, false), true);
+
+// An idle pose never refreshes the latch. Internal floor/height rebasing is
+// snapshotted after it runs, so the following idle frame also compares equal.
+const idleObserved = new Float64Array(10);
+writeCameraPose(poseCamera, poseTarget, idleObserved);
+assert.equal(cameraPoseChanged(afterWheelPose, idleObserved), false);
+poseCamera.position.y += 25; // internal terrain-anchor rebase
+const afterInternalRebase = writeCameraPose(poseCamera, poseTarget);
+writeCameraPose(poseCamera, poseTarget, idleObserved);
+assert.equal(cameraPoseChanged(afterInternalRebase, idleObserved), false);
+const idleLatch = new CameraMotionLatch(300);
+assert.equal(idleLatch.sample({ now: 1000 }), false, 'idle pose must not re-latch motion');
 
 const pan = new CameraMotionLatch(200);
 assert.equal(pan.enterMotion(50, false), true);

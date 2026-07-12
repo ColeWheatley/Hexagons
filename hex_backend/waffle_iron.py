@@ -23,8 +23,10 @@
 # OUTPUT FORMATS (baked per Gosper L5 island, also NOT in git):
 #   .bin:   GSP3 header + 5 heap-ordered Gosper depth blocks
 #   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
-#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). One 980m square per island,
-#           emitted as low/medium/high KTX2 tiers at 128/256/4096px with full mips.
+#           client-side to ASTC/BC7/BC1/ETC1/PVRTC). Globally anchored 1024m
+#           EPSG:31254 pages, shared across geometry, emitted as low/medium/high
+#           KTX2 tiers at 128/256/4096px with full mips. Legacy 980m island
+#           assets are retained only as the migration rollback path.
 #
 # HARDWARE PROFILE (reference machine):
 #   MacBook M1, 16 GB shared memory
@@ -40,6 +42,7 @@ import json
 import numpy as np
 import rasterio
 import rasterio.enums
+import rasterio.features
 import rasterio.windows
 import gc
 import re
@@ -56,7 +59,18 @@ from pyproj import Transformer
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 import generate_manifest
-from texture_contract import TEXTURE_RECIPE_VERSION, TEXTURE_TIERS, TEXTURE_TIER_SIZES
+from texture_contract import (
+    TEXTURE_PAGE_RECIPE_VERSION,
+    TEXTURE_RECIPE_VERSION,
+    TEXTURE_TIERS,
+    TEXTURE_TIER_SIZES,
+)
+from gosper_texture_page_adapter import (
+    exact_pages_for_tiles,
+    page_intersects_render_caps,
+    tile_coverage_bounds,
+)
+from texture_page_grid import PAGE_SIZE_M, TexturePage, pages_for_bounds
 
 def latlon_to_world_meters(lat, lon):
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:31254", always_xy=True)
@@ -97,13 +111,14 @@ STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
 TEXTURE_VERSION = TEXTURE_RECIPE_VERSION
+TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
 TEXTURE_TATTOO_VERSION = "2"  # three-tier colors/sizes; separate from clean textures
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
 # world metres, so overlapping island textures paint the same strokes at the
 # same terrain locations.  A 7.7m stroke is approximately 1/2/64 pixels at the
-# production 980m / {128,256,4096}px sizes: sparse in the landscape, with a
-# comparable world-space line weight in all three tiers.
+# global 1024m / {128,256,4096}px pages (and migration-era 980m canvases):
+# sparse in the landscape, with comparable world-space weight in every tier.
 TEXTURE_TATTOO_COLORS = {
     "low": (0, 255, 48),       # very vibrant green postage tier
     "medium": (0, 96, 255),    # electric blue medium tier
@@ -121,6 +136,7 @@ DEM_PATH = "hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif"
 GRADIENT_PATH = "hex_backend/DGM_Tirol_gradient_cached.tif"
 AERIAL_DIR = "hex_backend/aerial_tifs"
 METADATA_PATH = "frontend/app/tiles_bin/metadata.json"
+TEXTURE_PAGE_OUTPUT_DIR = "frontend/app/aerial_pages"
 
 # Resolved once in main() at bake start — no fallback codec exists, so a bake
 # either has a working XUASTC-capable basisu binary or it fails loudly before
@@ -183,9 +199,52 @@ def texture_cache_version(tattoos_enabled):
     return TEXTURE_VERSION
 
 
+def texture_page_cache_version(tattoos_enabled):
+    """Cache identity for global pages, independent of legacy island assets."""
+    if tattoos_enabled:
+        return f"{TEXTURE_PAGE_VERSION}+tattoo-{TEXTURE_TATTOO_VERSION}"
+    return TEXTURE_PAGE_VERSION
+
+
 def texture_recipe_marker_path(latQ, latR, output_dir="frontend/app/aerial_tiles"):
     """Per-island recipe marker; kept local and never uploaded as a texture asset."""
     return os.path.join(output_dir, ".recipes", gosper_asset_name(latQ, latR, "txt"))
+
+
+def texture_page_recipe_marker_path(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
+    """Per-page marker written only after all three KTX2 tiers are published."""
+    return os.path.join(output_dir, ".recipes", f"{page.asset_stem}.txt")
+
+
+def texture_page_padding_stats_path(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
+    """Auditable boundary-padding record, separate from the recipe marker."""
+    return os.path.join(output_dir, ".coverage", f"{page.asset_stem}.json")
+
+
+def write_texture_page_padding_stats(path, stats):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as target:
+            json.dump(stats, target, sort_keys=True, separators=(",", ":"))
+            target.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def read_texture_page_padding_stats(path):
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            stats = json.load(source)
+        return {
+            "padded_pixels": int(stats.get("padded_pixels", 0)),
+            "padded_area_m2": float(stats.get("padded_area_m2", 0.0)),
+            "max_distance_m": float(stats.get("max_distance_m", 0.0)),
+        }
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {"padded_pixels": 0, "padded_area_m2": 0.0, "max_distance_m": 0.0}
 
 
 def read_texture_recipe_marker(marker_path, unmarked_texture_version=""):
@@ -666,7 +725,7 @@ def load_tif_bounds(tif_list):
         cache = {}
 
     out, dirty = [], False
-    for f in tif_list:
+    for f in sorted(tif_list):
         try:
             st = os.stat(f)
         except OSError:
@@ -847,6 +906,109 @@ def gosper_asset_name(latQ, latR, ext):
     return f"gosper_{latQ}_{latR}.{ext}"
 
 
+def composite_aerial_texture(bounds, valid_tifs):
+    """Composite one absolute EPSG:31254 square at the high-tier resolution.
+
+    The function knows only world bounds and imagery sources. It is shared by
+    the migration-era island baker and the permanent global page baker so
+    resampling and seam semantics cannot drift.
+    """
+    import PIL.Image as Image
+    from rasterio.windows import from_bounds
+
+    min_x, min_y, max_x, max_y = map(float, bounds)
+    if min_x >= max_x or min_y >= max_y:
+        raise ValueError("aerial composite bounds must have positive area")
+    mpp_x = (max_x - min_x) / TEXTURE_CANVAS_PX
+    mpp_y = (max_y - min_y) / TEXTURE_CANVAS_PX
+    target_poly = box(min_x, min_y, max_x, max_y)
+    canvas = Image.new("RGB", (TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), (0, 0, 0))
+    coverage = np.zeros((TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), dtype=bool)
+    source_domain = np.zeros((TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), dtype=bool)
+
+    intersecting_sources = sorted(
+        (item for item in valid_tifs if item["poly"].intersects(target_poly)),
+        key=lambda item: item["path"],
+    )
+    for source in intersecting_sources:
+        with rasterio.open(source["path"]) as src:
+            ix_min_x = max(min_x, src.bounds.left)
+            ix_max_x = min(max_x, src.bounds.right)
+            ix_min_y = max(min_y, src.bounds.bottom)
+            ix_max_y = min(max_y, src.bounds.top)
+            if ix_min_x >= ix_max_x or ix_min_y >= ix_max_y:
+                continue
+
+            window = from_bounds(ix_min_x, ix_min_y, ix_max_x, ix_max_y, src.transform)
+            # Round page-space edges consistently so adjacent source TIFs and
+            # adjacent global pages meet on the same absolute pixel seam.
+            px0 = round((ix_min_x - min_x) / mpp_x)
+            px1 = round((ix_max_x - min_x) / mpp_x)
+            py0 = round((max_y - ix_max_y) / mpp_y)
+            py1 = round((max_y - ix_min_y) / mpp_y)
+            w_px, h_px = px1 - px0, py1 - py0
+            if w_px <= 0 or h_px <= 0:
+                continue
+
+            # Mark intended source coverage before reading. A failed/corrupt
+            # TIF remains distinguishable from legal exterior state-boundary
+            # overdraw and can never be silently edge-padded.
+            source_domain[py0:py1, px0:px1] = True
+
+            try:
+                data = src.read(
+                    window=window,
+                    out_shape=(src.count, h_px, w_px),
+                    resampling=rasterio.enums.Resampling.lanczos,
+                )
+                patch = Image.fromarray(
+                    np.moveaxis(data, 0, -1).astype("uint8", copy=False), "RGB"
+                )
+                canvas.paste(patch, (px0, py0))
+                coverage[py0:py1, px0:px1] = True
+                patch.close()
+                del patch, data
+            except Exception as exc:
+                print(f"   ⚠️ aerial source failed for {source['path']}: {exc}")
+
+    return canvas, coverage, source_domain
+
+
+def encode_texture_tiers(canvas, bounds, asset_stem, output_dir, texture_tattoos):
+    """Encode/publish all tiers as one restart-safe transaction."""
+    tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
+    res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
+    for directory in res_dirs.values():
+        os.makedirs(directory, exist_ok=True)
+    final_paths = {
+        tier: os.path.join(res_dirs[tier], f"{asset_stem}.ktx2")
+        for tier in tier_names
+    }
+    variants = prepare_texture_variants(canvas, bounds, texture_tattoos)
+
+    # Temporary files live beside the destination. All three final names are
+    # replaced only after every encode succeeds, so a killed bake can resume
+    # without ever advertising a mixed-generation page.
+    with tempfile.TemporaryDirectory(prefix=".waffle_ktx2_", dir=output_dir) as tmp_dir:
+        input_paths = {tier: os.path.join(tmp_dir, f"{tier}.png") for tier in tier_names}
+        encoded_paths = {tier: os.path.join(tmp_dir, f"{tier}.ktx2") for tier in tier_names}
+        for tier in tier_names:
+            variants[tier].save(input_paths[tier], "PNG")
+
+        for image in variants.values():
+            image.close()
+        variants.clear()
+        canvas = None
+        gc.collect()
+
+        for tier in tier_names:
+            run_basisu_encode(input_paths[tier], encoded_paths[tier])
+        for tier in tier_names:
+            os.replace(encoded_paths[tier], final_paths[tier])
+
+    return final_paths
+
+
 def bake_gosper_textures(
     latQ,
     latR,
@@ -856,46 +1018,10 @@ def bake_gosper_textures(
     texture_tattoos=False,
     texture_recipe_version=None,
 ):
-    import PIL.Image as Image
-    from rasterio.windows import from_bounds
     if not os.path.exists(output_dir): os.makedirs(output_dir)
 
     info = gosper_island_info(latQ, latR)
-    min_x, min_y, max_x, max_y = info["bounds"]
-    tex_world_side_m = max_x - min_x
-    tex_mpp = tex_world_side_m / TEXTURE_CANVAS_PX
-    target_poly = info["poly"]
-
-    canvas = Image.new("RGB", (TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), (0, 0, 0))
-    coverage = np.zeros((TEXTURE_CANVAS_PX, TEXTURE_CANVAS_PX), dtype=bool)
-    intersecting = [t for t in valid_tifs if t["poly"].intersects(target_poly)]
-
-    for t in intersecting:
-        with rasterio.open(t["path"]) as src:
-            ix_min_x, ix_max_x = max(min_x, src.bounds.left), min(max_x, src.bounds.right)
-            ix_min_y, ix_max_y = max(min_y, src.bounds.bottom), min(max_y, src.bounds.top)
-            if ix_min_x >= ix_max_x or ix_min_y >= ix_max_y:
-                continue
-
-            window = from_bounds(ix_min_x, ix_min_y, ix_max_x, ix_max_y, src.transform)
-            # Round canvas-space edges so adjacent TIF patches share the same seam.
-            px0 = round((ix_min_x - min_x) / tex_mpp)
-            px1 = round((ix_max_x - min_x) / tex_mpp)
-            py0 = round((max_y - ix_max_y) / tex_mpp)
-            py1 = round((max_y - ix_min_y) / tex_mpp)
-            w_px, h_px = px1 - px0, py1 - py0
-            if w_px <= 0 or h_px <= 0:
-                continue
-
-            try:
-                data = src.read(window=window, out_shape=(src.count, h_px, w_px), resampling=rasterio.enums.Resampling.lanczos)
-                patch = Image.fromarray(np.moveaxis(data, 0, -1).astype("uint8", copy=False), "RGB")
-                canvas.paste(patch, (px0, py0))
-                coverage[py0:py1, px0:px1] = True
-                patch.close()
-                del patch, data
-            except Exception as exc:
-                print(f"   ⚠️ aerial source failed for {t['path']}: {exc}")
+    canvas, coverage, _source_domain = composite_aerial_texture(info["bounds"], valid_tifs)
 
     geom = coord_util.gosper_tile_geometry()
     validate_geometry_texture_coverage(
@@ -910,42 +1036,654 @@ def bake_gosper_textures(
     # encoding, where the external encoder has its own substantial working set.
     del coverage
 
-    tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
-    res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
-    for d in res_dirs.values():
-        os.makedirs(d, exist_ok=True)
-
-    f_name = gosper_asset_name(latQ, latR, "ktx2")
-    final_paths = {tier: os.path.join(res_dirs[tier], f_name) for tier in tier_names}
-    variants = prepare_texture_variants(canvas, info["bounds"], texture_tattoos)
-
-    # Keep temporary KTX2s on the destination filesystem, then publish all
-    # three with atomic renames only after every encode succeeds. This avoids a
-    # mixed-generation island if the expensive high-tier encode fails midway.
-    with tempfile.TemporaryDirectory(prefix=".waffle_ktx2_", dir=output_dir) as tmp_dir:
-        input_paths = {tier: os.path.join(tmp_dir, f"{tier}.png") for tier in tier_names}
-        encoded_paths = {tier: os.path.join(tmp_dir, f"{tier}.ktx2") for tier in tier_names}
-        for tier in tier_names:
-            variants[tier].save(input_paths[tier], "PNG")
-
-        # PIL's high image aliases ``canvas``. Release all raster images before
-        # starting basisu so the 4096px composite is not resident alongside the
-        # encoder's own high-tier buffers.
-        for image in variants.values():
-            image.close()
-        variants.clear()
-        canvas = None
-        gc.collect()
-
-        for tier in tier_names:
-            run_basisu_encode(input_paths[tier], encoded_paths[tier])
-        for tier in tier_names:
-            os.replace(encoded_paths[tier], final_paths[tier])
+    final_paths = encode_texture_tiers(
+        canvas,
+        info["bounds"],
+        gosper_asset_name(latQ, latR, "ktx2").removesuffix(".ktx2"),
+        output_dir,
+        texture_tattoos,
+    )
 
     recipe_version = texture_recipe_version or texture_cache_version(texture_tattoos)
     write_texture_recipe_marker(texture_recipe_marker_path(latQ, latR, output_dir), recipe_version)
-    for tier in tier_names:
-        upload_to_s3(final_paths[tier])
+    for path in final_paths.values():
+        upload_to_s3(path)
+
+
+def texture_page_asset_paths(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
+    return {
+        tier["name"]: os.path.join(
+            output_dir, tier["name"], f"{page.asset_stem}.ktx2"
+        )
+        for tier in TEXTURE_TIERS
+    }
+
+
+def texture_page_is_current(page, recipe_version, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
+    """True only after the page's complete three-tier transaction committed."""
+    paths = texture_page_asset_paths(page, output_dir)
+    marker = read_texture_recipe_marker(texture_page_recipe_marker_path(page, output_dir))
+    return (
+        marker == recipe_version
+        and all(os.path.exists(path) for path in paths.values())
+        and os.path.exists(texture_page_padding_stats_path(page, output_dir))
+    )
+
+
+def invalidate_texture_page_transaction(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
+    """Invalidate a page before any same-URL tier is replaced.
+
+    Final tier renames are necessarily sequential. Removing the commit marker
+    first guarantees a killed same-recipe publish is rebaked instead of being
+    mistaken for a coherent transaction on restart.
+    """
+    try:
+        os.unlink(texture_page_recipe_marker_path(page, output_dir))
+    except FileNotFoundError:
+        pass
+
+
+def select_aerial_tifs_for_pages(all_tifs, pages, padding_m=0.0):
+    """Keep sources touching pages or their bounded aggregate-padding halo."""
+    page_polys = [box(*page.bounds) for page in pages]
+    if not page_polys:
+        return []
+    footprint = unary_union(page_polys)
+    if padding_m:
+        footprint = footprint.buffer(float(padding_m), cap_style="square", join_style="mitre")
+    return [source for source in all_tifs if source["poly"].intersects(footprint)]
+
+
+def orthophoto_internal_holes(all_tifs):
+    """Return corpus-internal holes from the global source topology.
+
+    This is computed from all known orthophoto rectangles, not page-local
+    masks, so a hole crossing a page seam cannot masquerade as an exterior
+    boundary on either page.
+    """
+    if not all_tifs:
+        return Polygon()
+    coverage_union = unary_union([source["poly"] for source in all_tifs])
+    holes = []
+
+    def collect(geometry):
+        if geometry.geom_type == "Polygon":
+            holes.extend(Polygon(ring) for ring in geometry.interiors)
+        elif hasattr(geometry, "geoms"):
+            for child in geometry.geoms:
+                collect(child)
+
+    collect(coverage_union)
+    return unary_union(holes) if holes else Polygon()
+
+
+def rasterize_world_geometry(geometry, page, shape):
+    height, width = map(int, shape)
+    if geometry is None or geometry.is_empty:
+        return np.zeros((height, width), dtype=bool)
+    clipped = geometry.intersection(box(*page.bounds))
+    if clipped.is_empty:
+        return np.zeros((height, width), dtype=bool)
+    min_x, min_y, max_x, max_y = page.bounds
+    transform = rasterio.transform.from_bounds(min_x, min_y, max_x, max_y, width, height)
+    return rasterio.features.rasterize(
+        [(clipped, 1)],
+        out_shape=(height, width),
+        transform=transform,
+        fill=0,
+        dtype="uint8",
+    ).astype(bool)
+
+
+def validate_texture_page_geometry_coverage(
+    coverage, page, tile_sources, allow_aggregate_boundary_missing=False
+):
+    """Reject missing aerial pixels under every renderable cap on one page.
+
+    This is a migration adapter only: page compositing itself is geometry
+    blind. Every valid aggregate/unit cap center and its six rendered vertices
+    are assigned by absolute coordinate to exactly one half-open global page
+    and checked against that page's successful-source coverage mask.
+    """
+    coverage = np.asarray(coverage, dtype=bool)
+    if coverage.ndim != 2 or coverage.size == 0:
+        raise ValueError("texture page coverage mask must be a non-empty 2D array")
+    min_x, min_y, max_x, max_y = page.bounds
+    height, width = coverage.shape
+    geom = coord_util.gosper_tile_geometry()
+    angles = np.arange(6, dtype=np.float64) * (math.pi / 3.0)
+    checked = 0
+    missing = 0
+    unit_missing = 0
+    missing_preview = []
+
+    for source in tile_sources:
+        unit_valid = np.asarray(source["unit_valid"], dtype=bool)
+        if unit_valid.size != 7 ** coord_util.GOSPER_TILE_LEVEL:
+            raise ValueError("Gosper unit validity mask has the wrong length")
+
+        for depth in range(coord_util.GOSPER_TILE_LEVEL + 1):
+            cap_level = coord_util.GOSPER_TILE_LEVEL - depth
+            stride = 7 ** cap_level
+            node_indices = np.arange(0, unit_valid.size, stride)
+            # A parent cap is renderable exactly when any descendant unit is
+            # valid. Heap ordering keeps each subtree contiguous.
+            node_valid = unit_valid.reshape(-1, stride).any(axis=1)
+            overscan = 1.0 if cap_level == 0 else coord_util.GOSPER_CAP_RENDER_OVERSCAN
+            radius = coord_util.gosper_level_size(cap_level) / math.sqrt(3.0) * overscan
+            rotation = cap_level * coord_util.GOSPER_ROT_PER_LEVEL
+            angles = rotation + np.arange(6, dtype=np.float64) * (math.pi / 3.0)
+            node_x = float(source["x"]) + geom["offx"][node_indices]
+            node_y = float(source["y"]) + geom["offy"][node_indices]
+            near = node_valid & (
+                (node_x + radius >= min_x) & (node_x - radius < max_x) &
+                (node_y + radius >= min_y) & (node_y - radius < max_y)
+            )
+            if not np.any(near):
+                continue
+
+            sample_dx = np.concatenate(([0.0], np.cos(angles) * radius))
+            sample_dy = np.concatenate(([0.0], np.sin(angles) * radius))
+            sample_x = node_x[near, None] + sample_dx[None, :]
+            sample_y = node_y[near, None] + sample_dy[None, :]
+            inside = (
+                (sample_x >= min_x) & (sample_x < max_x) &
+                (sample_y >= min_y) & (sample_y < max_y)
+            )
+            if not np.any(inside):
+                continue
+            cols = np.floor((sample_x - min_x) * width / (max_x - min_x)).astype(np.int64)
+            rows = np.floor((max_y - sample_y) * height / (max_y - min_y)).astype(np.int64)
+            cols = np.clip(cols, 0, width - 1)
+            rows = np.clip(rows, 0, height - 1)
+            covered = coverage[rows, cols]
+            checked += int(np.count_nonzero(inside))
+            missing_mask = inside & ~covered
+            missing_count = int(np.count_nonzero(missing_mask))
+            missing += missing_count
+            if cap_level == 0:
+                unit_missing += missing_count
+            if np.any(missing_mask) and len(missing_preview) < 8:
+                for node_i, sample_i in np.argwhere(missing_mask):
+                    missing_preview.append(
+                        f"{source.get('label', 'tile')}/L{cap_level}@"
+                        f"{sample_x[node_i, sample_i]:.3f},{sample_y[node_i, sample_i]:.3f}"
+                    )
+                    if len(missing_preview) >= 8:
+                        break
+
+    if unit_missing:
+        raise RuntimeError(
+            f"{page.asset_stem}: aerial composite leaves {unit_missing}/{checked} "
+            f"valid unit-cap samples unpainted ({'; '.join(missing_preview)})"
+        )
+    if missing and not allow_aggregate_boundary_missing:
+        raise RuntimeError(
+            f"{page.asset_stem}: aerial composite leaves {missing}/{checked} "
+            f"valid terrain cap samples unpainted ({'; '.join(missing_preview)})"
+        )
+    return checked
+
+
+def geometry_padding_masks(page, tile_sources, shape):
+    """Rasterize L0 hard coverage and L1+ padding extension limits.
+
+    Unit caps are deliberately excluded: missing L0 imagery is always a hard
+    bake failure. Each aggregate pixel may be padded no farther than the
+    radius of a renderable aggregate cap that actually covers it.
+    """
+    from PIL import Image, ImageDraw
+
+    height, width = map(int, shape)
+    min_x, min_y, max_x, max_y = page.bounds
+    px_per_m_x = width / (max_x - min_x)
+    px_per_m_y = height / (max_y - min_y)
+    geom = coord_util.gosper_tile_geometry()
+    unit_required = np.zeros((height, width), dtype=bool)
+    allowed = np.zeros((height, width), dtype=np.float32)
+
+    def to_pixel(x, y):
+        return ((x - min_x) * px_per_m_x, (max_y - y) * px_per_m_y)
+
+    for cap_level in range(coord_util.GOSPER_TILE_LEVEL + 1):
+        overscan = 1.0 if cap_level == 0 else coord_util.GOSPER_CAP_RENDER_OVERSCAN
+        radius = (
+            coord_util.gosper_level_size(cap_level)
+            / math.sqrt(3.0)
+            * overscan
+        )
+        rotation = cap_level * coord_util.GOSPER_ROT_PER_LEVEL
+        angles = rotation + np.arange(6, dtype=np.float64) * (math.pi / 3.0)
+        mask_image = Image.new("1", (width, height), 0)
+        draw = ImageDraw.Draw(mask_image)
+        stride = 7 ** cap_level
+        node_indices = np.arange(0, 7 ** coord_util.GOSPER_TILE_LEVEL, stride)
+
+        for source in tile_sources:
+            unit_valid = np.asarray(source["unit_valid"], dtype=bool)
+            node_valid = unit_valid.reshape(-1, stride).any(axis=1)
+            node_x = float(source["x"]) + geom["offx"][node_indices]
+            node_y = float(source["y"]) + geom["offy"][node_indices]
+            near = node_valid & (
+                (node_x + radius >= min_x) & (node_x - radius < max_x) &
+                (node_y + radius >= min_y) & (node_y - radius < max_y)
+            )
+            for center_x, center_y in zip(node_x[near], node_y[near]):
+                polygon = [
+                    to_pixel(
+                        center_x + math.cos(angle) * radius,
+                        center_y + math.sin(angle) * radius,
+                    )
+                    for angle in angles
+                ]
+                draw.polygon(polygon, fill=1)
+
+        mask = np.asarray(mask_image, dtype=bool)
+        if cap_level == 0:
+            unit_required |= mask
+        else:
+            allowed[mask] = np.maximum(allowed[mask], np.float32(radius))
+        mask_image.close()
+
+    # Parent masks overlap their unit descendants. Clearing them explicitly is
+    # the hard guarantee that no L0 interior pixel can ever be edge-padded.
+    allowed[unit_required] = 0.0
+    return unit_required, allowed
+
+
+def fill_from_nearest_global_aerial(
+    pixels, query_coords, page, aerial_sources, permitted_distance_m
+):
+    """Fill page-exterior pixels from the nearest authoritative source edge.
+
+    Used only when the nearest source lies across a page seam and therefore is
+    absent from the page-local successful-pixel tree. Query batches remain
+    small; no global raster or distance-index tensor is allocated.
+    """
+    if not aerial_sources:
+        raise RuntimeError(f"{page.asset_stem}: no global aerial source available for padding")
+    min_x, min_y, max_x, max_y = page.bounds
+    height, width = pixels.shape[:2]
+    world_x = min_x + (query_coords[:, 1] + 0.5) * (max_x - min_x) / width
+    world_y = max_y - (query_coords[:, 0] + 0.5) * (max_y - min_y) / height
+    best_d2 = np.full(len(query_coords), np.inf, dtype=np.float64)
+    best_source = np.full(len(query_coords), -1, dtype=np.int32)
+    best_x = np.zeros(len(query_coords), dtype=np.float64)
+    best_y = np.zeros(len(query_coords), dtype=np.float64)
+
+    for source_index, source in enumerate(aerial_sources):
+        left, bottom, right, top = source["poly"].bounds
+        sample_x = np.clip(world_x, left, right)
+        sample_y = np.clip(world_y, bottom, top)
+        d2 = (world_x - sample_x) ** 2 + (world_y - sample_y) ** 2
+        better = d2 < best_d2
+        if np.any(better):
+            best_d2[better] = d2[better]
+            best_source[better] = source_index
+            best_x[better] = sample_x[better]
+            best_y[better] = sample_y[better]
+
+    distances_m = np.sqrt(best_d2)
+    too_far = distances_m > permitted_distance_m + max(
+        (max_x - min_x) / width, (max_y - min_y) / height
+    ) * math.sqrt(2.0)
+    if np.any(too_far):
+        raise RuntimeError(
+            f"{page.asset_stem}: nearest global source exceeds aggregate cap radius "
+            f"by {float(np.max(distances_m[too_far] - permitted_distance_m[too_far])):.2f}m"
+        )
+
+    for source_index in np.unique(best_source):
+        if source_index < 0:
+            raise RuntimeError(f"{page.asset_stem}: failed to resolve nearest global aerial source")
+        selected = best_source == source_index
+        source = aerial_sources[int(source_index)]
+        with rasterio.open(source["path"]) as dataset:
+            if dataset.count < 3:
+                raise RuntimeError(f"{source['path']}: nearest-edge source is not RGB")
+            epsilon_x = max(abs(dataset.transform.a) * 0.5, 1e-6)
+            epsilon_y = max(abs(dataset.transform.e) * 0.5, 1e-6)
+            xs = np.clip(best_x[selected], dataset.bounds.left + epsilon_x, dataset.bounds.right - epsilon_x)
+            ys = np.clip(best_y[selected], dataset.bounds.bottom + epsilon_y, dataset.bounds.top - epsilon_y)
+            values = np.asarray(list(dataset.sample(zip(xs, ys), indexes=(1, 2, 3))))
+            if values.shape != (int(np.count_nonzero(selected)), 3):
+                raise RuntimeError(f"{source['path']}: nearest-edge RGB sampling failed")
+            pixels[query_coords[selected, 0], query_coords[selected, 1]] = np.clip(
+                values, 0, 255
+            ).astype(np.uint8)
+    return distances_m
+
+
+def pad_aggregate_boundary_overdraw(
+    canvas,
+    coverage,
+    source_domain,
+    page,
+    tile_sources,
+    internal_holes=None,
+    aerial_sources=None,
+):
+    """Nearest-edge pad only exterior aggregate-cap overdraw.
+
+    Guardrails:
+      * valid unit-cap sample gaps fail before padding;
+      * enclosed/internal imagery holes fail;
+      * every filled pixel must be within a covering aggregate cap's radius;
+      * nearest covered source pixels are queried in bounded row chunks, not a
+        page-sized distance-transform/index tensor.
+    """
+    from scipy import ndimage
+    from scipy.spatial import cKDTree
+    from PIL import Image
+
+    coverage = np.asarray(coverage, dtype=bool)
+    source_domain = np.asarray(source_domain, dtype=bool)
+    if source_domain.shape != coverage.shape:
+        raise ValueError("source-domain and successful-coverage masks must match")
+    validate_texture_page_geometry_coverage(
+        coverage, page, tile_sources, allow_aggregate_boundary_missing=True
+    )
+    unit_required, allowed_distance_m = geometry_padding_masks(page, tile_sources, coverage.shape)
+    if not np.any(unit_required) and not np.any(allowed_distance_m > 0.0):
+        raise RuntimeError(f"{page.asset_stem}: exact page has an empty rasterized geometry mask")
+    missing_unit_pixels = unit_required & ~coverage
+    if np.any(missing_unit_pixels):
+        raise RuntimeError(
+            f"{page.asset_stem}: aerial composite leaves "
+            f"{int(np.count_nonzero(missing_unit_pixels))} valid L0 cap pixels unpainted; "
+            "boundary padding forbidden"
+        )
+    missing = (allowed_distance_m > 0.0) & ~coverage
+    if not np.any(missing):
+        return canvas, coverage, {
+            "padded_pixels": 0,
+            "padded_area_m2": 0.0,
+            "max_distance_m": 0.0,
+        }
+
+    failed_source = missing & source_domain
+    if np.any(failed_source):
+        raise RuntimeError(
+            f"{page.asset_stem}: aggregate cap intersects unread internal source coverage "
+            f"({int(np.count_nonzero(failed_source))} pixels); boundary padding forbidden"
+        )
+
+    # Global topology, not a page-local fill operation, decides whether a
+    # source-domain absence is an internal corpus hole.
+    internal_hole_mask = rasterize_world_geometry(internal_holes, page, coverage.shape)
+    internal_missing = missing & internal_hole_mask
+    if np.any(internal_missing):
+        raise RuntimeError(
+            f"{page.asset_stem}: aggregate cap intersects an internal orthophoto gap "
+            f"({int(np.count_nonzero(internal_missing))} pixels); boundary padding forbidden"
+        )
+    del internal_hole_mask, internal_missing, failed_source
+
+    covered_boundary = coverage & ~ndimage.binary_erosion(coverage)
+    boundary_coords = np.argwhere(covered_boundary)
+    tree = cKDTree(boundary_coords) if boundary_coords.size else None
+    pixels = np.array(canvas, dtype=np.uint8, copy=True)
+    min_x, min_y, max_x, max_y = page.bounds
+    metres_per_pixel = max((max_x - min_x) / coverage.shape[1], (max_y - min_y) / coverage.shape[0])
+    padded_pixels = 0
+    max_distance_m = 0.0
+
+    # Row chunks cap query/output memory even when a coarse cap crosses a long
+    # ragged state boundary.
+    for row0 in range(0, coverage.shape[0], 128):
+        row1 = min(row0 + 128, coverage.shape[0])
+        local_coords = np.argwhere(missing[row0:row1])
+        if local_coords.size == 0:
+            continue
+        query_coords = local_coords.astype(np.int64, copy=False)
+        query_coords[:, 0] += row0
+        permitted = allowed_distance_m[query_coords[:, 0], query_coords[:, 1]]
+        if tree is None:
+            distances_m = fill_from_nearest_global_aerial(
+                pixels, query_coords, page, aerial_sources or [], permitted
+            )
+        else:
+            distances_px, nearest_indices = tree.query(query_coords, k=1, workers=1)
+            distances_m = distances_px * metres_per_pixel
+            too_far = distances_m > permitted + metres_per_pixel * math.sqrt(2.0)
+            if np.any(too_far):
+                # A closer source may sit just across this page's boundary.
+                distances_m[too_far] = fill_from_nearest_global_aerial(
+                    pixels, query_coords[too_far], page, aerial_sources or [], permitted[too_far]
+                )
+            local = ~too_far
+            if np.any(local):
+                source_coords = boundary_coords[
+                    np.asarray(nearest_indices[local], dtype=np.int64)
+                ]
+                pixels[query_coords[local, 0], query_coords[local, 1]] = pixels[
+                    source_coords[:, 0], source_coords[:, 1]
+                ]
+        coverage[query_coords[:, 0], query_coords[:, 1]] = True
+        padded_pixels += len(query_coords)
+        max_distance_m = max(max_distance_m, float(np.max(distances_m)))
+
+    canvas.close()
+    padded_canvas = Image.fromarray(pixels, "RGB")
+    pixel_area_m2 = (
+        (max_x - min_x) / coverage.shape[1]
+        * (max_y - min_y) / coverage.shape[0]
+    )
+    return padded_canvas, coverage, {
+        "padded_pixels": padded_pixels,
+        "padded_area_m2": round(padded_pixels * pixel_area_m2, 3),
+        "max_distance_m": round(max_distance_m, 3),
+    }
+
+
+def bake_texture_page(
+    page,
+    valid_tifs,
+    tile_sources,
+    output_dir=TEXTURE_PAGE_OUTPUT_DIR,
+    texture_tattoos=False,
+    texture_recipe_version=None,
+    internal_holes=None,
+):
+    """Bake one shared absolute imagery page and atomically publish its tiers."""
+    os.makedirs(output_dir, exist_ok=True)
+    invalidate_texture_page_transaction(page, output_dir)
+    canvas, coverage, source_domain = composite_aerial_texture(page.bounds, valid_tifs)
+    canvas, coverage, padding_stats = pad_aggregate_boundary_overdraw(
+        canvas,
+        coverage,
+        source_domain,
+        page,
+        tile_sources,
+        internal_holes,
+        valid_tifs,
+    )
+    checked = validate_texture_page_geometry_coverage(coverage, page, tile_sources)
+    if checked == 0 and not np.any(coverage):
+        raise RuntimeError(f"{page.asset_stem}: page has neither geometry samples nor aerial imagery")
+    del coverage
+
+    final_paths = encode_texture_tiers(
+        canvas, page.bounds, page.asset_stem, output_dir, texture_tattoos
+    )
+    recipe_version = texture_recipe_version or texture_page_cache_version(texture_tattoos)
+    write_texture_page_padding_stats(
+        texture_page_padding_stats_path(page, output_dir), padding_stats
+    )
+    write_texture_recipe_marker(
+        texture_page_recipe_marker_path(page, output_dir), recipe_version
+    )
+    for path in final_paths.values():
+        upload_to_s3(path)
+    return final_paths, padding_stats
+
+
+def map_gosper_sources_to_texture_pages(
+    pages, tiles, tile_sources, half_extent_x_m, half_extent_y_m
+):
+    """Return exact page-key -> non-empty render-source lists."""
+    expected_keys = {page.key for page in pages}
+    mapped = {key: [] for key in expected_keys}
+    for tile in tiles:
+        source = tile_sources[(tile["yq"], tile["yr"])]
+        for page in pages_for_bounds(
+            tile_coverage_bounds(tile, half_extent_x_m, half_extent_y_m)
+        ):
+            if page.key not in expected_keys or not page_intersects_render_caps(
+                page, tile, source["unit_valid"]
+            ):
+                continue
+            mapped[page.key].append(source)
+    if set(mapped) != expected_keys:
+        raise RuntimeError("texture page/source mapping key set drifted from exact inventory")
+    empty = [key for key, sources in mapped.items() if not sources]
+    if empty:
+        raise RuntimeError(f"exact texture pages lack render sources: {empty[:8]}")
+    return mapped
+
+
+def bake_global_texture_pages(
+    force=False,
+    texture_tattoos=False,
+    output_dir=TEXTURE_PAGE_OUTPUT_DIR,
+):
+    """Incrementally bake the global page union for every current GSP binary."""
+    tiles = generate_manifest.scan_binary_tiles()
+    geom = coord_util.gosper_tile_geometry()
+    render_half_x_m = float(geom["render_half_x_m"])
+    render_half_y_m = float(geom["render_half_y_m"])
+    recipe_version = texture_page_cache_version(texture_tattoos)
+
+    # Read validity once per binary. Page demand remains shared/absolute; this
+    # adapter is used solely to reject black source gaps under renderable caps.
+    tile_sources = {}
+    for tile in tiles:
+        binary_path = os.path.join(
+            generate_manifest.BINARY_DIR,
+            gosper_asset_name(tile["yq"], tile["yr"], "bin"),
+        )
+        tile_sources[(tile["yq"], tile["yr"])] = {
+            "label": f"gosper_{tile['yq']}_{tile['yr']}",
+            "x": tile["x"],
+            "y": tile["y"],
+            "unit_valid": read_gsp_unit_valid(binary_path),
+        }
+
+    unit_valid_by_tile = {
+        key: source["unit_valid"] for key, source in tile_sources.items()
+    }
+    pages = exact_pages_for_tiles(
+        tiles, render_half_x_m, render_half_y_m, unit_valid_by_tile
+    )
+    print(
+        f"🗺️  Global texture grid: {len(pages)} exact pages, 1024m, EPSG:31254 origin (0,0)"
+    )
+    if not pages:
+        return {
+            "pages": [], "baked": 0, "skipped": 0, "source_count": 0,
+            "padding": {"page_count": 0, "padded_pixels": 0, "padded_area_m2": 0.0, "max_distance_m": 0.0},
+        }
+
+    sources_by_page = map_gosper_sources_to_texture_pages(
+        pages,
+        tiles,
+        tile_sources,
+        render_half_x_m,
+        render_half_y_m,
+    )
+
+    tif_list = sorted(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
+    all_tifs = sorted(load_tif_bounds(tif_list), key=lambda source: source["path"])
+    max_aggregate_radius = (
+        coord_util.gosper_level_size(coord_util.GOSPER_TILE_LEVEL)
+        / math.sqrt(3.0)
+        * coord_util.GOSPER_CAP_RENDER_OVERSCAN
+    )
+    valid_tifs = sorted(
+        select_aerial_tifs_for_pages(
+            all_tifs, pages, padding_m=max_aggregate_radius
+        ),
+        key=lambda source: source["path"],
+    )
+    internal_holes = orthophoto_internal_holes(all_tifs)
+    print(f"   Aerial sources: {len(valid_tifs)} intersecting ({len(tif_list)} indexed)")
+
+    baked = 0
+    skipped = 0
+    started = time.time()
+    for index, page in enumerate(pages, start=1):
+        if not force and texture_page_is_current(page, recipe_version, output_dir):
+            skipped += 1
+            continue
+        print(f"   [{index}/{len(pages)}] Baking {page.asset_stem}...")
+        _paths, padding_stats = bake_texture_page(
+            page,
+            valid_tifs,
+            sources_by_page[page.key],
+            output_dir=output_dir,
+            texture_tattoos=texture_tattoos,
+            texture_recipe_version=recipe_version,
+            internal_holes=internal_holes,
+        )
+        if padding_stats["padded_pixels"]:
+            print(
+                f"      boundary pad: {padding_stats['padded_pixels']} px / "
+                f"{padding_stats['padded_area_m2']:.1f} m² / "
+                f"max {padding_stats['max_distance_m']:.2f} m"
+            )
+        baked += 1
+        gc.collect()
+
+    # A marker is the transaction commit record; never generate/upload a new
+    # manifest unless the complete expected page set is present and current.
+    incomplete = []
+    for page in pages:
+        if not texture_page_is_current(page, recipe_version, output_dir):
+            incomplete.append(page.key)
+    if incomplete:
+        raise RuntimeError(
+            f"global texture page bake incomplete ({len(incomplete)} pages; first: {incomplete[:5]})"
+        )
+
+    padding_by_page = {
+        page.key: read_texture_page_padding_stats(
+            texture_page_padding_stats_path(page, output_dir)
+        )
+        for page in pages
+    }
+    padded_pages = {
+        key: stats for key, stats in padding_by_page.items() if stats["padded_pixels"] > 0
+    }
+    padding_summary = {
+        "page_count": len(padded_pages),
+        "padded_pixels": sum(stats["padded_pixels"] for stats in padded_pages.values()),
+        "padded_area_m2": round(
+            sum(stats["padded_area_m2"] for stats in padded_pages.values()), 3
+        ),
+        "max_distance_m": round(
+            max((stats["max_distance_m"] for stats in padded_pages.values()), default=0.0), 3
+        ),
+    }
+
+    elapsed = time.time() - started
+    print(
+        f"✅ Global pages complete: {baked} baked, {skipped} cached, "
+        f"{len(pages)} total in {elapsed:.1f}s"
+    )
+    if padding_summary["page_count"]:
+        print(
+            f"   Boundary padding: {padding_summary['page_count']} pages, "
+            f"{padding_summary['padded_pixels']} px / "
+            f"{padding_summary['padded_area_m2']:.1f} m², "
+            f"max {padding_summary['max_distance_m']:.2f} m"
+        )
+    return {
+        "pages": pages,
+        "baked": baked,
+        "skipped": skipped,
+        "source_count": len(valid_tifs),
+        "padding": padding_summary,
+    }
 
 
 def _read_unit_dem_samples(latQ, latR, dem_ds):
@@ -1400,6 +2138,11 @@ def main():
                         help=f"Region side in sector units, N*819.2 meters (1-16, default {DEFAULT_GRID_SIZE})")
     parser.add_argument("--force", action="store_true", help="Force re-bake of all islands in range")
     parser.add_argument(
+        "--texture-pages-only",
+        action="store_true",
+        help="Bake/resume only the global 1024m imagery pages from existing GSP binaries",
+    )
+    parser.add_argument(
         "--no-texture-tattoos",
         action="store_true",
         help="Disable the mini-bake's default green-low/blue-medium/pink-high registration marks",
@@ -1410,6 +2153,7 @@ def main():
     grid_size = max(1, min(16, args.grid))
     texture_tattoos = texture_tattoos_enabled(args.full, args.no_texture_tattoos)
     effective_texture_version = texture_cache_version(texture_tattoos)
+    effective_texture_page_version = texture_page_cache_version(texture_tattoos)
 
     # Load existing metadata for skip logic
     metadata = {}
@@ -1421,6 +2165,7 @@ def main():
     
     prev_baker_version = metadata.get("baker_version", "")
     prev_texture_version = metadata.get("texture_version", "")
+    prev_texture_page_version = metadata.get("texture_page_version", "")
     # Before per-island markers existed, metadata's global version described
     # every unmarked file.  Preserve that baseline across partial mini-bakes;
     # otherwise the first tattooed region could make clean files elsewhere look
@@ -1438,6 +2183,13 @@ def main():
             print(f"🔄 Incremental bake: selected texture recipe {effective_texture_version} matches the last run; checking per-island markers.")
         else:
             print(f"✨ Texture recipe changed ({prev_texture_version} -> {effective_texture_version}); checking per-island markers.")
+        if prev_texture_page_version == effective_texture_page_version:
+            print(f"🔄 Global page recipe {effective_texture_page_version} matches; checking per-page transactions.")
+        else:
+            print(
+                f"✨ Global page recipe changed ({prev_texture_page_version} -> "
+                f"{effective_texture_page_version}); every stale page will rebake."
+            )
 
     # Resolve + verify the XUASTC encoder up front — fail loudly before doing any
     # other work. There is no fallback codec.
@@ -1457,7 +2209,11 @@ def main():
             print("Aborting.")
             return
 
-    if args.full:
+    if args.texture_pages_only:
+        mode = "production" if args.full else "mini-bake diagnostics"
+        print(f"🗺️  RUNNING GLOBAL TEXTURE PAGES ONLY ({mode})")
+        S3_ENABLED = bool(args.full)
+    elif args.full:
         print("🚀 RUNNING FULL GLOBAL BAKE (S3 Enabled)")
         print("⚠️  This will process ~3,486 TIFs and may take several hours.")
         print("🎨 Texture tattoos: OFF (production bake)")
@@ -1471,10 +2227,32 @@ def main():
         S3_ENABLED = False
 
     # --- CLEANUP (Non-destructive) ---
-    dirs_to_ensure = ["frontend/app/tiles_bin", "frontend/app/aerial_tiles"]
+    dirs_to_ensure = ["frontend/app/tiles_bin", "frontend/app/aerial_tiles", TEXTURE_PAGE_OUTPUT_DIR]
     dirs_to_ensure.extend(f"frontend/app/aerial_tiles/{tier['name']}" for tier in TEXTURE_TIERS)
+    dirs_to_ensure.extend(os.path.join(TEXTURE_PAGE_OUTPUT_DIR, tier["name"]) for tier in TEXTURE_TIERS)
     for d in dirs_to_ensure:
         os.makedirs(d, exist_ok=True)
+
+    if args.texture_pages_only:
+        page_results = bake_global_texture_pages(
+            force=args.force,
+            texture_tattoos=texture_tattoos,
+        )
+        metadata.update({
+            "texture_page_version": effective_texture_page_version,
+            "texture_page_tattoos": texture_tattoos,
+            "texture_page_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
+            "texture_page_size_m": PAGE_SIZE_M,
+            "texture_pages_baked": len(page_results["pages"]),
+            "texture_page_boundary_padding": page_results["padding"],
+            "last_page_bake": time.ctime(),
+        })
+        generate_manifest.write_json_atomic(METADATA_PATH, metadata)
+        generate_manifest.generate_manifest()
+        manifest_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app/tile_manifest.json"))
+        upload_to_s3(manifest_path)
+        print("Done.")
+        return
 
     # --- OPEN DEM (not read into memory — windowed reads per sector) ---
     print("Opening DEM...")
@@ -1625,14 +2403,29 @@ def main():
         grad_ds.close()
     dem.close()
 
+    # Build shared imagery only after every selected geometry binary is safe.
+    # Existing island textures remain untouched for rollback during migration.
+    page_results = bake_global_texture_pages(
+        force=args.force,
+        texture_tattoos=texture_tattoos,
+    )
+
     # Update metadata
-    with open(METADATA_PATH, "w") as f:
-        json.dump({"baker_version": BAKER_VERSION, "texture_version": effective_texture_version,
+    generate_manifest.write_json_atomic(
+        METADATA_PATH,
+        {"baker_version": BAKER_VERSION, "texture_version": effective_texture_version,
                    "texture_tattoos": texture_tattoos,
                    "texture_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
                    "unmarked_texture_version": unmarked_texture_version,
+                   "texture_page_version": effective_texture_page_version,
+                   "texture_page_tattoos": texture_tattoos,
+                   "texture_page_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
+                   "texture_page_size_m": PAGE_SIZE_M,
+                   "texture_pages_baked": len(page_results["pages"]),
+                   "texture_page_boundary_padding": page_results["padding"],
                    "last_bake": time.ctime(),
-                   "grid_size": grid_size, "islands_baked": len(bake_times)}, f)
+                   "grid_size": grid_size, "islands_baked": len(bake_times)},
+    )
 
     generate_manifest.generate_manifest()
     # Upload manifest last

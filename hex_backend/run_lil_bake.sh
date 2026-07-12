@@ -4,8 +4,10 @@ set -euo pipefail
 # 🧇 Waffle Iron - Rapid Iteration Bake
 # This script runs the default Mini-Bake logic (12x12 grid around Stubai)
 # This is the smallest representative bake for layout/texture testing. The
-# added 128px postage tier is cheap; forced rebakes remain dominated by the
-# 4096px high XUASTC encode, while incremental cached runs stay quick.
+# shared global page grid is restart-safe; forced rebakes remain dominated by
+# the 4096px high XUASTC encode, while completed 1024m pages are skipped.
+# To rebuild only imagery from existing GSP binaries:
+#   ./hex_backend/run_lil_bake.sh --texture-pages-only
 
 # Ensure we are in the project root
 cd "$(dirname "$0")/.."

@@ -162,6 +162,7 @@ def dy_dr_scaled(s): return UNIT_HEX_WIDTH_METERS * s
 GOSPER_TILE_LEVEL = 5              # streaming tile = level-5 island, 7^5 unit hexes
 GOSPER_ROT_PER_LEVEL = math.atan2(math.sqrt(3) / 2, 5 / 2)  # radians, +19.1066 deg
 GOSPER_DEPTH_COUNTS = [1, 7, 49, 343, 2401, 16807]
+GOSPER_CAP_RENDER_OVERSCAN = 1.15  # must mirror frontend aggregate cap radius
 
 # Child order everywhere: Center, N, NE, SE, S, SW, NW (+r = north).
 GOSPER_NEIGHBORS = [
@@ -248,6 +249,8 @@ def gosper_tile_geometry():
                    island center. Covers every rendered cap at every level
                    (max node |world coord| + that level's cap circumradius),
                    rounded up to 10 m so canvases are stable across runs.
+      render_half_x_m/render_half_y_m: conservative source footprint enclosing
+                   every cap including the 1.15 render-mesh overscan.
       tile_pitch_m: world distance between adjacent island centers.
     """
     global _GOSPER_GEOM_CACHE
@@ -262,6 +265,8 @@ def gosper_tile_geometry():
     offx = offq * ((math.sqrt(3) / 2) * h)
     offy = offr * h + offq * (0.5 * h)
     half = 0.0
+    render_half_x = 0.0
+    render_half_y = 0.0
     for d in range(L + 1):
         stride = 7 ** (L - d)
         idx = np.arange(0, n, stride)
@@ -269,12 +274,23 @@ def gosper_tile_geometry():
         half = max(half,
                    float(np.abs(offx[idx]).max()) + circ,
                    float(np.abs(offy[idx]).max()) + circ)
+        cap_level = L - d
+        overscan = 1.0 if cap_level == 0 else GOSPER_CAP_RENDER_OVERSCAN
+        render_radius = circ * overscan
+        render_half_x = max(render_half_x, float(np.abs(offx[idx]).max()) + render_radius)
+        render_half_y = max(render_half_y, float(np.abs(offy[idx]).max()) + render_radius)
     tex_half_m = math.ceil(half / 10.0) * 10.0
+    # Whole-metre outward rounding cannot clip a floating-point vertex at the
+    # analytic 550.8867m extrema and keeps the manifest contract stable.
+    render_half_x_m = float(math.ceil(render_half_x))
+    render_half_y_m = float(math.ceil(render_half_y))
     pq, pr = gosper_mul_m_pow(1, 0, L)
     px, py = axial_to_world_meters(pq, pr)
     _GOSPER_GEOM_CACHE = {
         "offq": offq, "offr": offr, "offx": offx, "offy": offy,
         "tex_half_m": tex_half_m,
+        "render_half_x_m": render_half_x_m,
+        "render_half_y_m": render_half_y_m,
         "tile_pitch_m": math.hypot(px, py),
     }
     return _GOSPER_GEOM_CACHE
