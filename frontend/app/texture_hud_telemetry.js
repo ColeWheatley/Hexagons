@@ -57,11 +57,9 @@ export function collectDisplayedTexturePages(tiles, visibilityByKey) {
         if (!tile || tile.container?.visible === false || tile.mesh?.visible === false) continue;
         if (visibleClassification(visibilityByKey, key) !== 'visible') continue;
 
-        let sawPageBinding = false;
         visitRenderedMaterials(tile.mesh, material => {
             const bindings = material.userData?.texturePageBindings;
             if (!Array.isArray(bindings)) return;
-            sawPageBinding = true;
             for (const binding of bindings) {
                 const tier = binding?.tier;
                 const pageKey = binding?.page?.key;
@@ -69,13 +67,6 @@ export function collectDisplayedTexturePages(tiles, visibilityByKey) {
                 displayed[tier].add(String(pageKey));
             }
         });
-
-        // Migration safety for a pre-page manifest: one texture is owned by
-        // one geometry tile, so the tile key remains the only dedupe identity.
-        // Global-page mode always has binding arrays and never enters here.
-        if (!sawPageBinding && HUD_TIERS.has(tile.textureTier)) {
-            displayed[tile.textureTier].add(String(key));
-        }
     }
 
     return displayed;

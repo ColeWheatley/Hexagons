@@ -7,11 +7,9 @@ has no geometry ownership. Runtime storage policy deliberately does not belong
 here.
 """
 
-TEXTURE_RECIPE_VERSION = "3.0.0"
 TEXTURE_PAGE_RECIPE_VERSION = "4.0.2"  # rotated-cap validated aggregate-boundary padding
 TEXTURE_CODEC = "xuastc-ldr-6x6"
 TEXTURE_CONTAINER = "ktx2"
-TEXTURE_URL_TEMPLATE = "aerial_tiles/{tier}/gosper_{yq}_{yr}.ktx2"
 TEXTURE_PAGE_URL_TEMPLATE = "aerial_pages/{tier}/texture_{page_x}_{page_y}.ktx2"
 
 # Ordered from cheapest/farthest to most detailed.  Each KTX2 contains a full
@@ -25,21 +23,6 @@ TEXTURE_TIERS = (
 TEXTURE_TIER_SIZES = {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS}
 
 
-def manifest_texture_contract(world_side_m, recipe_version=None, diagnostic_tattoos=False):
-    """Return the JSON-ready texture contract embedded in the tile manifest."""
-    return {
-        "recipe_version": recipe_version or TEXTURE_RECIPE_VERSION,
-        "cache_key": recipe_version or TEXTURE_RECIPE_VERSION,
-        "container": TEXTURE_CONTAINER,
-        "codec": TEXTURE_CODEC,
-        "mip_chain": "full",
-        "world_side_m": float(world_side_m),
-        "url_template": TEXTURE_URL_TEMPLATE,
-        "diagnostic_tattoos": bool(diagnostic_tattoos),
-        "tiers": [dict(tier) for tier in TEXTURE_TIERS],
-    }
-
-
 def manifest_texture_page_contract(
     pages,
     recipe_version=None,
@@ -47,11 +30,7 @@ def manifest_texture_page_contract(
     page_vertical_bounds=None,
     page_padding_stats=None,
 ):
-    """Return the geometry-independent global square imagery contract.
-
-    The legacy per-island ``textures`` contract remains alongside this during
-    the migration.  New consumers use ``texture_pages`` exclusively.
-    """
+    """Return the geometry-independent global square imagery contract."""
     from texture_page_grid import CRS, ORIGIN_X_M, ORIGIN_Y_M, PAGE_SIZE_M
 
     version = recipe_version or TEXTURE_PAGE_RECIPE_VERSION

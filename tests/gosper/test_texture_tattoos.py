@@ -33,20 +33,20 @@ class TextureTattooTests(unittest.TestCase):
         self.assertFalse(waffle.texture_tattoos_enabled(full_bake=True))
         self.assertFalse(waffle.texture_tattoos_enabled(full_bake=True, disable_requested=True))
 
-        clean = waffle.texture_cache_version(False)
-        diagnostic = waffle.texture_cache_version(True)
-        self.assertEqual(clean, waffle.TEXTURE_VERSION)
+        clean = waffle.texture_page_cache_version(False)
+        diagnostic = waffle.texture_page_cache_version(True)
+        self.assertEqual(clean, waffle.TEXTURE_PAGE_VERSION)
         self.assertNotEqual(clean, diagnostic)
         self.assertIn("tattoo", diagnostic)
 
-    def test_per_island_recipe_markers_prevent_cross_region_cache_reuse(self):
-        clean = waffle.texture_cache_version(False)
-        diagnostic = waffle.texture_cache_version(True)
+    def test_per_page_recipe_markers_prevent_cross_region_cache_reuse(self):
+        clean = waffle.texture_page_cache_version(False)
+        diagnostic = waffle.texture_page_cache_version(True)
         with tempfile.TemporaryDirectory() as output_dir:
-            marker = waffle.texture_recipe_marker_path(12, -34, output_dir)
+            marker = waffle.texture_page_recipe_marker_path(
+                waffle.TexturePage(12, -34), output_dir
+            )
 
-            # Existing pre-marker assets retain the legacy clean identity even
-            # after metadata says a different mini-bake ran most recently.
             self.assertEqual(waffle.read_texture_recipe_marker(marker, clean), clean)
             waffle.write_texture_recipe_marker(marker, diagnostic)
             self.assertEqual(waffle.read_texture_recipe_marker(marker, clean), diagnostic)
@@ -128,7 +128,7 @@ class TextureTattooTests(unittest.TestCase):
             self.assertGreater(intersection / union, 0.40)
 
     def test_production_contract_is_three_versioned_xuastc_tiers(self):
-        self.assertEqual(waffle.TEXTURE_VERSION, "3.0.0")
+        self.assertEqual(waffle.TEXTURE_PAGE_VERSION, "4.0.2")
         self.assertEqual(waffle.TEXTURE_TIER_SIZES, {
             "low": 128, "medium": 256, "high": 4096,
         })

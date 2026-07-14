@@ -76,11 +76,11 @@ if [ -d "$REPO/frontend/app/tiles_bin" ]; then
     echo "   ✅ Tile binaries symlinked."
 fi
 
-# Baked aerial tiles
-if [ -d "$REPO/frontend/app/aerial_tiles" ]; then
-    mkdir -p "$SANDBOX/frontend/app/aerial_tiles"
-    ln -sf "$REPO"/frontend/app/aerial_tiles/* "$SANDBOX/frontend/app/aerial_tiles/" 2>/dev/null || true
-    echo "   ✅ Aerial tiles symlinked."
+# Baked global aerial pages
+if [ -d "$REPO/frontend/app/aerial_pages" ]; then
+    mkdir -p "$SANDBOX/frontend/app/aerial_pages"
+    ln -sf "$REPO"/frontend/app/aerial_pages/* "$SANDBOX/frontend/app/aerial_pages/" 2>/dev/null || true
+    echo "   ✅ Global aerial pages symlinked."
 fi
 
 # Baked sectors

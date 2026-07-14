@@ -74,13 +74,6 @@ assert.deepEqual([...displayed.low128], ['52_199']);
 assert.deepEqual([...displayed.medium256], ['53_199']);
 assert.deepEqual([...displayed.high4096], ['53_200']);
 
-// Pre-page migration fallback uses the geometry owner as its dedupe identity.
-const legacy = collectDisplayedTexturePages(
-    new Map([['legacy-tile', tile([group([{ userData: {} }])], 'medium256')]]),
-    new Map([['legacy-tile', { classification: 'visible' }]]),
-);
-assert.deepEqual([...legacy.medium256], ['legacy-tile']);
-
 const states = new Map([
     ['a', {
         assets: new Map([['low128', {}], ['medium256', {}]]),

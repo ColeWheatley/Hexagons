@@ -45,13 +45,13 @@ remote add` / push needed if you just `cd` into the main repo and `git merge
 tmp <clone-path> && git fetch tmp && git merge tmp/<branch> && git remote
 remove tmp`).
 
-Gitignored data (DEM/TIF sources, the basisu binary, baked `aerial_tiles`/
+Gitignored data (DEM/TIF sources, the basisu binary, baked `aerial_pages`/
 `tiles_bin` output) won't be in a fresh clone — symlink it in read-only from
 the main checkout before launching:
 
 ```bash
 ln -s /path/to/Hexagons/hex_backend/aerial_tifs hex_backend/aerial_tifs
-ln -s /path/to/Hexagons/frontend/app/aerial_tiles frontend/app/aerial_tiles
+ln -s /path/to/Hexagons/frontend/app/aerial_pages frontend/app/aerial_pages
 ```
 
 ### Launch syntax

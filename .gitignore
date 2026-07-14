@@ -16,7 +16,6 @@ local_data/
 
 # Generated Assets (Tiny Assets)
 frontend/app/tiles_bin/
-frontend/app/aerial_tiles/
 frontend/app/aerial_pages/
 hex_backend/baked_sectors/
 hex_backend/aerial_tifs/

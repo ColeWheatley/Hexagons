@@ -1,4 +1,4 @@
-# @atlas: Gosper manifest generator. Scans rolling GSP1/GSP2/current GSP3 island binaries and emits explicit per-tile versions plus binary/texture contracts.
+# @atlas: Gosper manifest generator. Scans rolling GSP1/GSP2/current GSP3 island binaries and emits explicit per-tile versions plus the global texture-page contract.
 import json
 import os
 import re
@@ -9,8 +9,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 from texture_contract import (
     TEXTURE_PAGE_RECIPE_VERSION,
-    TEXTURE_RECIPE_VERSION,
-    manifest_texture_contract,
     manifest_texture_page_contract,
 )
 from gosper_texture_page_adapter import (
@@ -135,7 +133,10 @@ def generate_manifest():
         return
 
     geom = coord_util.gosper_tile_geometry()
-    tex_half_m = float(geom["tex_half_m"])
+    # Preserve the established scene/world-origin envelope during the texture
+    # migration. This is manifest framing only; imagery ownership comes solely
+    # from the absolute page grid below.
+    manifest_half_m = float(geom["tex_half_m"])
     render_half_x_m = float(geom["render_half_x_m"])
     render_half_y_m = float(geom["render_half_y_m"])
     tiles = scan_binary_tiles()
@@ -168,22 +169,20 @@ def generate_manifest():
 
     margin = 2000.0
     if tiles:
-        min_x = min(t["x"] - tex_half_m for t in tiles)
-        max_x = max(t["x"] + tex_half_m for t in tiles)
-        min_y = min(t["y"] - tex_half_m for t in tiles)
-        max_y = max(t["y"] + tex_half_m for t in tiles)
+        min_x = min(t["x"] - manifest_half_m for t in tiles)
+        max_x = max(t["x"] + manifest_half_m for t in tiles)
+        min_y = min(t["y"] - manifest_half_m for t in tiles)
+        max_y = max(t["y"] + manifest_half_m for t in tiles)
     else:
         min_x = max_x = min_y = max_y = 0.0
 
     bake_metadata = _read_bake_metadata()
-    texture_recipe = bake_metadata.get("texture_version", TEXTURE_RECIPE_VERSION)
     texture_page_recipe = bake_metadata.get("texture_page_version", TEXTURE_PAGE_RECIPE_VERSION)
     manifest = {
         "type": "gosper_l5",
         "tile_level": coord_util.GOSPER_TILE_LEVEL,
         "unit_hex_m": coord_util.UNIT_HEX_WIDTH_METERS,
         "tile_pitch_m": float(geom["tile_pitch_m"]),
-        "tex_world_side_m": tex_half_m * 2.0,
         "geometry": {
             # One-way translation shim into geometry-independent consumers.
             # This conservative footprint covers every cap at every GSP LOD;
@@ -207,14 +206,8 @@ def generate_manifest():
             "unit_record_bytes": 14,
             "extent_quantum_m": 0.1,
         },
-        "textures": manifest_texture_contract(
-            tex_half_m * 2.0,
-            recipe_version=texture_recipe,
-            diagnostic_tattoos=bake_metadata.get("texture_tattoos", False),
-        ),
-        # Geometry-independent absolute imagery pages. The legacy per-island
-        # contract above remains during migration so the previous runtime is a
-        # safe rollback until the page sampler has been visually verified.
+        # Geometry-independent absolute imagery pages are the only texture
+        # identity. Geometry contributes coverage bounds, never asset ownership.
         "texture_pages": manifest_texture_page_contract(
             texture_pages,
             recipe_version=texture_page_recipe,

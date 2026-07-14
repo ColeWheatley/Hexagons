@@ -260,4 +260,28 @@ for (const genericFilename of [
     assert.equal(/gosper/i.test(genericSource), false, `${genericFilename} leaked geometry vocabulary`);
 }
 
+// The migration rollback path is gone: runtime and worker must not be able to
+// reconstruct island-owned imagery when a page contract is absent.
+const mainSource = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');
+for (const forbidden of [
+    /manifest\.textures/,
+    /aerial_tiles/,
+    /legacy-island/,
+    /piston_hex_gosper/,
+    /texture2D\s*\(/,
+    /uTileSize/,
+    /uUvScale/,
+    /uUvOffset/,
+]) {
+    assert.doesNotMatch(mainSource, forbidden);
+}
+const workerSource = fs.readFileSync(path.join(here, '../../frontend/app/tile_worker.js'), 'utf8');
+assert.doesNotMatch(workerSource, /texUrls|texUrl/);
+const productionManifest = JSON.parse(
+    fs.readFileSync(path.join(here, '../../frontend/app/tile_manifest.json'), 'utf8'),
+);
+assert.equal('textures' in productionManifest, false);
+assert.equal('tex_world_side_m' in productionManifest, false);
+assert.equal(productionManifest.texture_pages.pages.length, 149);
+
 console.log('texture page grid/residency tests: ok');

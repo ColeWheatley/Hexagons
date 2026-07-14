@@ -91,20 +91,20 @@ assert.deepEqual(
 states.get('c').assets.set(TIER.LOW, { key: 'c-low' });
 assert.equal(take(queue, states, { lowCoverageFirst: true }).key, 'b');
 
-// Existing behavior is preserved when the global barrier is not requested,
-// and camera motion continues to suppress only high work.
-const legacyQueue = [
+// Without the mini-corpus barrier, normal priority selection applies and
+// camera motion continues to suppress only high work.
+const ordinaryQueue = [
     { key: 'a', tier: TIER.HIGH, priority: 300 },
     { key: 'a', tier: TIER.MEDIUM, priority: 200 },
     { key: 'a', tier: TIER.LOW, priority: 100 },
 ];
-assert.equal(take([...legacyQueue], states).tier, TIER.HIGH);
-assert.equal(take([...legacyQueue], states, { isMoving: true }).tier, TIER.MEDIUM);
+assert.equal(take([...ordinaryQueue], states).tier, TIER.HIGH);
+assert.equal(take([...ordinaryQueue], states, { isMoving: true }).tier, TIER.MEDIUM);
 
 // Production integration: the worker dispatcher must invoke this exact pure
 // selector with the page-corpus barrier enabled.
 const mainSource = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');
 assert.match(mainSource, /selectTextureDispatchTaskIndex\(\s*this\.textureQueue,\s*this\.textureStates,/s);
-assert.match(mainSource, /lowCoverageFirst:\s*Boolean\(this\.texturePageGrid\s*&&\s*this\.isMiniBake\)/);
+assert.match(mainSource, /lowCoverageFirst:\s*this\.isMiniBake/);
 
 console.log('texture dispatch low-tier barrier: ok');

@@ -1,5 +1,5 @@
 // @atlas: Worker for GSP1/GSP2/current GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP2+ loading is two-stage; GSP3 separates terrain relief from exact rendered bounds.
-importScripts('gosper_core.js?v=texgrad2');
+importScripts('gosper_core.js?v=pageonly1');
 
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5
@@ -36,7 +36,6 @@ const VENDOR_BASE = new URL('./vendor/basisu_v2/', self.location.href).href;
 
 let workerSupport = null; // set once via INIT, before any texture job runs
 let basisModulePromise = null;
-let texFailLogged = false;
 
 function loadBasisModule() {
     if (!basisModulePromise) {
@@ -224,11 +223,6 @@ self.onmessage = async function (e) {
                 }
             }
 
-            // Transfer transcoded mip buffers if a texture was decoded
-            if (result.texture) {
-                result.texture.mipmaps.forEach(m => transferables.push(m.data.buffer));
-            }
-
             self.postMessage({ id, status: 'success', result }, transferables);
 
         } else if (type === 'BUILD_GEOMETRY') {
@@ -269,34 +263,10 @@ async function fetchFirst(urls) {
     return { response: last, url: candidates[candidates.length - 1] };
 }
 
-async function loadTile({ yq, yr, texUrl, texUrls, binUrl, expectedGspVersion }) {
-    // Parallel Fetch: Bin + LowTexture
-    const [binRes, texFetch] = await Promise.all([
-        fetch(binUrl),
-        fetchFirst(texUrls || texUrl)
-    ]);
-    const texRes = texFetch.response;
-
+async function loadTile({ yq, yr, binUrl, expectedGspVersion }) {
+    const binRes = await fetch(binUrl);
     if (!binRes.ok) throw new Error(`Failed to load bin: ${binUrl}`);
     const binBuf = await binRes.arrayBuffer();
-
-    let texture = null;
-    let texBytes = 0;
-    if (texRes?.ok) {
-        const texBuf = await texRes.arrayBuffer();
-        texBytes = texBuf.byteLength;
-        try {
-            texture = await transcodeKTX2(texBuf);
-        } catch (err) {
-            // Texture failure is non-fatal by design: bin still succeeds and
-            // the tile renders with the magenta no-texture material.
-            texture = null;
-            if (!texFailLogged) {
-                texFailLogged = true;
-                console.warn(`[TEX_FAIL] worker transcode failed (further failures suppressed): ${err.message}`);
-            }
-        }
-    }
 
     const parsed = parseGSP1(binBuf, yq, yr);
     if (expectedGspVersion !== undefined && parsed.binaryVersion !== expectedGspVersion) {
@@ -313,7 +283,6 @@ async function loadTile({ yq, yr, texUrl, texUrls, binUrl, expectedGspVersion })
 
     return {
         lods,
-        texture,
         stats: parsed.stats,
         center: parsed.center,
         unitHeights: parsed.unitHeights, // Float32Array(16807), heap order — main keeps ONE static (dq,dr)->index map
@@ -332,7 +301,7 @@ async function loadTile({ yq, yr, texUrl, texUrls, binUrl, expectedGspVersion })
             unit: parsed.unit,
         },
         geometryBytes,
-        networkBytes: { bin: binBuf.byteLength, tex: texBytes },
+        networkBytes: { bin: binBuf.byteLength, tex: 0 },
     };
 }
 

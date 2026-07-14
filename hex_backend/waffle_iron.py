@@ -1,4 +1,4 @@
-# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v6.0). Ingests EPSG:31254 DEMs and high-res orthophotos (TIFs), baking per-island GSP3 binary tiles with separate terrain/render aggregate bounds plus island-centered three-tier XUASTC LDR 6x6 KTX2 textures.
+# @atlas: The central Gosper terrain baking pipeline ('Waffle Iron' v6.0). Ingests EPSG:31254 DEMs and high-res orthophotos, baking per-island GSP3 geometry plus geometry-independent global EPSG:31254 texture pages.
 # 🧇 Waffle Iron v6.0 - Gosper Island Bake Edition
 # =============================================================================
 # FEATURES:
@@ -20,13 +20,12 @@
 #                    14 GB on disk, 38.78 GB uncompressed (53224×91076, 2 bands float32)
 #                    Generated on first run from the DEM (2× upsampled dx/dy gradients)
 #
-# OUTPUT FORMATS (baked per Gosper L5 island, also NOT in git):
+# OUTPUT FORMATS (also NOT in git):
 #   .bin:   GSP3 header + 5 heap-ordered Gosper depth blocks
 #   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
 #           client-side to ASTC/BC7/BC1/ETC1/PVRTC). Globally anchored 1024m
 #           EPSG:31254 pages, shared across geometry, emitted as low/medium/high
-#           KTX2 tiers at 128/256/4096px with full mips. Legacy 980m island
-#           assets are retained only as the migration rollback path.
+#           KTX2 tiers at 128/256/4096px with full mips.
 #
 # HARDWARE PROFILE (reference machine):
 #   MacBook M1, 16 GB shared memory
@@ -61,7 +60,6 @@ import coordinate_utility as coord_util
 import generate_manifest
 from texture_contract import (
     TEXTURE_PAGE_RECIPE_VERSION,
-    TEXTURE_RECIPE_VERSION,
     TEXTURE_TIERS,
     TEXTURE_TIER_SIZES,
 )
@@ -110,7 +108,6 @@ STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
-TEXTURE_VERSION = TEXTURE_RECIPE_VERSION
 TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
 TEXTURE_TATTOO_VERSION = "2"  # three-tier colors/sizes; separate from clean textures
 
@@ -192,23 +189,11 @@ def texture_tattoos_enabled(full_bake, disable_requested=False):
     return not full_bake and not disable_requested
 
 
-def texture_cache_version(tattoos_enabled):
-    """Use distinct cache identities so clean and diagnostic assets never cross-reuse."""
-    if tattoos_enabled:
-        return f"{TEXTURE_VERSION}+tattoo-{TEXTURE_TATTOO_VERSION}"
-    return TEXTURE_VERSION
-
-
 def texture_page_cache_version(tattoos_enabled):
-    """Cache identity for global pages, independent of legacy island assets."""
+    """Keep clean and diagnostic global-page assets in distinct caches."""
     if tattoos_enabled:
         return f"{TEXTURE_PAGE_VERSION}+tattoo-{TEXTURE_TATTOO_VERSION}"
     return TEXTURE_PAGE_VERSION
-
-
-def texture_recipe_marker_path(latQ, latR, output_dir="frontend/app/aerial_tiles"):
-    """Per-island recipe marker; kept local and never uploaded as a texture asset."""
-    return os.path.join(output_dir, ".recipes", gosper_asset_name(latQ, latR, "txt"))
 
 
 def texture_page_recipe_marker_path(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
@@ -247,17 +232,17 @@ def read_texture_page_padding_stats(path):
         return {"padded_pixels": 0, "padded_area_m2": 0.0, "max_distance_m": 0.0}
 
 
-def read_texture_recipe_marker(marker_path, unmarked_texture_version=""):
-    """Read an island's recipe, falling back to the pre-marker cache generation."""
+def read_texture_recipe_marker(marker_path, default_version=""):
+    """Read a page recipe marker, returning the caller's missing-marker default."""
     try:
         with open(marker_path, "r", encoding="utf-8") as marker:
             return marker.read().strip()
     except FileNotFoundError:
-        return unmarked_texture_version
+        return default_version
 
 
 def write_texture_recipe_marker(marker_path, recipe_version):
-    """Atomically stamp an island only after both texture encodes succeed."""
+    """Atomically stamp a page only after every texture tier is published."""
     os.makedirs(os.path.dirname(marker_path), exist_ok=True)
     temporary_path = f"{marker_path}.{os.getpid()}.tmp"
     try:
@@ -372,68 +357,6 @@ def prepare_texture_variants(canvas, bounds, tattoos_enabled=False, tier_sizes=N
         for tier_name, image in variants.items():
             apply_texture_tattoo(image, bounds, tier_name)
     return variants
-
-
-def select_aerial_tifs_for_islands(all_tifs, islands):
-    """Keep every aerial source touching the exact union of candidate texture squares."""
-    island_polys = [info["poly"] for info in islands]
-    if not island_polys:
-        return []
-    texture_footprint = unary_union(island_polys)
-    return [tif for tif in all_tifs if tif["poly"].intersects(texture_footprint)]
-
-
-def validate_geometry_texture_coverage(coverage, bounds, unit_x, unit_y, unit_valid, tile_label="tile"):
-    """Reject an aerial composite that leaves any valid unit cap unpainted.
-
-    ``coverage`` records successful source-image pastes, independently of RGB
-    values (real aerial pixels may legitimately be very dark).  A unit cap is
-    considered covered only when its center and all six vertices land on
-    painted pixels.  Invalid/off-DEM units are deliberately ignored, so a
-    partial dataset-edge island is accepted when all geometry it can actually
-    render has imagery.
-    """
-    coverage = np.asarray(coverage, dtype=bool)
-    unit_x = np.asarray(unit_x, dtype=np.float64)
-    unit_y = np.asarray(unit_y, dtype=np.float64)
-    unit_valid = np.asarray(unit_valid, dtype=bool)
-    if coverage.ndim != 2 or coverage.size == 0:
-        raise ValueError("texture coverage mask must be a non-empty 2D array")
-    if unit_x.shape != unit_y.shape or unit_x.shape != unit_valid.shape:
-        raise ValueError("unit coordinate and validity arrays must have identical shapes")
-
-    valid_indices = np.flatnonzero(unit_valid)
-    if valid_indices.size == 0:
-        raise ValueError(f"{tile_label}: texture coverage validation has no valid terrain units")
-
-    min_x, min_y, max_x, max_y = map(float, bounds)
-    if min_x >= max_x or min_y >= max_y:
-        raise ValueError(f"{tile_label}: texture coverage bounds must have positive area")
-
-    radius = coord_util.UNIT_HEX_WIDTH_METERS / math.sqrt(3.0)
-    angles = np.arange(6, dtype=np.float64) * (math.pi / 3.0)
-    sample_dx = np.concatenate(([0.0], np.cos(angles) * radius))
-    sample_dy = np.concatenate(([0.0], np.sin(angles) * radius))
-    sample_x = unit_x[valid_indices, None] + sample_dx[None, :]
-    sample_y = unit_y[valid_indices, None] + sample_dy[None, :]
-
-    height, width = coverage.shape
-    cols = np.floor((sample_x - min_x) * width / (max_x - min_x)).astype(np.int64)
-    rows = np.floor((max_y - sample_y) * height / (max_y - min_y)).astype(np.int64)
-    inside = (cols >= 0) & (cols < width) & (rows >= 0) & (rows < height)
-    safe_cols = np.clip(cols, 0, width - 1)
-    safe_rows = np.clip(rows, 0, height - 1)
-    sample_covered = inside & coverage[safe_rows, safe_cols]
-    missing_cells = ~sample_covered.all(axis=1)
-    if np.any(missing_cells):
-        missing_indices = valid_indices[missing_cells]
-        preview = ",".join(str(int(i)) for i in missing_indices[:8])
-        raise RuntimeError(
-            f"{tile_label}: aerial composite leaves {missing_indices.size}/{valid_indices.size} "
-            f"valid terrain hexes unpainted (unit indices: {preview})"
-        )
-
-    return int(valid_indices.size)
 
 
 def resolve_basisu_binary():
@@ -1007,47 +930,6 @@ def encode_texture_tiers(canvas, bounds, asset_stem, output_dir, texture_tattoos
             os.replace(encoded_paths[tier], final_paths[tier])
 
     return final_paths
-
-
-def bake_gosper_textures(
-    latQ,
-    latR,
-    valid_tifs,
-    unit_valid,
-    output_dir="frontend/app/aerial_tiles",
-    texture_tattoos=False,
-    texture_recipe_version=None,
-):
-    if not os.path.exists(output_dir): os.makedirs(output_dir)
-
-    info = gosper_island_info(latQ, latR)
-    canvas, coverage, _source_domain = composite_aerial_texture(info["bounds"], valid_tifs)
-
-    geom = coord_util.gosper_tile_geometry()
-    validate_geometry_texture_coverage(
-        coverage,
-        info["bounds"],
-        info["centerX"] + geom["offx"],
-        info["centerY"] + geom["offy"],
-        unit_valid,
-        tile_label=f"gosper_{latQ}_{latR}",
-    )
-    # The 4096² coverage mask is ~16 MiB and is not needed during PNG/KTX2
-    # encoding, where the external encoder has its own substantial working set.
-    del coverage
-
-    final_paths = encode_texture_tiers(
-        canvas,
-        info["bounds"],
-        gosper_asset_name(latQ, latR, "ktx2").removesuffix(".ktx2"),
-        output_dir,
-        texture_tattoos,
-    )
-
-    recipe_version = texture_recipe_version or texture_cache_version(texture_tattoos)
-    write_texture_recipe_marker(texture_recipe_marker_path(latQ, latR, output_dir), recipe_version)
-    for path in final_paths.values():
-        upload_to_s3(path)
 
 
 def texture_page_asset_paths(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
@@ -2152,7 +2034,6 @@ def main():
     # Validate grid size
     grid_size = max(1, min(16, args.grid))
     texture_tattoos = texture_tattoos_enabled(args.full, args.no_texture_tattoos)
-    effective_texture_version = texture_cache_version(texture_tattoos)
     effective_texture_page_version = texture_page_cache_version(texture_tattoos)
 
     # Load existing metadata for skip logic
@@ -2164,13 +2045,7 @@ def main():
         except: pass
     
     prev_baker_version = metadata.get("baker_version", "")
-    prev_texture_version = metadata.get("texture_version", "")
     prev_texture_page_version = metadata.get("texture_page_version", "")
-    # Before per-island markers existed, metadata's global version described
-    # every unmarked file.  Preserve that baseline across partial mini-bakes;
-    # otherwise the first tattooed region could make clean files elsewhere look
-    # tattooed (or vice versa) and incorrectly skip them on a later run.
-    unmarked_texture_version = metadata.get("unmarked_texture_version", prev_texture_version)
     can_skip_bin = (prev_baker_version == BAKER_VERSION) and not args.force
     if args.force:
         print(f"🔥 Force re-bake enabled (bin + textures).")
@@ -2179,10 +2054,6 @@ def main():
             print(f"🔄 Incremental bake: BAKER_VERSION {BAKER_VERSION} matches. Will skip existing .bin files.")
         else:
             print(f"✨ New baker version detected ({prev_baker_version} -> {BAKER_VERSION}). Re-baking all .bin files in range.")
-        if prev_texture_version == effective_texture_version:
-            print(f"🔄 Incremental bake: selected texture recipe {effective_texture_version} matches the last run; checking per-island markers.")
-        else:
-            print(f"✨ Texture recipe changed ({prev_texture_version} -> {effective_texture_version}); checking per-island markers.")
         if prev_texture_page_version == effective_texture_page_version:
             print(f"🔄 Global page recipe {effective_texture_page_version} matches; checking per-page transactions.")
         else:
@@ -2227,8 +2098,7 @@ def main():
         S3_ENABLED = False
 
     # --- CLEANUP (Non-destructive) ---
-    dirs_to_ensure = ["frontend/app/tiles_bin", "frontend/app/aerial_tiles", TEXTURE_PAGE_OUTPUT_DIR]
-    dirs_to_ensure.extend(f"frontend/app/aerial_tiles/{tier['name']}" for tier in TEXTURE_TIERS)
+    dirs_to_ensure = ["frontend/app/tiles_bin", TEXTURE_PAGE_OUTPUT_DIR]
     dirs_to_ensure.extend(os.path.join(TEXTURE_PAGE_OUTPUT_DIR, tier["name"]) for tier in TEXTURE_TIERS)
     for d in dirs_to_ensure:
         os.makedirs(d, exist_ok=True)
@@ -2264,16 +2134,16 @@ def main():
     # Gradient map: deferred until we know the bake region (mini-bake generates a small one)
     grad_ds = None
 
-    valid_tifs = []
+    aerial_index = []
 
     # Calculate Bounds
     if args.full:
         print("Scanning ALL TIFs (cached bounds)...")
-        valid_tifs = load_tif_bounds(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
+        aerial_index = load_tif_bounds(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
 
         all_min_x, all_min_y = 1e12, 1e12
         all_max_x, all_max_y = -1e12, -1e12
-        for t in valid_tifs:
+        for t in aerial_index:
             b = t["poly"].bounds
             all_min_x, all_min_y = min(all_min_x, b[0]), min(all_min_y, b[1])
             all_max_x, all_max_y = max(all_max_x, b[2]), max(all_max_y, b[3])
@@ -2301,16 +2171,13 @@ def main():
     print(f"Island candidates intersecting region: {len(islands)}")
 
     if not args.full:
-        # Candidate island squares may extend by nearly a full texture width
-        # beyond the requested mini-bake bbox. Filtering aerials against only
-        # region + tex_half silently omitted the far strip of those edge
-        # squares, which then encoded as valid black KTX2 pixels. Select
-        # against the exact union of the squares we are actually about to bake.
-        print("Filtering TIFs for candidate island texture coverage (cached bounds)...")
+        # Geometry candidates still need a cheap imagery-existence check. The
+        # page baker performs its own exact global-page source selection later;
+        # this index never defines texture ownership or output bounds.
+        print("Indexing TIF coverage for geometry candidates...")
         tif_list = glob.glob(os.path.join(AERIAL_DIR, "*.tif"))
-        all_tifs = load_tif_bounds(tif_list)
-        valid_tifs = select_aerial_tifs_for_islands(all_tifs, islands)
-        print(f"✅ Found {len(valid_tifs)} intersecting TIFs (of {len(tif_list)} total).")
+        aerial_index = load_tif_bounds(tif_list)
+        print(f"✅ Indexed {len(aerial_index)} TIFs.")
 
         # Generate a lightweight regional gradient over every candidate island,
         # not just the center region, because border island squares intentionally
@@ -2338,48 +2205,26 @@ def main():
         if not dem_poly.intersects(island_poly):
             skipped_no_dem += 1
             continue
-        has_imagery = any(t["poly"].intersects(island_poly) for t in valid_tifs)
+        has_imagery = any(t["poly"].intersects(island_poly) for t in aerial_index)
         if not has_imagery:
             skipped_no_imagery += 1
             continue
 
-        # Skip logic (already baked) — .bin and textures are versioned/skipped
-        # independently, so an island can re-bake one without the other.
+        # Geometry binaries are the only island-owned outputs. Imagery is
+        # emitted later from the global page inventory.
         bin_file = f"frontend/app/tiles_bin/{gosper_asset_name(yq, yr, 'bin')}"
-        texture_files = {
-            tier["name"]: f"frontend/app/aerial_tiles/{tier['name']}/{gosper_asset_name(yq, yr, 'ktx2')}"
-            for tier in TEXTURE_TIERS
-        }
-        tex_recipe_file = texture_recipe_marker_path(yq, yr)
-        island_texture_version = read_texture_recipe_marker(tex_recipe_file, unmarked_texture_version)
         skip_bin = can_skip_bin and os.path.exists(bin_file)
-        skip_tex = (
-            not args.force
-            and island_texture_version == effective_texture_version
-            and all(os.path.exists(path) for path in texture_files.values())
-        )
-        if skip_bin and skip_tex:
+        if skip_bin:
             skipped += 1
             continue
 
         t0 = time.time()
         print(f"Cooking Gosper island {yq}, {yr}...")
-        if not skip_bin:
-            wrote_bin = bake_gosper_binary(yq, yr, dem, grad_ds)
-            if not wrote_bin:
-                skipped_no_unit_data += 1
-                print("   ⏭️  no valid DEM unit samples")
-                continue
-        if not skip_tex:
-            unit_valid = read_gsp_unit_valid(bin_file)
-            bake_gosper_textures(
-                yq,
-                yr,
-                valid_tifs,
-                unit_valid,
-                texture_tattoos=texture_tattoos,
-                texture_recipe_version=effective_texture_version,
-            )
+        wrote_bin = bake_gosper_binary(yq, yr, dem, grad_ds)
+        if not wrote_bin:
+            skipped_no_unit_data += 1
+            print("   ⏭️  no valid DEM unit samples")
+            continue
         elapsed = time.time() - t0
         bake_times.append(elapsed)
         print(f"   ⏱️  {elapsed:.1f}s")
@@ -2404,7 +2249,6 @@ def main():
     dem.close()
 
     # Build shared imagery only after every selected geometry binary is safe.
-    # Existing island textures remain untouched for rollback during migration.
     page_results = bake_global_texture_pages(
         force=args.force,
         texture_tattoos=texture_tattoos,
@@ -2413,10 +2257,7 @@ def main():
     # Update metadata
     generate_manifest.write_json_atomic(
         METADATA_PATH,
-        {"baker_version": BAKER_VERSION, "texture_version": effective_texture_version,
-                   "texture_tattoos": texture_tattoos,
-                   "texture_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
-                   "unmarked_texture_version": unmarked_texture_version,
+        {"baker_version": BAKER_VERSION,
                    "texture_page_version": effective_texture_page_version,
                    "texture_page_tattoos": texture_tattoos,
                    "texture_page_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},

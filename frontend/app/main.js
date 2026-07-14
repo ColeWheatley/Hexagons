@@ -1,27 +1,27 @@
 // @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=texgrad2';
-import { VRAMLedger } from './vram_ledger.js?v=texgrad2';
-import { CacheManager } from './cache_manager.js?v=texgrad2';
-import { PerfProfiler } from './perf_profiler.js?v=texgrad2';
-import { initBenchmark } from './benchmark.js?v=texgrad2';
-import { ShareableViewState } from './view_state.js?v=texgrad2';
+import { HexSearch } from './search.js?v=pageonly1';
+import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
+import { CacheManager } from './cache_manager.js?v=pageonly1';
+import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
+import { initBenchmark } from './benchmark.js?v=pageonly1';
+import { ShareableViewState } from './view_state.js?v=pageonly1';
 import {
     VisibilityClass,
     createProjectionContext,
     expandFrustumPlanes,
     extractFrustumPlanes,
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=texgrad2';
+} from './visibility_planner.js?v=pageonly1';
 import {
     GOSPER_CAP_OVERSCAN,
     GosperVisibilityAdapter,
-} from './gosper_visibility_adapter.js?v=texgrad2';
+} from './gosper_visibility_adapter.js?v=pageonly1';
 import {
     gosperGeometrySelectionNeedsRebuild,
     planGosperGeometrySelection,
-} from './gosper_geometry_selection.js?v=texgrad2';
+} from './gosper_geometry_selection.js?v=pageonly1';
 import {
     applyLodPauseTransition,
     CameraMotionLatch,
@@ -31,39 +31,39 @@ import {
     shouldForceCoarseGeometry,
     shouldRefreshMotionFromControlsChange,
     writeCameraPose,
-} from './geometry_transition_state.js?v=texgrad2';
+} from './geometry_transition_state.js?v=pageonly1';
 import {
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
-} from './vertical_bootstrap.js?v=texgrad2';
-import { TexturePageGrid } from './texture_page_grid.js?v=texgrad2';
+} from './vertical_bootstrap.js?v=pageonly1';
+import { TexturePageGrid } from './texture_page_grid.js?v=pageonly1';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
     TexturePageResidency,
     selectTextureDispatchTaskIndex,
-} from './texture_page_residency.js?v=texgrad2';
+} from './texture_page_residency.js?v=pageonly1';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
     collectTextureTierResidency,
-} from './texture_hud_telemetry.js?v=texgrad2';
-import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=texgrad2';
+} from './texture_hud_telemetry.js?v=pageonly1';
+import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=pageonly1';
 import {
     buildTexturePageShaderSwitch,
     MAX_TEXTURE_PAGE_BINDINGS,
-} from './texture_page_shader.js?v=texgrad2';
+} from './texture_page_shader.js?v=pageonly1';
 import {
     computeGosperSourceFootprint,
     gosperIslandSourceBounds,
     sourceFootprintFromGeometryContract,
-} from './gosper_page_binding_adapter.js?v=texgrad2';
-import './gosper_core.js?v=texgrad2';
+} from './gosper_page_binding_adapter.js?v=pageonly1';
+import './gosper_core.js?v=pageonly1';
 
 const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.10.0-rc4';
+const APP_VERSION = 'v0.10.0-rc5';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
@@ -530,7 +530,7 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=texgrad2');
+            const w = new Worker('./tile_worker.js?v=pageonly1');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -915,13 +915,10 @@ class PistonViewer {
             if (this.manifest.type !== 'gosper_l5') {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
-            // Safe migration: prefer geometry-independent global pages when
-            // present, while leaving the previous island texture contract
-            // readable until the replacement has been visually certified.
-            const textureContract = this.manifest.texture_pages || this.manifest.textures;
+            const textureContract = this.manifest.texture_pages;
             if (!textureContract || textureContract.container !== 'ktx2' ||
                 textureContract.codec !== 'xuastc-ldr-6x6') {
-                throw new Error('Manifest needs the XUASTC KTX2 three-tier texture contract');
+                throw new Error('Manifest needs the global XUASTC KTX2 texture-page contract');
             }
             const expectedTextureSizes = { low: 128, medium: 256, high: 4096 };
             const manifestTierSizes = Object.fromEntries(
@@ -942,42 +939,37 @@ class PistonViewer {
             const hazeControl = document.getElementById('haze-distance-control');
             if (hazeControl) hazeControl.hidden = this.isMiniBake;
             this.updateFogAndClip();
-            this.texWorldSide = this.manifest.tex_world_side_m; // uniform square canvas, world meters
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
 
-            if (this.manifest.texture_pages) {
-                this.texturePageGrid = new TexturePageGrid(
-                    this.manifest.texture_pages,
-                    { expectedCrs: 'EPSG:31254' },
-                );
-                if (this.texturePageGrid.crs !== 'EPSG:31254' || this.texturePageGrid.pageSize !== 1024) {
-                    throw new Error('Texture pages must use the EPSG:31254 global 1024m grid');
-                }
-                if (this.renderer.capabilities.maxTextures < MAX_TEXTURE_PAGE_BINDINGS) {
-                    throw new Error(
-                        `Global texture pages need ${MAX_TEXTURE_PAGE_BINDINGS} fragment samplers; device exposes ${this.renderer.capabilities.maxTextures}`,
-                    );
-                }
-                this.texturePageResidency = new TexturePageResidency({
-                    pages: this.texturePageGrid.pages,
-                    mini: this.isMiniBake,
-                    mediumEnterPx: TEXTURE_CONFIG.mediumEnterPx,
-                    mediumExitPx: TEXTURE_CONFIG.mediumExitPx,
-                    highEnterPx: TEXTURE_CONFIG.highEnterPx,
-                });
-                // Preserve the existing HUD/telemetry surface while changing
-                // its identity domain from render islands to imagery pages.
-                this.textureStates = this.texturePageResidency.states;
-                this.texturePageVisibilityAdapter = new TexturePageVisibilityAdapter({
-                    pages: this.texturePageGrid.pages,
-                    worldOrigin: this.worldOrigin,
-                });
-                this.geometryPageFootprint = sourceFootprintFromGeometryContract(
-                    this.manifest.geometry,
-                    computeGosperSourceFootprint(G, { capOverscan: GOSPER_CAP_OVERSCAN }),
+            this.texturePageGrid = new TexturePageGrid(
+                textureContract,
+                { expectedCrs: 'EPSG:31254' },
+            );
+            if (this.texturePageGrid.crs !== 'EPSG:31254' || this.texturePageGrid.pageSize !== 1024) {
+                throw new Error('Texture pages must use the EPSG:31254 global 1024m grid');
+            }
+            if (this.renderer.capabilities.maxTextures < MAX_TEXTURE_PAGE_BINDINGS) {
+                throw new Error(
+                    `Global texture pages need ${MAX_TEXTURE_PAGE_BINDINGS} fragment samplers; device exposes ${this.renderer.capabilities.maxTextures}`,
                 );
             }
+            this.texturePageResidency = new TexturePageResidency({
+                pages: this.texturePageGrid.pages,
+                mini: this.isMiniBake,
+                mediumEnterPx: TEXTURE_CONFIG.mediumEnterPx,
+                mediumExitPx: TEXTURE_CONFIG.mediumExitPx,
+                highEnterPx: TEXTURE_CONFIG.highEnterPx,
+            });
+            this.textureStates = this.texturePageResidency.states;
+            this.texturePageVisibilityAdapter = new TexturePageVisibilityAdapter({
+                pages: this.texturePageGrid.pages,
+                worldOrigin: this.worldOrigin,
+            });
+            this.geometryPageFootprint = sourceFootprintFromGeometryContract(
+                this.manifest.geometry,
+                computeGosperSourceFootprint(G, { capOverscan: GOSPER_CAP_OVERSCAN }),
+            );
 
             // Canonical lattice-key lookup. Frustum hierarchy traversal owns
             // visibility; the obsolete radial spatial buckets are gone.
@@ -991,17 +983,15 @@ class PistonViewer {
                 t.lz = -(t.y - this.worldOrigin.y);
                 const tileKey = `${t.yq}_${t.yr}`;
                 this.manifestGrid.set(tileKey, t);
-                if (this.texturePageGrid) {
-                    const bindings = this.texturePageGrid.pagesForBounds(
-                        gosperIslandSourceBounds(t.x, t.y, this.geometryPageFootprint),
-                        { includeMissing: true, maxPages: MAX_TEXTURE_PAGE_BINDINGS },
-                    );
-                    t.texturePageKeys = bindings.map(page => page.key);
-                    this.texturePageResidency.attachConsumer(
-                        tileKey,
-                        bindings.filter(page => page.available).map(page => page.key),
-                    );
-                }
+                const bindings = this.texturePageGrid.pagesForBounds(
+                    gosperIslandSourceBounds(t.x, t.y, this.geometryPageFootprint),
+                    { includeMissing: true, maxPages: MAX_TEXTURE_PAGE_BINDINGS },
+                );
+                t.texturePageKeys = bindings.map(page => page.key);
+                this.texturePageResidency.attachConsumer(
+                    tileKey,
+                    bindings.filter(page => page.available).map(page => page.key),
+                );
             }
 
             // Translation boundary: the generic planner receives only opaque
@@ -1305,20 +1295,13 @@ class PistonViewer {
         return texture;
     }
 
-    createTileMaterial(lodIdx, hasTexture, texture) {
-        let material;
-        if (this.texturePageGrid) {
-            // Keeping USE_MAP compiled from the first frame lets page arrivals
-            // update sampler uniforms without recompiling every tile shader.
-            material = new THREE.MeshBasicMaterial({
-                map: texture || this.missingPageTexture,
-                side: THREE.DoubleSide,
-            });
-        } else if (hasTexture) {
-            material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-        } else {
-            material = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide });
-        }
+    createTileMaterial(lodIdx) {
+        // Keeping USE_MAP compiled from the first frame lets page arrivals
+        // update sampler uniforms without recompiling every tile shader.
+        const material = new THREE.MeshBasicMaterial({
+            map: this.missingPageTexture,
+            side: THREE.DoubleSide,
+        });
         if (!material.userData) material.userData = {};
         material.userData.isClone = true; // Mark as a clone for cleanup
         material.userData.lodIdx = lodIdx; // Store LOD index for shader logic if needed
@@ -1378,39 +1361,23 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        const pageMode = Boolean(this.texturePageGrid);
-        material.customProgramCacheKey = () => pageMode
-            ? 'piston_hex_global_pages_v2'
-            : 'piston_hex_gosper_v4';
+        material.customProgramCacheKey = () => 'piston_hex_global_pages_v3';
 
-        const texSide = this.texWorldSide || 980.0;
-        const pageSize = this.texturePageGrid?.pageSize || 1024;
+        const pageSize = this.texturePageGrid.pageSize;
         const sourceOrigin = this.worldOrigin;
         const missingPageTexture = this.missingPageTexture;
-        const vertexMapUvPatch = pageMode ? `
+        const vertexMapUvPatch = `
                 #ifdef USE_MAP
                     // The fragment shader computes absolute source-grid UVs.
                     // A stable placeholder keeps Three's USE_MAP variant live.
                     vMapUv = vec2(0.5);
                 #endif
                 #include <project_vertex>
-            ` : `
-                #ifdef USE_MAP
-                    vec3 tempPosUv = vec3(position);
-                    #ifdef USE_INSTANCING
-                        tempPosUv = (instanceMatrix * vec4(tempPosUv, 1.0)).xyz;
-                    #endif
-                    vec2 rawUv = (tempPosUv.xz / uTileSize) + 0.5;
-                    vMapUv = rawUv * uUvScale + uUvOffset;
-                #endif
-                #include <project_vertex>
             `;
-        const pageShaderSwitch = pageMode
-            ? buildTexturePageShaderSwitch(MAX_TEXTURE_PAGE_BINDINGS)
-            : { declarations: '', samplingBranches: '' };
+        const pageShaderSwitch = buildTexturePageShaderSwitch(MAX_TEXTURE_PAGE_BINDINGS);
         const pageFragmentDeclarations = pageShaderSwitch.declarations;
         const pageSamplingBranches = pageShaderSwitch.samplingBranches;
-        const fragmentMapPatch = pageMode ? `
+        const fragmentMapPatch = `
                 #ifdef USE_MAP
                     // Scene coordinates are rebased for float precision. Undo
                     // that rebase into absolute EPSG metres, then select one of
@@ -1439,26 +1406,6 @@ class PistonViewer {
                     }
                     diffuseColor = vec4(baseColor * lighting, 1.0);
                 #endif
-            ` : `
-                #ifdef USE_MAP
-                    float u = (vLocalPos.x / uTileSize) + 0.5;
-                    float v = (-vLocalPos.z / uTileSize) + 0.5;
-                    vec2 planarUv = vec2(u, v) * uUvScale + uUvOffset;
-                    vec4 texColor = texture2D(map, planarUv);
-                    float ao = 1.0 - (vSkirtY * 0.4);
-                    float jitter = 1.0;
-                    if (vIsTop < 0.5) jitter = 0.92 + (vSideId * 0.04);
-                    float lighting = ao * jitter;
-                    vec3 baseColor = texColor.rgb;
-                    if (vIsTop < 0.5) {
-                         if (uGradientMode > 0.5 && vSlope >= 30.0) {
-                             baseColor = gradientColor(vSlope);
-                         } else {
-                             baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
-                         }
-                    }
-                    diffuseColor = vec4(baseColor * lighting, 1.0);
-                #endif
             `;
 
         material.onBeforeCompile = function (shader) {
@@ -1466,49 +1413,37 @@ class PistonViewer {
             shader.uniforms.uHeightFactor = { value: 0.0 };
             shader.uniforms.uGradientMode = { value: 1.0 };
             shader.uniforms.uFloorOffset = { value: 0.0 }; // Initial fallback
-            shader.uniforms.uTileSize = { value: texSide };
             shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
             shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 1e9) }; // (bandMin for self, bandMax for parent)
             shader.uniforms.uFinestBuilt = { value: 0.0 }; // 1 = finest level built so far: ignore bandMin
-            if (pageMode) {
-                const bindings = this.userData.texturePageBindings || [];
-                shader.uniforms.uPageSize = { value: pageSize };
-                shader.uniforms.uSourceOrigin = {
-                    value: new THREE.Vector2(sourceOrigin.x, sourceOrigin.y),
-                };
-                for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
-                    const binding = bindings[slot] || {};
-                    if (slot > 0) {
-                        shader.uniforms[`uPageMap${slot}`] = {
-                            value: binding.texture || missingPageTexture,
-                        };
-                    }
-                    shader.uniforms[`uPageOrigin${slot}`] = {
-                        value: new THREE.Vector2(
-                            binding.page?.minX || 0,
-                            binding.page?.minY || 0,
-                        ),
-                    };
-                    shader.uniforms[`uPageValid${slot}`] = {
-                        value: binding.valid ? 1 : 0,
+            const bindings = this.userData.texturePageBindings || [];
+            shader.uniforms.uPageSize = { value: pageSize };
+            shader.uniforms.uSourceOrigin = {
+                value: new THREE.Vector2(sourceOrigin.x, sourceOrigin.y),
+            };
+            for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
+                const binding = bindings[slot] || {};
+                if (slot > 0) {
+                    shader.uniforms[`uPageMap${slot}`] = {
+                        value: binding.texture || missingPageTexture,
                     };
                 }
+                shader.uniforms[`uPageOrigin${slot}`] = {
+                    value: new THREE.Vector2(
+                        binding.page?.minX || 0,
+                        binding.page?.minY || 0,
+                    ),
+                };
+                shader.uniforms[`uPageValid${slot}`] = {
+                    value: binding.valid ? 1 : 0,
+                };
             }
-
-            // Gosper island textures are one uniform world-metric square
-            // (tex_world_side_m, canvas-centered on the island) — no padding
-            // split, so the planar mapping is uv = local_xz / side + 0.5.
-            shader.uniforms.uUvScale = { value: 1.0 };
-            shader.uniforms.uUvOffset = { value: 0.0 };
 
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
                 #include <common>
                 uniform float uHeightFactor;
                 uniform float uGradientMode; // Added for vertex shader access
                 uniform float uFloorOffset;
-                uniform float uTileSize;
-                uniform float uUvScale;
-                uniform float uUvOffset;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
                 uniform float uFinestBuilt;
@@ -1635,9 +1570,6 @@ class PistonViewer {
 
             shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
                 #include <common>
-                uniform float uTileSize;
-                uniform float uUvScale;
-                uniform float uUvOffset;
                 uniform float uGradientMode;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
@@ -1783,37 +1715,13 @@ class PistonViewer {
 
     _textureResourceKey(resourceOrKey) {
         if (typeof resourceOrKey === 'string') return resourceOrKey;
-        if (this.texturePageGrid) return resourceOrKey?.key;
-        return `${resourceOrKey?.yq}_${resourceOrKey?.yr}`;
+        return resourceOrKey?.key;
     }
 
     _textureState(resourceOrKey) {
         const key = this._textureResourceKey(resourceOrKey);
-        if (this.texturePageGrid) {
-            const state = this.texturePageResidency?.state(key);
-            if (!state) throw new Error(`Unknown texture page ${key}`);
-            return state;
-        }
-        let state = this.textureStates.get(key);
-        if (!state) {
-            const manifestTile = typeof resourceOrKey === 'string'
-                ? this.manifestGrid?.get(key)
-                : resourceOrKey;
-            state = {
-                key,
-                manifestTile,
-                assets: new Map(),
-                loading: new Set(),
-                queued: new Set(),
-                failed: new Set(),
-                desiredTier: TEXTURE_TIER.LOW,
-                activeTier: null,
-                classification: 'outside',
-                projectedDiameterPx: 0,
-                perceptibility: 0,
-            };
-            this.textureStates.set(key, state);
-        }
+        const state = this.texturePageResidency?.state(key);
+        if (!state) throw new Error(`Unknown texture page ${key}`);
         return state;
     }
 
@@ -1821,20 +1729,8 @@ class PistonViewer {
         const contractTier = tier === TEXTURE_TIER.LOW
             ? 'low'
             : (tier === TEXTURE_TIER.MEDIUM ? 'medium' : 'high');
-        if (this.texturePageGrid) {
-            const url = this.texturePageGrid.urlFor(key, contractTier);
-            if (!url) throw new Error(`Texture page ${key} has no ${contractTier} asset`);
-            return [appendCacheKey(url, this.textureContract.cache_key)];
-        }
-        const manifestTile = this.manifestGrid?.get(key);
-        if (!manifestTile) throw new Error(`Unknown texture tile ${key}`);
-        const template = this.textureContract.url_template;
-        const url = template
-            .replace('{tier}', contractTier)
-            .replace('{yq}', String(manifestTile.yq))
-            .replace('{yr}', String(manifestTile.yr));
-        // High is one 4096 source with its full mip chain. Devices below that
-        // hard GL limit start at the first supported mip.
+        const url = this.texturePageGrid.urlFor(key, contractTier);
+        if (!url) throw new Error(`Texture page ${key} has no ${contractTier} asset`);
         return [appendCacheKey(url, this.textureContract.cache_key)];
     }
 
@@ -1919,32 +1815,7 @@ class PistonViewer {
     }
 
     _bestTextureAsset(state, desiredTier = state.desiredTier, excludedTier = null) {
-        if (this.texturePageResidency) {
-            return this.texturePageResidency.bestAsset(state, desiredTier, excludedTier);
-        }
-        const desiredRank = TEXTURE_RANK[desiredTier];
-        const assets = Array.from(state.assets.entries())
-            .filter(([tier]) => tier !== excludedTier)
-            .sort((a, b) => TEXTURE_RANK[b[0]] - TEXTURE_RANK[a[0]]);
-        const atOrBelow = assets.find(([tier]) => TEXTURE_RANK[tier] <= desiredRank);
-        return atOrBelow || assets[assets.length - 1] || null;
-    }
-
-    _assignTextureToTile(tile, texture, tier) {
-        if (!tile || !texture) return;
-        const materials = new Set([tile.material, ...(tile.clonedMaterials || [])]);
-        for (const material of materials) {
-            if (!material) continue;
-            material.map = texture;
-            material.color.setHex(0xffffff);
-            material.needsUpdate = true;
-        }
-        tile.textureTier = tier;
-        tile.isFullTex = tier === TEXTURE_TIER.HIGH; // benchmark compatibility
-        if (tier === TEXTURE_TIER.HIGH) {
-            this.cacheManager.touch(`${tile.yq}_${tile.yr}`);
-        }
-        this.needsRender = true;
+        return this.texturePageResidency.bestAsset(state, desiredTier, excludedTier);
     }
 
     _texturePageSlots(pageKeys) {
@@ -1962,7 +1833,6 @@ class PistonViewer {
     }
 
     _textureLedgerLocation(textureResource) {
-        if (!this.texturePageGrid) return textureResource;
         const centerX = (textureResource.minX + textureResource.maxX) * 0.5;
         const centerY = (textureResource.minY + textureResource.maxY) * 0.5;
         const minSceneY = (textureResource.renderMin - this.floorState.value) * this.heightFactor;
@@ -1989,7 +1859,7 @@ class PistonViewer {
     }
 
     _applyTexturePageBindings(material, pageKeys) {
-        if (!material || !this.texturePageGrid) return;
+        if (!material) return;
         const pages = this._texturePageSlots(pageKeys);
         const bindings = [];
         for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
@@ -2024,7 +1894,7 @@ class PistonViewer {
     }
 
     _refreshTilePageTextures(tile) {
-        if (!tile || !this.texturePageGrid) return;
+        if (!tile) return;
         const materials = new Set([tile.material, ...(tile.clonedMaterials || [])]);
         for (const material of materials) {
             this._applyTexturePageBindings(material, tile.texturePageKeys);
@@ -2053,7 +1923,6 @@ class PistonViewer {
     }
 
     _refreshTexturePageConsumers(state) {
-        if (!this.texturePageGrid) return;
         for (const tileKey of state.consumers) {
             const tile = this.tiles.get(tileKey);
             if (tile) this._refreshTilePageTextures(tile);
@@ -2062,34 +1931,13 @@ class PistonViewer {
 
     _reconcileTextureState(state) {
         const best = this._bestTextureAsset(state);
-        if (this.texturePageGrid) {
-            if (best && state.activeTier !== best[0]) {
-                state.activeTier = best[0];
-                this._refreshTexturePageConsumers(state);
-            }
-            if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
-                this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
-            }
-            if (!this.isMiniBake && state.classification === 'outside' &&
-                state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
-                this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
-            }
-            return;
-        }
-        const tile = this.tiles.get(state.key);
-        if (best && (state.activeTier !== best[0] || tile?.material?.map !== best[1].texture)) {
+        if (best && state.activeTier !== best[0]) {
             state.activeTier = best[0];
-            if (tile) this._assignTextureToTile(tile, best[1].texture, best[0]);
+            this._refreshTexturePageConsumers(state);
         }
-
-        // Downgrade only after a lower-tier replacement exists. This invariant
-        // prevents a cache decision from ever turning visible terrain grey.
         if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
         }
-
-        // Mini-bakes intentionally pin low+medium. Outside mini mode, medium is
-        // guard-resident and may leave GPU only after low is ready.
         if (!this.isMiniBake && state.classification === 'outside' &&
             state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
@@ -2101,35 +1949,19 @@ class PistonViewer {
         const asset = state?.assets.get(tier);
         if (!state || !asset) return true;
 
-        if (this.texturePageGrid) {
-            const replacement = state.activeTier === tier
-                ? this._bestTextureAsset(state, state.desiredTier, tier)
-                : null;
-            const dropped = this.texturePageResidency.dropAsset(
-                key,
-                tier,
-                replacement,
-                {
-                    rebind: current => this._refreshTexturePageConsumers(current),
-                    dispose: retired => retired.texture.dispose(),
-                },
-            );
-            if (!dropped) return false;
-            this.vramLedger.removeTexture(key, tier);
-            if (tier === TEXTURE_TIER.HIGH && !fromHighPool) this.cacheManager.removeHigh(key);
-            return true;
-        }
-
-        if (state.activeTier === tier) {
-            const replacement = this._bestTextureAsset(state, state.desiredTier, tier);
-            if (!replacement) return false;
-            state.activeTier = replacement[0];
-            const tile = this.tiles.get(key);
-            if (tile) this._assignTextureToTile(tile, replacement[1].texture, replacement[0]);
-        }
-
-        state.assets.delete(tier);
-        asset.texture.dispose();
+        const replacement = state.activeTier === tier
+            ? this._bestTextureAsset(state, state.desiredTier, tier)
+            : null;
+        const dropped = this.texturePageResidency.dropAsset(
+            key,
+            tier,
+            replacement,
+            {
+                rebind: current => this._refreshTexturePageConsumers(current),
+                dispose: retired => retired.texture.dispose(),
+            },
+        );
+        if (!dropped) return false;
         this.vramLedger.removeTexture(key, tier);
         if (tier === TEXTURE_TIER.HIGH && !fromHighPool) this.cacheManager.removeHigh(key);
         return true;
@@ -2169,20 +2001,10 @@ class PistonViewer {
         }
 
         const asset = { texture, bytes: result.gpuBytes || 0, result };
-        const previous = state.assets.get(task.tier);
-        if (this.texturePageGrid) {
-            this.texturePageResidency.replaceAsset(state.key, task.tier, asset, {
-                rebind: current => this._refreshTexturePageConsumers(current),
-                dispose: retired => retired.texture.dispose(),
-            });
-        } else {
-            state.assets.set(task.tier, asset);
-            if (previous && state.activeTier === task.tier) {
-                const tile = this.tiles.get(state.key);
-                if (tile) this._assignTextureToTile(tile, texture, task.tier);
-            }
-            if (previous) previous.texture.dispose();
-        }
+        this.texturePageResidency.replaceAsset(state.key, task.tier, asset, {
+            rebind: current => this._refreshTexturePageConsumers(current),
+            dispose: retired => retired.texture.dispose(),
+        });
         this.vramLedger.setTexture(
             state.key,
             task.tier,
@@ -2194,8 +2016,8 @@ class PistonViewer {
 
         if (task.tier === TEXTURE_TIER.HIGH) {
             this.recentlyUpgradedTextures.push({
-                q: task.textureResource.yq ?? task.textureResource.pageX,
-                r: task.textureResource.yr ?? task.textureResource.pageY,
+                q: task.textureResource.pageX,
+                r: task.textureResource.pageY,
                 time: performance.now(),
             });
         }
@@ -2236,7 +2058,7 @@ class PistonViewer {
                     // (or a page has terminally failed). Larger manifests do
                     // not pre-seed every low page, so they cannot use this
                     // whole-corpus barrier.
-                    lowCoverageFirst: Boolean(this.texturePageGrid && this.isMiniBake),
+                    lowCoverageFirst: this.isMiniBake,
                 },
             );
             if (index < 0) break;
@@ -2274,9 +2096,7 @@ class PistonViewer {
     _seedMiniTexturePins() {
         if (!this.isMiniBake || this.miniTexturePinsSeeded || !this.manifest) return;
         this.miniTexturePinsSeeded = true;
-        const resources = this.texturePageGrid
-            ? this.texturePageGrid.pages
-            : this.manifest.tiles;
+        const resources = this.texturePageGrid.pages;
         // Seed the complete coverage floor before placing any upgrades in the
         // queue. The dispatch barrier below remains authoritative if later
         // demand promotion changes numeric priorities.
@@ -2507,9 +2327,6 @@ class PistonViewer {
                 priority,
             };
             this.visibilityByKey.set(key, visibility);
-            if (!this.texturePageGrid) {
-                this._scheduleTextureQuality(manifestTile, classification, projectedDiameterPx, priority);
-            }
 
             // GSP2+ supports deferred geometry, so a settled resident tile
             // can refine the generic root plan to L3 and keep only descendant
@@ -2840,10 +2657,6 @@ class PistonViewer {
 
     async fetchTileOnWorker(task) {
         const tileKey = `${task.t.yq}_${task.t.yr}`;
-        const state = this.texturePageGrid ? null : this._textureState(task.t);
-        const needsLow = Boolean(state) &&
-            !state.assets.has(TEXTURE_TIER.LOW) && !state.loading.has(TEXTURE_TIER.LOW);
-        if (needsLow) state.loading.add(TEXTURE_TIER.LOW);
         try {
             const { t } = task;
             const expectedGspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
@@ -2856,9 +2669,6 @@ class PistonViewer {
 
             const workerData = await this.postWorkerJob('LOAD_TILE', {
                 yq: t.yq, yr: t.yr,
-                // Global imagery pages have their own worker queue and cache;
-                // geometry loading never smuggles in an island-owned texture.
-                texUrls: needsLow ? this._textureUrls(TEXTURE_TIER.LOW, tileKey) : [],
                 binUrl,
                 expectedGspVersion,
             });
@@ -2908,18 +2718,13 @@ class PistonViewer {
             console.error("Tile Fetch Error", e);
             this.visibilityAdapter?.detachDecodedIsland(tileKey);
             this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
-            if (needsLow) {
-                state?.loading.delete(TEXTURE_TIER.LOW);
-                state?.failed.add(TEXTURE_TIER.LOW);
-            }
             return null;
         }
     }
 
     // Build a THREE.CompressedTexture from a worker-transcoded KTX2 result
-    // ({ mipmaps, width, height, formatKey, isSRGB, ... }). Used for both the
-    // low-res texture on tile instantiation and the full-res upgrade — the
-    // worker never imports THREE, so this mapping only happens here.
+    // ({ mipmaps, width, height, formatKey, isSRGB, ... }). The worker never
+    // imports THREE, so texture-page uploads are materialized here.
     buildCompressedTexture(texResult) {
         const { mipmaps, width, height, formatKey, isSRGB } = texResult;
         const threeFormat = KTX2_FORMAT_MAP[formatKey];
@@ -3067,15 +2872,6 @@ class PistonViewer {
         }
 
         if (this.visibilityByKey.get(key)?.classification === 'outside') {
-            const state = this.texturePageGrid ? null : this._textureState(t);
-            state?.loading.delete(TEXTURE_TIER.LOW);
-            if (workerData.texture && state) {
-                this._installTextureResult({
-                    key,
-                    textureResource: t,
-                    tier: TEXTURE_TIER.LOW,
-                }, workerData.texture);
-            }
             this.visibilityAdapter?.detachDecodedIsland(key);
             this.loadingTiles.delete(key);
             return;
@@ -3085,40 +2881,14 @@ class PistonViewer {
             if (!workerData.lods) {
                 throw new Error(`tile ${key} reached instantiation before deferred geometry was built`);
             }
-            const textureState = this.texturePageGrid ? null : this._textureState(t);
-            textureState?.loading.delete(TEXTURE_TIER.LOW);
             if (workerData.visibilityData) {
                 this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
             }
 
-            // The geometry worker may have brought the mandatory postage
-            // texture with it. Install it into the independent texture cache
-            // before creating any material.
-            const tex = workerData.texture;
-            if (tex && textureState) {
-                this._installTextureResult({
-                    key,
-                    textureResource: t,
-                    tier: TEXTURE_TIER.LOW,
-                }, tex);
-            } else if (!this.texturePageGrid && !textureState.assets.size) {
-                // Worker treats a low-res transcode failure as non-fatal (tile
-                // still renders, magenta material) — count it in the debug
-                // badge anyway so an on-device failure isn't invisible.
-                this._texErrorCount++;
-                this._updateTexBadge();
-            }
-
-            const initialAsset = textureState ? this._bestTextureAsset(textureState) : null;
-            const initialTex = initialAsset?.[1]?.texture || null;
-            if (textureState) textureState.activeTier = initialAsset?.[0] || null;
-
             // Create one shared base material for the tile. Texture ownership
-            // remains with textureState, not this material or the geometry.
-            const sharedMaterial = this.createTileMaterial(0, !!initialTex, initialTex);
-            if (this.texturePageGrid) {
-                this._applyTexturePageBindings(sharedMaterial, t.texturePageKeys);
-            }
+            // remains with texture page residency, not this material or geometry.
+            const sharedMaterial = this.createTileMaterial(0);
+            this._applyTexturePageBindings(sharedMaterial, t.texturePageKeys);
             this.materialsToUpdate.add(sharedMaterial);
 
             const meshGroup = new THREE.Group();
@@ -3213,9 +2983,9 @@ class PistonViewer {
                 geometryRebuildNext: null,
                 geometryAwaitingFinal: false,
                 geometrySource: workerData.geometrySource || null,
-                texturePageKeys: this.texturePageGrid ? [...t.texturePageKeys] : null,
-                textureTier: textureState?.activeTier || null,
-                isFullTex: textureState?.activeTier === TEXTURE_TIER.HIGH,
+                texturePageKeys: [...t.texturePageKeys],
+                textureTier: null,
+                isFullTex: false,
                 isTransitioning: false,
                 clonedMaterials: gatheredMaterials
             };
@@ -3236,11 +3006,7 @@ class PistonViewer {
                 geometryBytes,
                 q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
-            if (this.texturePageGrid) {
-                this._refreshTilePageTextures(tileObj);
-            } else {
-                this._reconcileTextureState(textureState);
-            }
+            this._refreshTilePageTextures(tileObj);
 
             this.loadingTiles.delete(key);
 
@@ -3609,7 +3375,7 @@ class PistonViewer {
                 redownloads: this.cacheManager.redownloadCount,
             },
             textureResidency: {
-                identity: this.texturePageGrid ? 'global-page' : 'legacy-island',
+                identity: 'global-page',
                 resident: residentTiers,
                 active: activeTiers,
                 desired: desiredTiers,
