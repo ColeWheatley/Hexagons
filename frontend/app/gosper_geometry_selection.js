@@ -5,11 +5,11 @@
 
 import {
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=texhud1';
+} from './visibility_planner.js?v=texgrad2';
 import {
     GOSPER_DEPTH_COUNTS,
     GOSPER_MAX_DEPTH,
-} from './gosper_visibility_adapter.js?v=texhud1';
+} from './gosper_visibility_adapter.js?v=texgrad2';
 
 export const GOSPER_GEOMETRY_FRONTIER_DEPTH = 2; // depth 2 == level L3
 export const DEFAULT_DETAIL_DISTANCE_BY_DEPTH = Object.freeze([

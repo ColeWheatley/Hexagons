@@ -4,8 +4,8 @@
 // GSP1/GSP2/GSP3 aggregate bounds, and contiguous descendant ranges. The planner
 // sees only opaque uint32 handles and its generic hierarchy interface.
 
-import './gosper_core.js?v=texhud1';
-import { VisibilityClass } from './visibility_planner.js?v=texhud1';
+import './gosper_core.js?v=texgrad2';
+import { VisibilityClass } from './visibility_planner.js?v=texgrad2';
 
 const DEFAULT_CORE = globalThis.GosperCore;
 const BRANCHING = 7;

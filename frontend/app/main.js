@@ -1,27 +1,27 @@
 // @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=texhud1';
-import { VRAMLedger } from './vram_ledger.js?v=texhud1';
-import { CacheManager } from './cache_manager.js?v=texhud1';
-import { PerfProfiler } from './perf_profiler.js?v=texhud1';
-import { initBenchmark } from './benchmark.js?v=texhud1';
-import { ShareableViewState } from './view_state.js?v=texhud1';
+import { HexSearch } from './search.js?v=texgrad2';
+import { VRAMLedger } from './vram_ledger.js?v=texgrad2';
+import { CacheManager } from './cache_manager.js?v=texgrad2';
+import { PerfProfiler } from './perf_profiler.js?v=texgrad2';
+import { initBenchmark } from './benchmark.js?v=texgrad2';
+import { ShareableViewState } from './view_state.js?v=texgrad2';
 import {
     VisibilityClass,
     createProjectionContext,
     expandFrustumPlanes,
     extractFrustumPlanes,
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=texhud1';
+} from './visibility_planner.js?v=texgrad2';
 import {
     GOSPER_CAP_OVERSCAN,
     GosperVisibilityAdapter,
-} from './gosper_visibility_adapter.js?v=texhud1';
+} from './gosper_visibility_adapter.js?v=texgrad2';
 import {
     gosperGeometrySelectionNeedsRebuild,
     planGosperGeometrySelection,
-} from './gosper_geometry_selection.js?v=texhud1';
+} from './gosper_geometry_selection.js?v=texgrad2';
 import {
     applyLodPauseTransition,
     CameraMotionLatch,
@@ -31,39 +31,39 @@ import {
     shouldForceCoarseGeometry,
     shouldRefreshMotionFromControlsChange,
     writeCameraPose,
-} from './geometry_transition_state.js?v=texhud1';
+} from './geometry_transition_state.js?v=texgrad2';
 import {
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
-} from './vertical_bootstrap.js?v=texhud1';
-import { TexturePageGrid } from './texture_page_grid.js?v=texhud1';
+} from './vertical_bootstrap.js?v=texgrad2';
+import { TexturePageGrid } from './texture_page_grid.js?v=texgrad2';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
     TexturePageResidency,
     selectTextureDispatchTaskIndex,
-} from './texture_page_residency.js?v=texhud1';
+} from './texture_page_residency.js?v=texgrad2';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
     collectTextureTierResidency,
-} from './texture_hud_telemetry.js?v=texhud1';
-import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=texhud1';
+} from './texture_hud_telemetry.js?v=texgrad2';
+import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=texgrad2';
 import {
     buildTexturePageShaderSwitch,
     MAX_TEXTURE_PAGE_BINDINGS,
-} from './texture_page_shader.js?v=texhud1';
+} from './texture_page_shader.js?v=texgrad2';
 import {
     computeGosperSourceFootprint,
     gosperIslandSourceBounds,
     sourceFootprintFromGeometryContract,
-} from './gosper_page_binding_adapter.js?v=texhud1';
-import './gosper_core.js?v=texhud1';
+} from './gosper_page_binding_adapter.js?v=texgrad2';
+import './gosper_core.js?v=texgrad2';
 
 const G = window.GosperCore;
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.10.0-rc2';
+const APP_VERSION = 'v0.10.0-rc4';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
@@ -530,7 +530,7 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=texhud1');
+            const w = new Worker('./tile_worker.js?v=texgrad2');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -1380,7 +1380,7 @@ class PistonViewer {
         // If you change shader code, bump this string.
         const pageMode = Boolean(this.texturePageGrid);
         material.customProgramCacheKey = () => pageMode
-            ? 'piston_hex_global_pages_v1'
+            ? 'piston_hex_global_pages_v2'
             : 'piston_hex_gosper_v4';
 
         const texSide = this.texWorldSide || 980.0;

@@ -20,13 +20,17 @@ export function buildTexturePageShaderSwitch(bindingCount = MAX_TEXTURE_PAGE_BIN
         { length: bindingCount },
         (_, index) => `uniform float uPageValid${index};`,
     ).join('\n                ');
+    const gradientSetup = `vec2 pageGradientUv = sourceXY / uPageSize;
+                    vec2 pageGradientDx = dFdx(pageGradientUv);
+                    vec2 pageGradientDy = dFdy(pageGradientUv);`;
     const samplingBranches = Array.from(
         { length: bindingCount },
         (_, slot) => `${slot === 0 ? 'if' : 'else if'} (uPageValid${slot} > 0.5 &&
                         all(greaterThanEqual(sourceXY, uPageOrigin${slot})) &&
                         all(lessThan(sourceXY, uPageOrigin${slot} + vec2(uPageSize)))) {
-                        texColor = texture2D(${slot === 0 ? 'map' : `uPageMap${slot}`},
-                            (sourceXY - uPageOrigin${slot}) / uPageSize);
+                        texColor = textureGrad(${slot === 0 ? 'map' : `uPageMap${slot}`},
+                            (sourceXY - uPageOrigin${slot}) / uPageSize,
+                            pageGradientDx, pageGradientDy);
                         sampledPage = true;
                     }`,
     ).join(' ');
@@ -36,6 +40,11 @@ export function buildTexturePageShaderSwitch(bindingCount = MAX_TEXTURE_PAGE_BIN
                 ${validityDeclarations}
                 uniform float uPageSize;
                 uniform vec2 uSourceOrigin;`,
-        samplingBranches,
+        // Implicit texture derivatives are undefined inside non-uniform page
+        // branches. Derive one global, page-normalized footprint before the
+        // switch and feed it explicitly to every sampler. Subtracting a
+        // uniform page origin does not change these derivatives.
+        samplingBranches: `${gradientSetup}
+                    ${samplingBranches}`,
     });
 }

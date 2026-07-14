@@ -1,5 +1,5 @@
 // @atlas: Worker for GSP1/GSP2/current GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP2+ loading is two-stage; GSP3 separates terrain relief from exact rendered bounds.
-importScripts('gosper_core.js?v=texhud1');
+importScripts('gosper_core.js?v=texgrad2');
 
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5

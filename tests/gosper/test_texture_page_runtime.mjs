@@ -57,9 +57,40 @@ assert.equal(MAX_TEXTURE_PAGE_BINDINGS, 9);
 const shaderSwitch = buildTexturePageShaderSwitch();
 assert.equal((shaderSwitch.declarations.match(/uniform sampler2D/g) || []).length, 8);
 assert.equal((shaderSwitch.samplingBranches.match(/sampledPage = true/g) || []).length, 9);
-assert.match(shaderSwitch.samplingBranches, /texture2D\(map,/);
-assert.match(shaderSwitch.samplingBranches, /texture2D\(uPageMap8,/);
+assert.equal((shaderSwitch.samplingBranches.match(/textureGrad\(/g) || []).length, 9);
+assert.equal((shaderSwitch.samplingBranches.match(/dFdx\(/g) || []).length, 1);
+assert.equal((shaderSwitch.samplingBranches.match(/dFdy\(/g) || []).length, 1);
+assert.equal((shaderSwitch.samplingBranches.match(/pageGradientDx, pageGradientDy/g) || []).length, 9);
+assert.match(shaderSwitch.samplingBranches,
+    /vec2 pageGradientUv\s*=\s*sourceXY\s*\/\s*uPageSize\s*;/);
+assert.match(shaderSwitch.samplingBranches,
+    /vec2 pageGradientDx\s*=\s*dFdx\(pageGradientUv\)\s*;/);
+assert.match(shaderSwitch.samplingBranches,
+    /vec2 pageGradientDy\s*=\s*dFdy\(pageGradientUv\)\s*;/);
+assert.match(shaderSwitch.samplingBranches, /textureGrad\(map,/);
+assert.match(shaderSwitch.samplingBranches, /textureGrad\(uPageMap8,/);
+for (let slot = 0; slot < MAX_TEXTURE_PAGE_BINDINGS; slot++) {
+    const sampler = slot === 0 ? 'map' : `uPageMap${slot}`;
+    assert.ok(shaderSwitch.samplingBranches.includes(`textureGrad(${sampler},`),
+        `page slot ${slot} must use explicit gradients`);
+}
+assert.doesNotMatch(shaderSwitch.samplingBranches, /texture2D\s*\(/);
+const firstPageBranch = shaderSwitch.samplingBranches.indexOf('if (uPageValid0');
+for (const setupToken of ['pageGradientUv', 'dFdx(', 'dFdy(']) {
+    const setupIndex = shaderSwitch.samplingBranches.indexOf(setupToken);
+    assert.ok(setupIndex >= 0 && setupIndex < firstPageBranch,
+        `${setupToken} must be evaluated before divergent page selection`);
+}
+assert.match(shaderSwitch.samplingBranches,
+    /greaterThanEqual\(sourceXY, uPageOrigin0\)[\s\S]*lessThan\(sourceXY, uPageOrigin0 \+ vec2\(uPageSize\)\)/);
+assert.match(shaderSwitch.samplingBranches,
+    /greaterThanEqual\(sourceXY, uPageOrigin8\)[\s\S]*lessThan\(sourceXY, uPageOrigin8 \+ vec2\(uPageSize\)\)/);
 assert.doesNotMatch(shaderSwitch.declarations, /sampler2D\s+\w+\s*\[/);
+const onePageShaderSwitch = buildTexturePageShaderSwitch(1);
+assert.equal((onePageShaderSwitch.samplingBranches.match(/textureGrad\(/g) || []).length, 1);
+assert.match(onePageShaderSwitch.samplingBranches, /textureGrad\(map,/);
+assert.doesNotMatch(onePageShaderSwitch.samplingBranches, /uPageMap\d/);
+assert.doesNotMatch(onePageShaderSwitch.samplingBranches, /else if/);
 assert.throws(
     () => new TexturePageGrid({ ...contract, grid: { ...contract.grid, crs: 'EPSG:3857' } }, {
         expectedCrs: 'EPSG:31254',
