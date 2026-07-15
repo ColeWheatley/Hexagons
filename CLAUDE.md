@@ -20,16 +20,14 @@ Default config (`~/.codex/config.toml`) is `model = "gpt-5.5"`,
 `model_reasoning_effort = "xhigh"` — fine to rely on those defaults, or pass
 `-m`/`-c model_reasoning_effort=...` explicitly for clarity in scripts.
 
-### Isolation: use a standalone clone, not a worktree
+### Isolation: use a standalone clone, not a worktree — AND pass `--add-dir` for `.git` regardless
 
-`git worktree add` looks appealing but **breaks commits**: worktree git
-metadata lives in the *main* repo's `.git/worktrees/<name>/`, which is
-outside whatever directory you hand to Codex's sandbox — `workspace-write`
-can't write there, so every `git commit` fails with a permissions error and
-the agent's work sits uncommitted (verified: this has caused lost/near-lost
-work more than once).
+`git worktree add` looks appealing but **breaks commits worse than a clone
+does**: worktree git metadata lives in the *main* repo's
+`.git/worktrees/<name>/`, outside whatever directory you hand to Codex's
+sandbox.
 
-Instead:
+Prefer a standalone clone:
 
 ```bash
 git clone -q /path/to/repo /path/to/Hexagons-codex/<task-name>
@@ -37,13 +35,36 @@ cd /path/to/Hexagons-codex/<task-name>
 git checkout -q -b codex/<task-name>
 ```
 
-Now `.git` is inside the sandbox and commits work natively. Merge back later
-with `git merge codex/<task-name>` (as a remote-less local merge — no `git
-remote add` / push needed if you just `cd` into the main repo and `git merge
-<path-to-clone-branch>` won't work directly; instead `git fetch
-<clone-path> <branch>` then merge `FETCH_HEAD`, or simpler: `git remote add
-tmp <clone-path> && git fetch tmp && git merge tmp/<branch> && git remote
-remove tmp`).
+**But a plain clone is not sufficient by itself** — Codex's macOS sandbox
+blocks writes to *any* `.git` directory by default, even inside a real
+clone that's otherwise fully inside the workspace-write root (verified:
+`touch .git/probe` → `Operation not permitted`, confirmed by direct
+reproduction, not just inferred from a failed commit). Every launch —
+including `resume` calls — needs:
+
+```bash
+--add-dir /path/to/Hexagons-codex/<task-name>/.git
+```
+
+For a worktree (if you're stuck with one), the equivalent grant must point
+at the **whole main repo's `.git`**, not just its
+`.git/worktrees/<name>/` subfolder — `git add`/`git commit` in a worktree
+touch shared refs/objects back in the primary `.git`, so a narrower
+`--add-dir` still fails even though a probe *file write* inside
+`.git/worktrees/<name>/` alone appears to succeed:
+
+```bash
+--add-dir /path/to/Hexagons/.git
+```
+
+Verify before trusting either: `touch .git/probe && rm .git/probe` (clone)
+or `git commit --allow-empty -m probe` then `git reset --hard HEAD~1` to
+clean it up (worktree, since the file-level probe can give a false
+positive there).
+
+Merge back later with a local remote-less merge — no push needed:
+`git remote add tmp <clone-path> && git fetch tmp && git merge
+tmp/<branch> && git remote remove tmp`.
 
 Gitignored data (DEM/TIF sources, the basisu binary, baked `aerial_pages`/
 `tiles_bin` output) won't be in a fresh clone — symlink it in read-only from
@@ -123,6 +144,39 @@ relaunch whenever a session ID is known (each launch's startup banner prints
   the visible/focused one, which silently freezes anything driven by rAF
   (the app's render loop, a benchmark script, a profiler). Drive benches
   over the Chrome DevTools Protocol instead of relying on tab visibility.
+
+### `ps`/`pgrep` are hard-blocked in the sandbox — don't design safety rules around them
+
+Codex's `workspace-write` sandbox denies process-table introspection
+entirely: `ps aux`, `pgrep -f ...` — anything that lists other processes —
+fails with `operation not permitted` / `sysmon request failed: sysmond
+service not found`. This is a syscall-level seatbelt restriction, not a
+permissions/flag issue, and no `--add-dir`-style override exists for it
+(verified by direct reproduction).
+
+Consequence: a brief that tells an agent "check `pgrep` before launching
+Chrome to make sure nothing stale is still running" is asking for something
+impossible inside its own sandbox. (This happened: an agent correctly
+refused to bench at all rather than violate that rule, which was the right
+call given what it had — but the rule itself needed fixing, not the
+agent.) Design process-hygiene rules that don't require introspection:
+
+- **Structural single-instance discipline**: never `Popen()` a new instance
+  until the previous subprocess handle's `.wait()` has actually returned.
+  This guarantees single-flight without needing to see the system process
+  table at all.
+- **Proper per-launch teardown**: `try/finally` with `terminate()` → `kill()`
+  fallback → `wait()`, unique `--user-data-dir` per launch, `rm -rf` it in
+  the `finally` block.
+- **An external tripwire the orchestrator (not the sandboxed agent) runs**,
+  since only something outside the sandbox can actually see the process
+  table: a background loop summing a target process name's RSS
+  (`ps -axo rss,comm | grep ... | awk '{sum+=$1}...'`) and force-killing
+  past a threshold. This is the real backstop — treat it as required
+  whenever a sandboxed agent repeatedly launches heavy subprocesses
+  (headless browsers especially), not optional. Confirmed effective in
+  practice: it killed a runaway Chrome accumulation at ~6.5GB and ~7GB RSS
+  before either became a full OOM.
 
 ### Known-safe example
 
