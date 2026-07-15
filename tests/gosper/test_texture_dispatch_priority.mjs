@@ -11,7 +11,9 @@ const moduleSource = fs.readFileSync(
 const {
     PAGE_TEXTURE_TIER: TIER,
     lowTextureCoveragePending,
+    pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
+    textureStateHasDemand,
 } = await import(`data:text/javascript;base64,${Buffer.from(moduleSource).toString('base64')}`);
 
 function state(key) {
@@ -21,6 +23,8 @@ function state(key) {
         loading: new Set(),
         queued: new Set(),
         failed: new Set(),
+        classification: 'outside',
+        desiredTier: TIER.LOW,
     };
 }
 
@@ -101,10 +105,142 @@ const ordinaryQueue = [
 assert.equal(take([...ordinaryQueue], states).tier, TIER.HIGH);
 assert.equal(take([...ordinaryQueue], states, { isMoving: true }).tier, TIER.MEDIUM);
 
+// A one-degree global page manifest is large enough to reproduce the failure
+// hidden by the Stubai mini-bake: 64,800 unrelated postage assets used to be
+// admitted into the same queue as the handful surrounding the camera.
+const globalStates = new Map();
+for (let latitude = -90; latitude < 90; latitude++) {
+    for (let longitude = -180; longitude < 180; longitude++) {
+        const key = `world_${longitude}_${latitude}`;
+        globalStates.set(key, state(key));
+    }
+}
+assert.equal(globalStates.size, 64800);
+
+const visibleKeys = ['world_11_47', 'world_12_47'];
+const guardKeys = ['world_10_47', 'world_13_47', 'world_11_46', 'world_12_48'];
+for (const key of visibleKeys) {
+    const page = globalStates.get(key);
+    page.classification = 'visible';
+    page.desiredTier = TIER.HIGH;
+}
+for (const key of guardKeys) {
+    const page = globalStates.get(key);
+    page.classification = 'guard';
+    page.desiredTier = TIER.MEDIUM;
+}
+assert.deepEqual(
+    [...globalStates.values()].filter(page => textureStateHasDemand(page)).map(page => page.key).sort(),
+    [...visibleKeys, ...guardKeys].sort(),
+    'only the visible frustum and explicit guard band are admitted',
+);
+
+// Reconcile a deliberately bad legacy queue containing every world low. The
+// active queue retains exactly six lows, six medium requests, and two visible
+// high requests; no outside low survives admission.
+const legacyGlobalQueue = [];
+for (const page of globalStates.values()) {
+    page.queued.add(TIER.LOW);
+    legacyGlobalQueue.push({ key: page.key, tier: TIER.LOW, priority: -1 });
+}
+for (const key of [...visibleKeys, ...guardKeys]) {
+    const page = globalStates.get(key);
+    page.queued.add(TIER.MEDIUM);
+    legacyGlobalQueue.push({ key, tier: TIER.MEDIUM, priority: 1e9 });
+}
+for (const key of visibleKeys) {
+    const page = globalStates.get(key);
+    page.queued.add(TIER.HIGH);
+    legacyGlobalQueue.push({ key, tier: TIER.HIGH, priority: 2e9 });
+}
+const scopedGlobalQueue = pruneTextureDispatchQueue(legacyGlobalQueue, globalStates);
+assert.equal(scopedGlobalQueue.filter(task => task.tier === TIER.LOW).length, 6);
+assert.equal(scopedGlobalQueue.filter(task => task.tier === TIER.MEDIUM).length, 6);
+assert.equal(scopedGlobalQueue.filter(task => task.tier === TIER.HIGH).length, 2);
+assert.equal(scopedGlobalQueue.some(task => (
+    globalStates.get(task.key).classification === 'outside'
+)), false);
+assert.equal(globalStates.get('world_-180_-90').queued.has(TIER.LOW), false);
+assert.equal(take([...scopedGlobalQueue], globalStates, {
+    lowCoverageFirst: true,
+    lowCoverageIncludesOutside: false,
+}).tier, TIER.LOW, 'active guard+visible lows gate active refinement');
+
+// The low-first invariant is scoped to active demand. Once the six local lows
+// are terminal, visible refinement proceeds even though all 64,794 outside
+// lows remain absent and non-terminal.
+const refinementQueue = scopedGlobalQueue.filter(task => task.tier !== TIER.LOW);
+for (const key of [...visibleKeys, ...guardKeys]) {
+    globalStates.get(key).assets.set(TIER.LOW, { key: `${key}-low` });
+}
+assert.equal(lowTextureCoveragePending(globalStates, { includeOutside: false }), false);
+assert.equal(lowTextureCoveragePending(globalStates, { includeOutside: true }), true);
+const firstRefinement = take(refinementQueue, globalStates, {
+    lowCoverageFirst: true,
+    lowCoverageIncludesOutside: false,
+});
+assert.ok(firstRefinement);
+assert.ok(visibleKeys.includes(firstRefinement.key));
+assert.equal(firstRefinement.tier, TIER.HIGH);
+
+// Camera motion cancels stale queued work without pretending an already
+// running request was aborted. The old in-flight low is ignored by the new
+// frustum barrier, while the new view immediately establishes its own floor.
+const oldVisible = globalStates.get(visibleKeys[0]);
+oldVisible.classification = 'outside';
+oldVisible.desiredTier = TIER.LOW;
+oldVisible.loading.add(TIER.LOW);
+oldVisible.queued.add(TIER.HIGH);
+const movedKey = 'world_-122_37';
+const movedState = globalStates.get(movedKey);
+movedState.classification = 'visible';
+movedState.desiredTier = TIER.MEDIUM;
+movedState.queued.add(TIER.LOW);
+movedState.queued.add(TIER.MEDIUM);
+const movedQueue = pruneTextureDispatchQueue([
+    { key: oldVisible.key, tier: TIER.HIGH, priority: 9e9 },
+    { key: movedKey, tier: TIER.LOW, priority: 1e9 + 1000 },
+    { key: movedKey, tier: TIER.MEDIUM, priority: 1e9 + 500 },
+], globalStates);
+assert.deepEqual(movedQueue.map(task => [task.key, task.tier]), [
+    [movedKey, TIER.LOW],
+    [movedKey, TIER.MEDIUM],
+]);
+assert.equal(oldVisible.queued.has(TIER.HIGH), false);
+assert.equal(oldVisible.loading.has(TIER.LOW), true, 'in-flight work remains safely caller-owned');
+assert.equal(take(movedQueue, globalStates, {
+    lowCoverageFirst: true,
+    lowCoverageIncludesOutside: false,
+}).tier, TIER.LOW);
+
+// The existing mini-bake contract remains a complete-fixture pin. Its outside
+// low and pinned medium survive queue reconciliation, and the global low floor
+// continues to gate that medium request.
+const miniStates = new Map([['mini-a', state('mini-a')], ['mini-b', state('mini-b')]]);
+const miniQueue = [
+    { key: 'mini-a', tier: TIER.LOW, priority: -1000 },
+    { key: 'mini-a', tier: TIER.MEDIUM, priority: -2000 },
+    { key: 'mini-b', tier: TIER.LOW, priority: -1000 },
+    { key: 'mini-b', tier: TIER.MEDIUM, priority: -2000 },
+];
+for (const task of miniQueue) miniStates.get(task.key).queued.add(task.tier);
+const retainedMiniQueue = pruneTextureDispatchQueue(miniQueue, miniStates, {
+    includeOutside: true,
+});
+assert.equal(retainedMiniQueue.length, 4);
+assert.equal(take(retainedMiniQueue, miniStates, {
+    lowCoverageFirst: true,
+    lowCoverageIncludesOutside: true,
+}).tier, TIER.LOW);
+
 // Production integration: the worker dispatcher must invoke this exact pure
-// selector with the page-corpus barrier enabled.
+// selector with a frustum-scoped barrier and prune the queue on every demand
+// pass. Mini-bakes are the sole whole-corpus exception.
 const mainSource = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');
 assert.match(mainSource, /selectTextureDispatchTaskIndex\(\s*this\.textureQueue,\s*this\.textureStates,/s);
-assert.match(mainSource, /lowCoverageFirst:\s*this\.isMiniBake/);
+assert.match(mainSource, /lowCoverageFirst:\s*true/);
+assert.match(mainSource, /lowCoverageIncludesOutside:\s*this\.isMiniBake/);
+assert.match(mainSource, /pruneTextureDispatchQueue\(\s*this\.textureQueue,\s*residency\.states,/s);
+assert.match(mainSource, /textureStateHasDemand\(state, \{ includeOutside: this\.isMiniBake \}\)/);
 
-console.log('texture dispatch low-tier barrier: ok');
+console.log('texture dispatch frustum-scoped low-tier barrier: ok');

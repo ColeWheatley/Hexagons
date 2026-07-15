@@ -41,8 +41,10 @@ import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
     TexturePageResidency,
+    pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
-} from './texture_page_residency.js?v=pageonly1';
+    textureStateHasDemand,
+} from './texture_page_residency.js?v=frustumfloor1';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
@@ -2071,13 +2073,12 @@ class PistonViewer {
                 this.textureStates,
                 {
                     isMoving: this.isMovingView,
-                    // The mini corpus has one tiny coverage asset per page.
-                    // Do not let a medium/high request occupy either texture
-                    // worker slot until that complete green floor is resident
-                    // (or a page has terminally failed). Larger manifests do
-                    // not pre-seed every low page, so they cannot use this
-                    // whole-corpus barrier.
-                    lowCoverageFirst: this.isMiniBake,
+                    // The postage floor gates upgrades only inside the current
+                    // visible+guard demand. Mini-bakes deliberately retain the
+                    // historical whole-corpus floor because the complete
+                    // fixture is itself the local safety region.
+                    lowCoverageFirst: true,
+                    lowCoverageIncludesOutside: this.isMiniBake,
                 },
             );
             if (index < 0) break;
@@ -2213,6 +2214,17 @@ class PistonViewer {
             highEnterPx: this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
         });
 
+        // Camera motion can leave old lows and refinements in the queue. On a
+        // world-scale manifest those stale lows must never become a hidden
+        // global prerequisite for the new view. Already-running worker jobs
+        // are allowed to finish; result installation already reconciles them
+        // against the latest desired tier.
+        this.textureQueue = pruneTextureDispatchQueue(
+            this.textureQueue,
+            residency.states,
+            { includeOutside: this.isMiniBake },
+        );
+
         for (const state of residency.states.values()) {
             if (state.assets.size > 0) {
                 // Pitch/floor changes move the rendered page AABB. Keep spatial
@@ -2221,6 +2233,11 @@ class PistonViewer {
                     state.key,
                     this._textureLedgerLocation(state.page),
                 );
+            }
+            if (!textureStateHasDemand(state, { includeOutside: this.isMiniBake })) {
+                this.cacheManager.updatePriority(state.key, 0);
+                this._reconcileTextureState(state);
+                continue;
             }
             this._scheduleTextureQuality(
                 state.page,

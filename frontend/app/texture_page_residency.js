@@ -18,23 +18,59 @@ function tierIsTerminal(state, tier) {
     return Boolean(state?.assets?.has(tier) || state?.failed?.has(tier));
 }
 
-// The postage tier is the coverage floor: on a cold start every page reaches
-// either resident or terminal-failure state before an upgrade consumes a
-// texture-worker slot.  Keeping this decision pure makes the network dispatch
-// order deterministic and independently testable.
-export function lowTextureCoveragePending(states) {
+// The postage tier is the coverage floor: every page in the active demand
+// region reaches either resident or terminal-failure state before an upgrade
+// consumes a texture-worker slot. Mini fixtures may opt into whole-corpus
+// coverage. Keeping this decision pure makes the dispatch order deterministic
+// and independently testable.
+export function textureStateHasDemand(state, { includeOutside = false } = {}) {
+    return Boolean(state && (includeOutside || state.classification !== 'outside'));
+}
+
+export function lowTextureCoveragePending(states, { includeOutside = true } = {}) {
     const values = states instanceof Map ? states.values() : (states || []);
     for (const state of values) {
+        if (!textureStateHasDemand(state, { includeOutside })) continue;
         if (!tierIsTerminal(state, PAGE_TEXTURE_TIER.LOW)) return true;
     }
     return false;
 }
 
+// Drop queued work that no longer belongs to the current visibility demand.
+// A worker request that has already started remains caller-owned and may
+// finish safely, but stale queued lows/upgrades must not consume future slots
+// or hold the active coverage barrier open after the camera moves.
+export function pruneTextureDispatchQueue(queue, states, {
+    includeOutside = false,
+} = {}) {
+    const retained = [];
+    for (const task of queue || []) {
+        const state = states?.get?.(task?.key) || null;
+        const demanded = textureStateHasDemand(state, { includeOutside });
+        const desiredRank = PAGE_TEXTURE_RANK[state?.desiredTier ?? PAGE_TEXTURE_TIER.LOW];
+        const taskRank = PAGE_TEXTURE_RANK[task?.tier];
+        const tierDemanded = includeOutside || (
+            Number.isFinite(taskRank)
+            && Number.isFinite(desiredRank)
+            && taskRank <= desiredRank
+        );
+        if (demanded && tierDemanded) {
+            retained.push(task);
+        } else if (state && task?.tier) {
+            state.queued?.delete?.(task.tier);
+        }
+    }
+    return retained;
+}
+
 export function selectTextureDispatchTaskIndex(queue, states, {
     isMoving = false,
     lowCoverageFirst = false,
+    lowCoverageIncludesOutside = true,
 } = {}) {
-    const lowBarrier = lowCoverageFirst && lowTextureCoveragePending(states);
+    const lowBarrier = lowCoverageFirst && lowTextureCoveragePending(states, {
+        includeOutside: lowCoverageIncludesOutside,
+    });
     let selectedIndex = -1;
     let selectedPriority = -Infinity;
     for (let index = 0; index < (queue || []).length; index++) {
