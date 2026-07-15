@@ -35,7 +35,7 @@ class TextureTattooTests(unittest.TestCase):
 
         clean = waffle.texture_page_cache_version(False)
         diagnostic = waffle.texture_page_cache_version(True)
-        self.assertEqual(clean, waffle.TEXTURE_PAGE_VERSION)
+        self.assertEqual(clean, f"{waffle.TEXTURE_PAGE_VERSION}+codec-production")
         self.assertNotEqual(clean, diagnostic)
         self.assertIn("tattoo", diagnostic)
 

@@ -204,8 +204,13 @@ class TexturePageGridTests(unittest.TestCase):
             waffle.write_texture_recipe_marker(marker, "4.0.2+tattoo-2")
             Path(paths["medium"]).unlink()
             self.assertFalse(waffle.texture_page_is_current(page, "4.0.2+tattoo-2", temp_dir))
-        self.assertEqual(waffle.texture_page_cache_version(False), "4.0.2")
-        self.assertEqual(waffle.texture_page_cache_version(True), "4.0.2+tattoo-2")
+        self.assertEqual(
+            waffle.texture_page_cache_version(False), "4.0.2+codec-production"
+        )
+        self.assertEqual(
+            waffle.texture_page_cache_version(True),
+            "4.0.2+codec-production+tattoo-2",
+        )
 
     def test_page_coverage_validator_checks_only_samples_owned_by_page(self):
         page = grid.page_for_point(0.0, 0.0)

@@ -139,10 +139,12 @@ const LIGHTING_DEFAULTS = {
 // Worker-reported formatKey -> THREE compressed-texture format constant.
 // Only formats the tile_worker.js Basis v2 transcoder can actually emit are
 // listed here (see selectTarget() in tile_worker.js) — source KTX2s are
-// always XUASTC LDR 6x6 encoded with -no_alpha, so no RGBA/alpha variants
+// always profile-selected XUASTC LDR encoded with -no_alpha, so no RGBA/alpha variants
 // (BC3, ETC2 RGBA, PVRTC RGBA) are ever produced.
 const KTX2_FORMAT_MAP = {
+    'astc-4x4': THREE.RGBA_ASTC_4x4_Format,
     'astc-6x6': THREE.RGBA_ASTC_6x6_Format,
+    'astc-8x6': THREE.RGBA_ASTC_8x6_Format,
     'bc7': THREE.RGBA_BPTC_Format,
     'bc1': THREE.RGB_S3TC_DXT1_Format,
     'etc1': THREE.RGB_ETC1_Format,
@@ -530,7 +532,7 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=pageonly1');
+            const w = new Worker('./tile_worker.js?v=codecprofiles1');
             w.onmessage = (e) => this.handleWorkerMessage(e);
             // Worker does not reply to INIT — fire and forget.
             // NB: must use the same {type, data} envelope as every other worker
@@ -916,9 +918,26 @@ class PistonViewer {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
             const textureContract = this.manifest.texture_pages;
+            const supportedTextureCodecs = new Set([
+                'xuastc-ldr-4x4',
+                'xuastc-ldr-6x6',
+                'xuastc-ldr-8x6',
+            ]);
             if (!textureContract || textureContract.container !== 'ktx2' ||
-                textureContract.codec !== 'xuastc-ldr-6x6') {
+                !supportedTextureCodecs.has(textureContract.codec)) {
                 throw new Error('Manifest needs the global XUASTC KTX2 texture-page contract');
+            }
+            const profileTiers = textureContract.encoding_profile?.tiers || {};
+            if (textureContract.encoding_profile) {
+                for (const tierName of ['low', 'medium', 'high']) {
+                    if (profileTiers[tierName]?.codec !== textureContract.codec) {
+                        throw new Error(`Manifest texture encoding profile is missing ${tierName} settings`);
+                    }
+                }
+            } else if (textureContract.codec !== 'xuastc-ldr-6x6') {
+                throw new Error('Only the migration-era 6x6 manifest may omit encoding-profile settings');
+            } else {
+                console.warn('[HEXAGONS] Legacy 6x6 texture manifest; rebake to record an encoding profile.');
             }
             const expectedTextureSizes = { low: 128, medium: 256, high: 4096 };
             const manifestTierSizes = Object.fromEntries(

@@ -8,6 +8,11 @@ set -euo pipefail
 # the 4096px high XUASTC encode, while completed 1024m pages are skipped.
 # To rebuild only imagery from existing GSP binaries:
 #   ./hex_backend/run_lil_bake.sh --texture-pages-only
+#
+# The production profiles use the sweep's effort=4. Local mini-bakes preserve
+# the measured rapid-iteration path at effort=1: on the reference M1, a 4096px
+# encode was ~8s instead of ~45s, with <2% size difference in the earlier q75
+# effort benchmark. Block size and q90 remain profile-controlled and unchanged.
 
 # Ensure we are in the project root
 cd "$(dirname "$0")/.."
@@ -21,7 +26,7 @@ echo "--------------------------------------------------"
 
 # Run inside the pinned project environment. pipefail prevents a failed bake
 # from being hidden by tee and falsely reported as complete.
-pixi run python -u hex_backend/waffle_iron.py "$@" 2>&1 | tee "lil_bake_$(date +%Y%m%d_%H%M%S).log"
+pixi run python -u hex_backend/waffle_iron.py --fast-texture-encode "$@" 2>&1 | tee "lil_bake_$(date +%Y%m%d_%H%M%S).log"
 
 echo "--------------------------------------------------"
 echo "✅ Mini-Bake Complete."

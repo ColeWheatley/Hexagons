@@ -204,8 +204,10 @@ class GSP3BoundsTests(unittest.TestCase):
             output = temp / "manifest.json"
             metadata = temp / "metadata.json"
             metadata.write_text(
-                '{"baker_version":"6.0.1","texture_page_version":"4.0.2",'
-                '"texture_page_tattoos":false}'
+                '{"baker_version":"6.0.1",'
+                '"texture_page_version":"4.0.2+codec-balanced",'
+                '"texture_encoding_profile":"balanced",'
+                '"texture_encoding_effort":4,"texture_page_tattoos":false}'
             )
 
             for magic, version, yq, yr in (
@@ -272,7 +274,14 @@ class GSP3BoundsTests(unittest.TestCase):
             )
             self.assertNotIn("textures", manifest)
             self.assertNotIn("tex_world_side_m", manifest)
-            self.assertEqual(manifest["texture_pages"]["recipe_version"], "4.0.2")
+            self.assertEqual(
+                manifest["texture_pages"]["recipe_version"],
+                "4.0.2+codec-balanced",
+            )
+            self.assertEqual(manifest["texture_pages"]["codec"], "xuastc-ldr-6x6")
+            self.assertEqual(
+                manifest["texture_pages"]["encoding_profile"]["name"], "balanced"
+            )
             self.assertEqual(manifest["texture_pages"]["grid"]["crs"], "EPSG:31254")
             self.assertEqual(manifest["texture_pages"]["grid"]["page_size_m"], 1024.0)
             for page in manifest["texture_pages"]["pages"]:

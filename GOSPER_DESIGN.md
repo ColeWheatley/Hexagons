@@ -140,7 +140,8 @@ address by UV. Only the container center/size changed: a 980 m square
 centered on the island (covers every rendered cap at every level, computed
 exactly from the offset tables + cap circumradii). The explicit tiers are
 `low` postage 128 px, `medium` 256 px, and `high` 4096 px. Every tier is
-XUASTC LDR 6x6 KTX2 with a complete mip chain; high fits the WebGL2 4096
+profile-selected XUASTC LDR KTX2 with a complete mip chain. Production uses
+8x6 q90; balanced and close-inspection use 6x6 q90 and 4x4 q90. High fits the WebGL2 4096
 minimum maximum texture size without a parallel fallback asset. The content/padding split and
 its uUvScale/uUvOffset machinery are gone — `uv = local_xz/980 + 0.5`.
 There is no WebP/image fallback path. Mini-bakes default to sparse,

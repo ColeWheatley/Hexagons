@@ -65,6 +65,25 @@ python3 hex_backend/waffle_iron.py --force
 python3 hex_backend/waffle_iron.py --full
 ```
 
+### Aerial texture encoding profiles
+
+Every low/medium/high KTX2 tier uses an explicit, cache-keyed profile. The
+production default favors GPU residency; select a different sweep result with
+`--texture-profile`:
+
+| CLI profile | Low / medium / high encoding | Intended use |
+|---|---|---|
+| `production` (default) | XUASTC 8x6, quality 90, effort 4 | Best production residency/quality tradeoff |
+| `balanced` | XUASTC 6x6, quality 90, effort 4 | Higher fidelity with moderate residency |
+| `close-inspection` | XUASTC 4x4, quality 90, effort 4 | Maximum fidelity when memory is secondary |
+
+These settings come from the [July 2026 aerial codec sweep](docs/reports/aerial-codec-sweep-2026-07-15.md).
+The local `run_lil_bake.sh` and `pixi run bake-mini` paths explicitly add
+`--fast-texture-encode`, which keeps the selected block size and quality but
+uses effort 1 in a separate cache. The reference M1 measurement was about 8s
+instead of 45s for one 4096px encode; the earlier q75 effort comparison changed
+size by less than 2%. Full/production bakes retain the sweep-verified effort 4.
+
 **Performance** (MacBook M1, 16 GB shared RAM): ~4.7s/sector. A 12×12 bake (144 sectors) takes ~11 minutes.
 
 ## Running the Viewer

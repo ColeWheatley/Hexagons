@@ -22,14 +22,22 @@ const CAP_OVERSCAN = 1.15;
 // =============================================================================
 
 // Only the Basis transcoder target formats this pipeline can ever select.
-// The encoder always emits XUASTC LDR 6x6 with -no_alpha, so only the
+// Every named encoder profile emits XUASTC LDR with -no_alpha, so only the
 // no-alpha branches of the original loader's selectTarget() apply.
 const BASIS_FORMAT = {
     cTFETC1: 0,
     cTFBC1: 2,
     cTFBC7: 6,
     cTFPVRTC1_4_RGB: 8,
+    cTFASTC_4x4: 10,
     cTFASTC_LDR_6x6_RGBA: 31,
+    cTFASTC_LDR_8x6_RGBA: 33,
+};
+
+const ASTC_BY_BLOCK = {
+    '4x4': { basis: BASIS_FORMAT.cTFASTC_4x4, formatKey: 'astc-4x4' },
+    '6x6': { basis: BASIS_FORMAT.cTFASTC_LDR_6x6_RGBA, formatKey: 'astc-6x6' },
+    '8x6': { basis: BASIS_FORMAT.cTFASTC_LDR_8x6_RGBA, formatKey: 'astc-8x6' },
 };
 
 const VENDOR_BASE = new URL('./vendor/basisu_v2/', self.location.href).href;
@@ -52,13 +60,15 @@ function loadBasisModule() {
 
 // Select a GPU transcode target using the capability flags reported by the
 // main thread's renderer.extensions handshake (worker has no renderer/DOM).
-function selectTarget(support) {
+function selectTarget(support, ktx2File) {
     if (!support) return null;
     if (support.astc) {
-        // Our encoder always emits XUASTC LDR 6x6 — no other source block size
-        // is produced by this pipeline, so no need to branch on the source's
-        // reported block dimensions.
-        return { basis: BASIS_FORMAT.cTFASTC_LDR_6x6_RGBA, formatKey: 'astc-6x6' };
+        const block = `${ktx2File.getBlockWidth()}x${ktx2File.getBlockHeight()}`;
+        const target = ASTC_BY_BLOCK[block];
+        if (!target) {
+            throw new Error(`Unsupported production XUASTC ASTC block size: ${block}`);
+        }
+        return target;
     }
     if (support.bptc) {
         return { basis: BASIS_FORMAT.cTFBC7, formatKey: 'bc7' };
@@ -78,15 +88,17 @@ function selectTarget(support) {
 
 async function transcodeKTX2(arrayBuffer) {
     const module = await loadBasisModule();
-    const target = selectTarget(workerSupport);
-    if (!target) {
-        throw new Error('No supported GPU compressed texture format available.');
-    }
-
     const ktx2File = new module.KTX2File(new Uint8Array(arrayBuffer));
     try {
         if (!ktx2File.isValid()) {
             throw new Error('Invalid or unsupported KTX2 file for Basis v2 transcoder.');
+        }
+        if (!ktx2File.isXUASTC_LDR()) {
+            throw new Error('Texture page is not an XUASTC LDR payload.');
+        }
+        const target = selectTarget(workerSupport, ktx2File);
+        if (!target) {
+            throw new Error('No supported GPU compressed texture format available.');
         }
         if (!ktx2File.startTranscoding()) {
             throw new Error('Basis v2 startTranscoding failed.');

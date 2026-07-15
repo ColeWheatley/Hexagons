@@ -21,7 +21,7 @@ ipykernel = "*"
 
 [tasks]
 bake      = "python hex_backend/waffle_iron.py"
-bake-mini = "python hex_backend/waffle_iron.py --grid 6"
+bake-mini = "python hex_backend/waffle_iron.py --grid 6 --fast-texture-encode"
 texture-stack = "python ktx2_nonrect_texture_test/scripts/check_texture_stack.py"
 texture-build-basisu-v2 = "bash ktx2_nonrect_texture_test/scripts/build_basisu_v2.sh"
 texture-toy-assets = "python ktx2_nonrect_texture_test/scripts/generate_assets.py"

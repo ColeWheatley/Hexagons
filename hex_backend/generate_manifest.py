@@ -8,6 +8,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 from texture_contract import (
+    DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_PAGE_RECIPE_VERSION,
     manifest_texture_page_contract,
 )
@@ -178,6 +179,10 @@ def generate_manifest():
 
     bake_metadata = _read_bake_metadata()
     texture_page_recipe = bake_metadata.get("texture_page_version", TEXTURE_PAGE_RECIPE_VERSION)
+    texture_encoding_profile = bake_metadata.get(
+        "texture_encoding_profile", DEFAULT_TEXTURE_ENCODING_PROFILE
+    )
+    texture_encoding_effort = bake_metadata.get("texture_encoding_effort")
     manifest = {
         "type": "gosper_l5",
         "tile_level": coord_util.GOSPER_TILE_LEVEL,
@@ -211,6 +216,8 @@ def generate_manifest():
         "texture_pages": manifest_texture_page_contract(
             texture_pages,
             recipe_version=texture_page_recipe,
+            encoding_profile=texture_encoding_profile,
+            encoding_effort=texture_encoding_effort,
             diagnostic_tattoos=bake_metadata.get("texture_page_tattoos", False),
             page_vertical_bounds=page_vertical_bounds,
             page_padding_stats=page_padding_stats,

@@ -22,7 +22,7 @@
 #
 # OUTPUT FORMATS (also NOT in git):
 #   .bin:   GSP3 header + 5 heap-ordered Gosper depth blocks
-#   .ktx2:  Aerial texture, XUASTC LDR 6x6 supercompressed (basisu v2.x, transcoded
+#   .ktx2:  Aerial texture, profile-selected XUASTC LDR (basisu v2.x, transcoded
 #           client-side to ASTC/BC7/BC1/ETC1/PVRTC). Globally anchored 1024m
 #           EPSG:31254 pages, shared across geometry, emitted as low/medium/high
 #           KTX2 tiers at 128/256/4096px with full mips.
@@ -59,9 +59,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 import generate_manifest
 from texture_contract import (
+    DEFAULT_TEXTURE_ENCODING_PROFILE,
+    TEXTURE_ENCODING_PROFILES,
     TEXTURE_PAGE_RECIPE_VERSION,
     TEXTURE_TIERS,
     TEXTURE_TIER_SIZES,
+    texture_encoding_for_tier,
+    texture_encoding_profile,
 )
 from gosper_texture_page_adapter import (
     exact_pages_for_tiles,
@@ -89,18 +93,6 @@ S3_PREFIX = "powfinder/app"
 # High includes a complete mip chain and fits the WebGL2 4096 minimum maximum
 # texture size without a duplicate fallback asset.
 TEXTURE_CANVAS_PX = TEXTURE_TIER_SIZES["high"]
-XUASTC_QUALITY = 75  # basisu -quality (0-100); tradeoff vs bitrate — never reduce this for speed
-# basisu -effort (0-10); tradeoff vs encode speed. Benchmarked at 4096x4096
-# single-file encodes on the reference M1: effort=4 -> ~45s, effort=2 -> ~23s,
-# effort=1 -> ~8s (file size differs by <2% across all three at fixed quality=75 —
-# effort mostly buys robustness against harder blocks, not raw size). effort=4
-# alone blows the ~30s/sector bake budget; effort=1 keeps a full sector (canvas
-# composite + texture encodes + .bin bake) at ~11s, matching run_lil_bake.sh's
-# "rapid iteration" intent. Lowered per the "reduce effort, never quality/block
-# size" rule — see run_basisu_encode() for a second, unrelated speed fix
-# (dropping -parallel, which disables intra-image multithreading for
-# single-file invocations and was independently costing ~3.4x).
-XUASTC_EFFORT = 1
 DEBUG_MODE = False
 
 # Stubai Center (For Mini-Bake) — precise coordinates for sector (73, 252)
@@ -189,11 +181,21 @@ def texture_tattoos_enabled(full_bake, disable_requested=False):
     return not full_bake and not disable_requested
 
 
-def texture_page_cache_version(tattoos_enabled):
-    """Keep clean and diagnostic global-page assets in distinct caches."""
+def texture_page_cache_version(
+    tattoos_enabled,
+    encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
+    encoding_effort=None,
+):
+    """Keep every encoding profile and diagnostic mode in a distinct cache."""
+    texture_encoding_profile(encoding_profile)
+    version = f"{TEXTURE_PAGE_VERSION}+codec-{encoding_profile}"
+    if encoding_effort is not None:
+        if not 0 <= int(encoding_effort) <= 10:
+            raise ValueError("basisu effort override must be between 0 and 10")
+        version = f"{version}+effort-{int(encoding_effort)}"
     if tattoos_enabled:
-        return f"{TEXTURE_PAGE_VERSION}+tattoo-{TEXTURE_TATTOO_VERSION}"
-    return TEXTURE_PAGE_VERSION
+        return f"{version}+tattoo-{TEXTURE_TATTOO_VERSION}"
+    return version
 
 
 def texture_page_recipe_marker_path(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
@@ -361,7 +363,7 @@ def prepare_texture_variants(canvas, bounds, tattoos_enabled=False, tier_sizes=N
 
 def resolve_basisu_binary():
     """
-    Resolve the basisu v2 binary used to encode XUASTC LDR 6x6 KTX2 textures.
+    Resolve the basisu v2 binary used to encode XUASTC LDR KTX2 textures.
     Order: $BASISU env var -> ktx2_nonrect_texture_test/.basisu_v2/source/bin/basisu
     (relative to repo root) -> raise. The system basisu (v1.60) does NOT support
     XUASTC — there is no fallback codec.
@@ -380,24 +382,36 @@ def resolve_basisu_binary():
     )
 
 
-def verify_basisu_xuastc(basisu_bin):
-    """Fail loudly at bake start if the resolved basisu binary can't encode XUASTC LDR 6x6."""
+def verify_basisu_xuastc(basisu_bin, encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE):
+    """Fail at bake start unless basisu supports every block size in the profile."""
     try:
         result = subprocess.run([basisu_bin, "-help"], capture_output=True, text=True, check=False)
         help_text = f"{result.stdout}\n{result.stderr}"
     except FileNotFoundError:
         raise RuntimeError(f"basisu binary not found or not executable: {basisu_bin}")
-    if "-ldr_6x6i" not in help_text:
+    required_flags = {
+        settings["basisu_flag"]
+        for settings in texture_encoding_profile(encoding_profile)["tiers"].values()
+    }
+    missing_flags = sorted(flag for flag in required_flags if flag not in help_text)
+    if missing_flags:
         raise RuntimeError(
-            f"basisu binary at {basisu_bin} does not expose -ldr_6x6i (XUASTC LDR 6x6). "
+            f"basisu binary at {basisu_bin} does not expose {', '.join(missing_flags)} "
+            f"required by texture profile {encoding_profile!r}. "
             "This pipeline requires Basis Universal v2.x — build one with "
             "`pixi run texture-build-basisu-v2`. There is no fallback codec."
         )
 
 
-def run_basisu_encode(input_png, output_ktx2):
+def run_basisu_encode(
+    input_png,
+    output_ktx2,
+    encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
+    tier_name="high",
+    encoding_effort=None,
+):
     """
-    Encode a PNG to XUASTC LDR 6x6 KTX2. Raises loudly on failure — no fallback codec.
+    Encode a PNG with one named XUASTC profile/tier. No fallback codec exists.
 
     Deliberately omits -parallel: that flag means "compress multiple textures
     simultaneously, one thread per texture" (for multi -file invocations). We
@@ -407,11 +421,14 @@ def run_basisu_encode(input_png, output_ktx2):
     ~8s to ~27s on the reference M1. -max_threads still caps the (default,
     already-multithreaded) single-image compressor's thread count.
     """
+    encoding = texture_encoding_for_tier(
+        encoding_profile, tier_name, effort_override=encoding_effort
+    )
     cmd = [
         BASISU_BINARY,
-        "-ldr_6x6i",
-        "-quality", str(XUASTC_QUALITY),
-        "-effort", str(XUASTC_EFFORT),
+        encoding["basisu_flag"],
+        "-quality", str(encoding["quality"]),
+        "-effort", str(encoding["effort"]),
         "-ktx2",
         "-mipmap",
         "-mip_srgb",
@@ -897,7 +914,15 @@ def composite_aerial_texture(bounds, valid_tifs):
     return canvas, coverage, source_domain
 
 
-def encode_texture_tiers(canvas, bounds, asset_stem, output_dir, texture_tattoos):
+def encode_texture_tiers(
+    canvas,
+    bounds,
+    asset_stem,
+    output_dir,
+    texture_tattoos,
+    encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
+    encoding_effort=None,
+):
     """Encode/publish all tiers as one restart-safe transaction."""
     tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
     res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
@@ -925,7 +950,13 @@ def encode_texture_tiers(canvas, bounds, asset_stem, output_dir, texture_tattoos
         gc.collect()
 
         for tier in tier_names:
-            run_basisu_encode(input_paths[tier], encoded_paths[tier])
+            run_basisu_encode(
+                input_paths[tier],
+                encoded_paths[tier],
+                encoding_profile=encoding_profile,
+                tier_name=tier,
+                encoding_effort=encoding_effort,
+            )
         for tier in tier_names:
             os.replace(encoded_paths[tier], final_paths[tier])
 
@@ -1365,6 +1396,8 @@ def bake_texture_page(
     output_dir=TEXTURE_PAGE_OUTPUT_DIR,
     texture_tattoos=False,
     texture_recipe_version=None,
+    encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
+    encoding_effort=None,
     internal_holes=None,
 ):
     """Bake one shared absolute imagery page and atomically publish its tiers."""
@@ -1386,9 +1419,17 @@ def bake_texture_page(
     del coverage
 
     final_paths = encode_texture_tiers(
-        canvas, page.bounds, page.asset_stem, output_dir, texture_tattoos
+        canvas,
+        page.bounds,
+        page.asset_stem,
+        output_dir,
+        texture_tattoos,
+        encoding_profile=encoding_profile,
+        encoding_effort=encoding_effort,
     )
-    recipe_version = texture_recipe_version or texture_page_cache_version(texture_tattoos)
+    recipe_version = texture_recipe_version or texture_page_cache_version(
+        texture_tattoos, encoding_profile, encoding_effort
+    )
     write_texture_page_padding_stats(
         texture_page_padding_stats_path(page, output_dir), padding_stats
     )
@@ -1428,13 +1469,17 @@ def bake_global_texture_pages(
     force=False,
     texture_tattoos=False,
     output_dir=TEXTURE_PAGE_OUTPUT_DIR,
+    encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
+    encoding_effort=None,
 ):
     """Incrementally bake the global page union for every current GSP binary."""
     tiles = generate_manifest.scan_binary_tiles()
     geom = coord_util.gosper_tile_geometry()
     render_half_x_m = float(geom["render_half_x_m"])
     render_half_y_m = float(geom["render_half_y_m"])
-    recipe_version = texture_page_cache_version(texture_tattoos)
+    recipe_version = texture_page_cache_version(
+        texture_tattoos, encoding_profile, encoding_effort
+    )
 
     # Read validity once per binary. Page demand remains shared/absolute; this
     # adapter is used solely to reject black source gaps under renderable caps.
@@ -1505,6 +1550,8 @@ def bake_global_texture_pages(
             output_dir=output_dir,
             texture_tattoos=texture_tattoos,
             texture_recipe_version=recipe_version,
+            encoding_profile=encoding_profile,
+            encoding_effort=encoding_effort,
             internal_holes=internal_holes,
         )
         if padding_stats["padded_pixels"]:
@@ -2029,12 +2076,34 @@ def main():
         action="store_true",
         help="Disable the mini-bake's default green-low/blue-medium/pink-high registration marks",
     )
+    parser.add_argument(
+        "--texture-profile",
+        choices=tuple(TEXTURE_ENCODING_PROFILES),
+        default=DEFAULT_TEXTURE_ENCODING_PROFILE,
+        help=(
+            "XUASTC encoding profile for every low/medium/high page tier "
+            f"(default: {DEFAULT_TEXTURE_ENCODING_PROFILE})"
+        ),
+    )
+    parser.add_argument(
+        "--fast-texture-encode",
+        action="store_true",
+        help=(
+            "Use basisu effort 1 instead of the sweep-verified effort 4; intended for "
+            "local iteration and kept in a separate texture cache"
+        ),
+    )
     args = parser.parse_args()
 
     # Validate grid size
     grid_size = max(1, min(16, args.grid))
+    encoding_profile_name = args.texture_profile
+    encoding_profile = texture_encoding_profile(encoding_profile_name)
+    encoding_effort = 1 if args.fast_texture_encode else None
     texture_tattoos = texture_tattoos_enabled(args.full, args.no_texture_tattoos)
-    effective_texture_page_version = texture_page_cache_version(texture_tattoos)
+    effective_texture_page_version = texture_page_cache_version(
+        texture_tattoos, encoding_profile_name, encoding_effort
+    )
 
     # Load existing metadata for skip logic
     metadata = {}
@@ -2065,8 +2134,20 @@ def main():
     # Resolve + verify the XUASTC encoder up front — fail loudly before doing any
     # other work. There is no fallback codec.
     BASISU_BINARY = resolve_basisu_binary()
-    verify_basisu_xuastc(BASISU_BINARY)
+    verify_basisu_xuastc(BASISU_BINARY, encoding_profile_name)
     print(f"🎨 basisu (XUASTC-capable): {BASISU_BINARY}")
+    tier_summary = ", ".join(
+        f"{tier}={settings['block_width']}x{settings['block_height']} "
+        f"q{settings['quality']} e{settings['effort']}"
+        for tier in encoding_profile["tiers"]
+        for settings in [texture_encoding_for_tier(
+            encoding_profile_name, tier, effort_override=encoding_effort
+        )]
+    )
+    print(
+        f"🎛️  Texture profile: {encoding_profile_name} "
+        f"({encoding_profile['label']}; {tier_summary})"
+    )
 
     # Disk Space Check
     import shutil as disk_check
@@ -2107,9 +2188,16 @@ def main():
         page_results = bake_global_texture_pages(
             force=args.force,
             texture_tattoos=texture_tattoos,
+            encoding_profile=encoding_profile_name,
+            encoding_effort=encoding_effort,
         )
+        effective_effort = texture_encoding_for_tier(
+            encoding_profile_name, "high", effort_override=encoding_effort
+        )["effort"]
         metadata.update({
             "texture_page_version": effective_texture_page_version,
+            "texture_encoding_profile": encoding_profile_name,
+            "texture_encoding_effort": effective_effort,
             "texture_page_tattoos": texture_tattoos,
             "texture_page_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
             "texture_page_size_m": PAGE_SIZE_M,
@@ -2252,6 +2340,8 @@ def main():
     page_results = bake_global_texture_pages(
         force=args.force,
         texture_tattoos=texture_tattoos,
+        encoding_profile=encoding_profile_name,
+        encoding_effort=encoding_effort,
     )
 
     # Update metadata
@@ -2259,6 +2349,10 @@ def main():
         METADATA_PATH,
         {"baker_version": BAKER_VERSION,
                    "texture_page_version": effective_texture_page_version,
+                   "texture_encoding_profile": encoding_profile_name,
+                   "texture_encoding_effort": texture_encoding_for_tier(
+                       encoding_profile_name, "high", effort_override=encoding_effort
+                   )["effort"],
                    "texture_page_tattoos": texture_tattoos,
                    "texture_page_tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
                    "texture_page_size_m": PAGE_SIZE_M,
