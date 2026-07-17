@@ -360,6 +360,7 @@ class PistonViewer {
         this.lodPaused = false;
 
         this.initDebugConsole();
+        this.installGlobalBackstop();
         this.initMinimizeButton();
         this.initCollapsibleSections();
         this.initLODSliders();
@@ -615,6 +616,27 @@ class PistonViewer {
 
     initDebugConsole() {
         this.log("PistonViewer Initialized.", "success");
+    }
+
+    installGlobalBackstop() {
+        if (PistonViewer.globalBackstopInstalled) return;
+        PistonViewer.globalBackstopInstalled = true;
+        window.addEventListener('error', event => {
+            const viewer = window.pistonViewer || this;
+            viewer._recordGlobalBackstop('error', event.error || event.message);
+        });
+        window.addEventListener('unhandledrejection', event => {
+            const viewer = window.pistonViewer || this;
+            viewer._recordGlobalBackstop('unhandledrejection', event.reason);
+        });
+    }
+
+    _recordGlobalBackstop(kind, payload) {
+        const message = payload?.message || String(payload || 'unknown error');
+        if (kind === 'unhandledrejection') this.failureStats.unhandledRejections++;
+        else this.failureStats.globalErrors++;
+        this.log(`Unhandled ${kind}: ${message}`, 'error');
+        console.error(`[GLOBAL_${kind.toUpperCase()}]`, payload);
     }
 
     _setLoaderText(main, sub, detail = '') {
