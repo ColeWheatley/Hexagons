@@ -446,6 +446,45 @@ input[type="range"]::-moz-range-thumb {
     opacity: 0;
 }
 
+#loader.fatal .skier-container {
+    animation: none;
+    transform: none;
+}
+
+#loader.fatal .main-message,
+#loader.fatal .fetching-message {
+    animation: none;
+    opacity: 1;
+}
+
+#loader.fatal .fetching-message {
+    color: #ff9c9c;
+}
+
+.fatal-detail {
+    max-width: 560px;
+    margin: 14px auto 0;
+    color: #b8c8d8;
+    font: 0.9rem/1.4 monospace;
+}
+
+.fatal-retry-btn {
+    margin-top: 24px;
+    border: 1px solid rgba(116, 185, 255, 0.7);
+    border-radius: 4px;
+    padding: 10px 22px;
+    background: rgba(116, 185, 255, 0.12);
+    color: #fff;
+    font: 700 0.9rem 'Outfit', sans-serif;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.fatal-retry-btn:hover {
+    background: rgba(116, 185, 255, 0.28);
+}
+
 @keyframes flash {
 
     0%,
