@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(here, '../../frontend/app/index.html'), 'utf8');
 
-const start = html.indexOf('<div class="legend glass-panel">');
+const start = html.indexOf('<div class="legend glass-panel"');
 const end = html.indexOf('<div id="canvas-container">', start);
 assert.notEqual(start, -1, 'legend block must exist');
 assert.notEqual(end, -1, 'canvas container must follow legend block');
@@ -20,6 +20,7 @@ for (const token of divTokens) {
 }
 
 assert.equal(depth, 0, 'legend block must have balanced div tags');
+assert.match(legend, /aria-label="Slope legend"/);
 assert.equal((legend.match(/class="legend-item"/g) || []).length, 4);
 assert.ok(!legend.includes('< 10'), 'plain-text less-than sign must be escaped');
 
