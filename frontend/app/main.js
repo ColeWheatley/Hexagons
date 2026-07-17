@@ -71,6 +71,16 @@ import {
     WORKER_JOB_TIMEOUT_MS,
     WorkerWatchdogBookkeeper,
 } from './worker_watchdog.js';
+import {
+    applyRenderResolution,
+    bindSharedLodInstanceAttributes,
+    createGeometryWithSharedStaticBuffers,
+    createSharedLodInstanceAttributes,
+    disposeGeometryWithSharedStaticBuffers,
+    rendererOptionsForLocation,
+    staticBufferSharingStats,
+    watchDevicePixelRatio,
+} from './render_policy.js';
 import './gosper_core.js';
 
 const G = window.GosperCore;
@@ -189,9 +199,12 @@ class PistonViewer {
         this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 10, 50000);
         this.camera.position.set(0, 800, 0);
 
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer = new THREE.WebGLRenderer(rendererOptionsForLocation(window.location.search));
+        this.renderPixelRatio = applyRenderResolution(this.renderer, {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+        });
         this.container.appendChild(this.renderer.domElement);
         this.contextRecovery = {
             active: false,
@@ -277,14 +290,11 @@ class PistonViewer {
         // the ~415 m unit half-footprint plus overscan/rotation slack.
         this.lodTileMargin = 650;
 
-        window.addEventListener('resize', this.onResize.bind(this));
-
-        // Shared Geometry — ONE unit cap plus partial/full skirt variants;
-        // every gosper level renders
-        // the same cap with sqrt(7)^k scale + rotation baked into instance
-        // matrices by the worker (no per-level geometry variants).
-        const side = UNIT_HEX_WIDTH_METERS / Math.sqrt(3);
-        this.hexGeometry = this.createHexGeometry(side);
+        this.onResize = this.onResize.bind(this);
+        window.addEventListener('resize', this.onResize);
+        // Resize covers viewport changes; this query catches a macOS monitor
+        // transition even when CSS dimensions happen to stay unchanged.
+        this.stopDprWatcher = watchDevicePixelRatio(window, this.onResize);
 
         this.tiles = new Map(); // Key: "yq_yr" (island lattice) -> Tile Object
         this.manifest = null;
@@ -1402,7 +1412,11 @@ class PistonViewer {
     onResize() {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderPixelRatio = applyRenderResolution(this.renderer, {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+        });
         this.needsLODUpdate = true;
         this.needsRender = true;
     }
@@ -1684,7 +1698,7 @@ class PistonViewer {
     buildHorizon() {
         const tiles = this.manifest.tiles;
         if (!tiles.length) return;
-        const geo = this.capGeometry.clone();
+        const geo = createGeometryWithSharedStaticBuffers(THREE, this.capGeometry);
 
         const count = tiles.length;
         const heights = new Float32Array(count);
@@ -1790,7 +1804,7 @@ class PistonViewer {
         this.movingHorizonIndex = new Map();
 
         const movingCount = count * childrenPerTile;
-        const movingGeo = this.capGeometry.clone();
+        const movingGeo = createGeometryWithSharedStaticBuffers(THREE, this.capGeometry);
         const movingHeights = new Float32Array(movingCount);
         const movingShades = new Float32Array(movingCount);
         const movingMesh = new THREE.InstancedMesh(movingGeo, material, movingCount);
@@ -1895,12 +1909,12 @@ class PistonViewer {
 
         const num = lodData.matrix.length / 16;
 
-        // Geometry clones are per-mesh because instanced attributes live on
-        // the geometry. Scale + rotation come baked in the instance matrices
-        // (sqrt(7)^k / k*19.1066deg from the worker) — the clones stay unit.
-        const capG = this.capGeometry.clone();
+        // Per-mesh geometry containers carry instanced attributes, while the
+        // immutable cap/skirt BufferAttributes stay shared. Scale + rotation
+        // remain baked in worker matrices (sqrt(7)^k / k*19.1066deg).
+        const capG = createGeometryWithSharedStaticBuffers(THREE, this.capGeometry);
         const skirtSource = lodData.level >= 1 ? this.aggregateSkirtGeometry : this.unitSkirtGeometry;
-        const skirtG = includeSkirts ? skirtSource.clone() : null;
+        const skirtG = includeSkirts ? createGeometryWithSharedStaticBuffers(THREE, skirtSource) : null;
 
         const capMesh = new THREE.InstancedMesh(capG, material, num);
         const skirtMesh = skirtG ? new THREE.InstancedMesh(skirtG, material, num) : null;
@@ -1912,22 +1926,9 @@ class PistonViewer {
         capMesh.frustumCulled = false;
         if (skirtMesh) skirtMesh.frustumCulled = false;
 
-        // Assign Attributes from Worker
-        capMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
-        if (skirtMesh) skirtMesh.instanceMatrix = new THREE.InstancedBufferAttribute(lodData.matrix, 16);
-
         const meshes = [capMesh];
         if (skirtMesh) meshes.push(skirtMesh);
-
-        meshes.forEach(m => {
-            m.geometry.setAttribute('instanceNZ_1', new THREE.InstancedBufferAttribute(lodData.nz1, 4));
-            m.geometry.setAttribute('instanceNZ_2', new THREE.InstancedBufferAttribute(lodData.nz2, 4));
-            m.geometry.setAttribute('instanceSlopes', new THREE.InstancedBufferAttribute(lodData.slopes, 3));
-            m.geometry.setAttribute('instanceDeltas', new THREE.InstancedBufferAttribute(lodData.deltas, 3));
-            m.geometry.setAttribute('instanceNormal', new THREE.InstancedBufferAttribute(lodData.norms, 2));
-            m.geometry.setAttribute('aParentPos', new THREE.InstancedBufferAttribute(lodData.parentPos, 2));
-            m.geometry.setAttribute('aParentHeight', new THREE.InstancedBufferAttribute(lodData.parentHeight, 1));
-        });
+        bindSharedLodInstanceAttributes(meshes, createSharedLodInstanceAttributes(THREE, lodData));
 
         const group = new THREE.Group();
         group.add(capMesh);
@@ -1936,6 +1937,18 @@ class PistonViewer {
         group.userData.activeSkirts = skirtMesh ? lodData.activeSkirts : 0;
         group.frustumCulled = false;
         return group;
+    }
+
+    // Bench-readable count of static BufferAttribute identities currently
+    // submitted by the scene. Three caches GPU buffers by this identity, so
+    // `avoidedStaticAttributeUploads` is the duplicate static upload work
+    // removed compared with geometry.clone() per mesh.
+    getStaticBufferInstrumentation() {
+        const meshes = [];
+        this.scene.traverse((object) => {
+            if (object.isInstancedMesh) meshes.push(object);
+        });
+        return staticBufferSharingStats(meshes);
     }
 
     setupMaterialShader(material) {
@@ -3273,7 +3286,7 @@ class PistonViewer {
             const disposedMaterials = new Set();
             oldMesh.traverse(object => {
                 if (!object.isMesh) return;
-                object.geometry?.dispose();
+                disposeGeometryWithSharedStaticBuffers(object.geometry);
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
                 for (const material of materials) {
                     if (!material || disposedMaterials.has(material)) continue;
@@ -3301,7 +3314,7 @@ class PistonViewer {
             this.needsRender = true;
         } catch (error) {
             replacement.traverse(object => {
-                if (object.isMesh) object.geometry?.dispose();
+                if (object.isMesh) disposeGeometryWithSharedStaticBuffers(object.geometry);
             });
             for (const material of replacementMaterials) {
                 this.materialsToUpdate.delete(material);
@@ -3781,7 +3794,7 @@ class PistonViewer {
             tile.mesh.traverse(obj => {
                 if (obj.isMesh) {
                     if (obj.geometry) {
-                        obj.geometry.dispose();
+                        disposeGeometryWithSharedStaticBuffers(obj.geometry);
                     }
                     // Array-safe material disposal (Graft 2)
                     const materials = obj.material
