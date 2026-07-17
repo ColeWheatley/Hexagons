@@ -128,7 +128,11 @@ def validate_pair(report, path):
         row for row in warm_network_200
         if urlsplit(row.get("url") or "").path.endswith("/tile_manifest.json")
     ]
-    unexpected_network = [row for row in warm_network_200 if row not in manifest_network]
+    # The document itself is deliberately network-fetched after clearing the
+    # HTTP cache, so its latency provenance is observable. Everything else
+    # must be either the authoritative manifest or served by the SW cache.
+    document_network = [row for row in warm_network_200 if row.get("resourceType") == "Document"]
+    unexpected_network = [row for row in warm_network_200 if row not in manifest_network and row not in document_network]
     if not manifest_network:
         problems.append("warm navigation did not fetch the authoritative manifest from network")
     if unexpected_network:
