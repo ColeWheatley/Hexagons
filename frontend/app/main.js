@@ -86,6 +86,7 @@ import {
     staticBufferSharingStats,
     watchDevicePixelRatio,
 } from './render_policy.js';
+import { IdleRenderScheduler } from './idle_render_scheduler.js';
 import './gosper_core.js';
 
 const G = window.GosperCore;
@@ -442,7 +443,16 @@ class PistonViewer {
 
         this.initTouchMomentumTracking();
         this.initWorld();
-        this.animate();
+        this.frameScheduler = new IdleRenderScheduler({
+            requestAnimationFrame: requestAnimationFrame.bind(window),
+            cancelAnimationFrame: cancelAnimationFrame.bind(window),
+            setTimeout: window.setTimeout.bind(window),
+            clearTimeout: window.clearTimeout.bind(window),
+            document,
+            now: () => performance.now(),
+            frame: now => this.animate(now),
+        });
+        this.frameScheduler.start();
         window.pistonViewer = this;
     }
 
@@ -627,6 +637,7 @@ class PistonViewer {
         if (status === 'success') job.resolve(result);
         else job.reject(new Error(error));
         this._scheduleWorkerWatchdog();
+        this.frameScheduler?.wake('worker-complete');
     }
 
     postWorkerJob(type, data, transferables = []) {
@@ -1444,6 +1455,7 @@ class PistonViewer {
         });
         this.needsLODUpdate = true;
         this.needsRender = true;
+        this.frameScheduler?.wake('resize');
     }
 
     updateFogAndClip() {
@@ -3140,6 +3152,8 @@ class PistonViewer {
         const entered = this.cameraMotion.enterMotion(now, this.isMovingView);
         this.needsRender = true;
         this.needsLODUpdate = true;
+        this.frameScheduler?.wake('camera-input');
+        this.frameScheduler?.wakeAfter(310, 'motion-settle');
         if (!entered) return false;
 
         // This method runs inside the controls `change` event, before another
@@ -4240,8 +4254,7 @@ class PistonViewer {
         };
     }
 
-    animate() {
-        requestAnimationFrame(() => this.animate());
+    animate(nowFromScheduler = performance.now()) {
         this._frameCounter++;
 
         // --- BACKGROUND MAINTENANCE ---
@@ -4249,7 +4262,7 @@ class PistonViewer {
         track('processTextureResults', () => this.processTextureResults());
         track('processQueues', () => this.processQueues());
 
-        const now = performance.now();
+        const now = nowFromScheduler;
 
         // Disable damping when not actively interacting to prevent momentum in
         // settled mode. Wheel start/change/end may all have completed already;
@@ -4327,7 +4340,7 @@ class PistonViewer {
         const willRender = moved || this.needsRender;
         this.profiler?.frame(now, this.engineState, willRender);
         this.updateFps(now, willRender);
-        if (!willRender) return;
+        if (!willRender) return { active: this._schedulerHasWork() };
 
         // ===== BEGIN TIMED RENDER CYCLE =====
         const cycleStart = performance.now();
@@ -4450,6 +4463,16 @@ class PistonViewer {
         }
 
         this.needsRender = false;
+        return { active: this._schedulerHasWork() };
+    }
+
+    _schedulerHasWork() {
+        // Work is event-driven: worker messages, resize/input, and the one
+        // motion-settle deadline wake us.  Never keep rAF alive merely to
+        // inspect an already settled scene.
+        return this.isMovingView || !this.loaderHidden || this.needsRender
+            || this.needsLODUpdate || this.instantiateQueue.length > 0
+            || this.textureResultQueue.length > 0;
     }
 }
 
