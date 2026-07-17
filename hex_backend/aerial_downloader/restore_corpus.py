@@ -93,6 +93,7 @@ class RestoreState:
             "total_bytes": total_bytes,
             "verified_files": 0,
             "verified_bytes": 0,
+            "existing_files": 0,
             "seeded_files": 0,
             "downloaded_files": 0,
             "resumed_files": 0,
@@ -229,7 +230,7 @@ def restore_one(
 ) -> str:
     destination = destination_dir / asset.name
     if valid_asset(destination, asset):
-        return "verified"
+        return "existing"
     if destination.exists():
         destination.unlink()
     if seed_asset(asset, destination, seeds):

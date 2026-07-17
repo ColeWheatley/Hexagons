@@ -291,6 +291,35 @@ class PreflightTests(unittest.TestCase):
             self.assertTrue(restore_corpus.valid_asset(target, asset))
             self.assertFalse(any(path.name.endswith(".tmp") for path in destination.iterdir()))
 
+    def test_source_restore_resume_counts_existing_asset_once(self):
+        payload = b"already complete"
+        import hashlib
+
+        asset = restore_corpus.SourceAsset(
+            "dop_0000-00_2023.tif", len(payload), hashlib.sha256(payload).hexdigest()
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "destination"
+            destination.mkdir()
+            (destination / asset.name).write_bytes(payload)
+            outcome = restore_corpus.restore_one(
+                asset,
+                destination_dir=destination,
+                seeds=[],
+                base_url="https://unused.invalid",
+                retries=1,
+                timeout=1,
+            )
+            self.assertEqual(outcome, "existing")
+            state = restore_corpus.RestoreState(root / "report.json", 1, len(payload))
+            state.record(asset, outcome)
+            state.finish()
+            snapshot = state.snapshot()
+            self.assertEqual(snapshot["verified_files"], 1)
+            self.assertEqual(snapshot["existing_files"], 1)
+            self.assertTrue(snapshot["completed"])
+
 
 if __name__ == "__main__":
     unittest.main()
