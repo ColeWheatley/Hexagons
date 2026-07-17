@@ -84,16 +84,13 @@ export function countUnpaintedVisibleTiles(tiles, visibilityByKey) {
             if (unpainted) return;
             const bindings = material.userData?.texturePageBindings;
             if (!Array.isArray(bindings)) return;
-            let validEntries = 0;
             for (const binding of bindings) {
-                if (binding?.valid && binding?.texture) {
-                    validEntries++;
-                } else {
+                if (!binding?.page?.available) continue;
+                if (!binding?.valid || !binding?.texture) {
                     unpainted = true;
                     return;
                 }
             }
-            if (validEntries === 0) unpainted = true;
         });
         if (unpainted) count++;
     }
