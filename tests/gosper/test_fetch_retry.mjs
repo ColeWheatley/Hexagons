@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = await fs.readFile(path.join(ROOT, 'frontend/app/fetch_retry.js'), 'utf8');
-const context = vm.createContext({ setTimeout, Math, Error });
+const context = vm.createContext({ setTimeout, Math, Error, AbortController });
 const module = new vm.SourceTextModule(source, { context });
 await module.link(() => { throw new Error('fetch_retry must stay dependency-free'); });
 await module.evaluate();
@@ -70,6 +70,22 @@ assert.equal(secondCallAttempts, 3);
 assert.equal(backoffDelayMs(1, { jitterRatio: 0.25, random: () => 0 }), 750);
 assert.equal(backoffDelayMs(1, { jitterRatio: 0.25, random: () => 1 }), 1250);
 assert.equal(backoffDelayMs(3, { jitterRatio: 0, random: () => 0 }), 9000);
+
+const cancellation = new AbortController();
+let releaseSleep;
+const cancelledScheduler = new ResourceRetryScheduler({
+    random: () => 0.5,
+    sleep: () => new Promise(resolve => { releaseSleep = resolve; }),
+});
+const cancelledRun = cancelledScheduler.run('manifest', async () => {
+    throw new Error('offline');
+}, { signal: cancellation.signal });
+await Promise.resolve();
+cancellation.abort(new Error('new lifecycle epoch'));
+await assert.rejects(cancelledRun, /new lifecycle epoch/);
+releaseSleep?.();
+assert.equal(cancelledScheduler.snapshot('manifest').attempts, 1);
+assert.equal(cancelledScheduler.snapshot('manifest').exhausted, false);
 
 const scheduled = [];
 const resweep = new ResweepScheduler({ onSchedule: event => scheduled.push(event.kind) });

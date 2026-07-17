@@ -107,6 +107,7 @@ import {
 } from './render_policy.js';
 import { IdleRenderScheduler } from './idle_render_scheduler.js';
 import { createMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
+import { APP_LIFECYCLE, AppLifecycle } from './app_lifecycle.mjs';
 import './gosper_core.js';
 
 const G = window.GosperCore;
@@ -232,10 +233,12 @@ class PistonViewer {
             devicePixelRatio: window.devicePixelRatio,
         });
         this.container.appendChild(this.renderer.domElement);
+        this.appLifecycle = new AppLifecycle();
         this.contextRecovery = {
             active: false,
             timer: null,
             wasLoaderHidden: false,
+            resumeLifecycleState: null,
         };
 
         this.controls = new MapControls(this.camera, this.renderer.domElement);
@@ -1009,6 +1012,8 @@ class PistonViewer {
         if (this.contextRecovery.active) return;
         this.contextRecovery.active = true;
         this.contextRecovery.wasLoaderHidden = this.loaderHidden;
+        this.contextRecovery.resumeLifecycleState = this.appLifecycle.state;
+        this.appLifecycle.transition(APP_LIFECYCLE.CONTEXT_LOST, { cause: 'webglcontextlost' });
         this.failureStats.contextLost++;
         persistContextLoss(localStorage, readPersistedContextLosses(localStorage));
         this.log('Graphics context lost; waiting for browser restore.', 'error');
@@ -1028,9 +1033,24 @@ class PistonViewer {
         }
         this.failureStats.contextRestored++;
         this.log('Graphics context restored; rebuilding GPU resources.', 'info');
+        const resumeState = this.contextRecovery.resumeLifecycleState || APP_LIFECYCLE.BOOTING;
+        this.appLifecycle.transition(APP_LIFECYCLE.RECOVERING, { cause: 'webglcontextrestored' });
         try {
             this._reuploadGpuResidentState();
             this.contextRecovery.active = false;
+            if (resumeState === APP_LIFECYCLE.BOOTING) {
+                // A lifecycle transition cancelled startup before it could
+                // commit. Reset any partial manifest/view setup and start a
+                // fresh boot epoch instead of allowing stale async work to win.
+                this._resetWorldForInitRetry();
+                const bootScope = this.appLifecycle.transition(APP_LIFECYCLE.BOOTING, {
+                    cause: 'context-restored-during-boot',
+                });
+                this._showLoadingState();
+                this.initWorld(bootScope);
+                return;
+            }
+            this.appLifecycle.transition(resumeState, { cause: 'context-restored' });
             if (this.contextRecovery.wasLoaderHidden) {
                 const loader = document.getElementById('loader');
                 if (loader) {
@@ -1044,6 +1064,11 @@ class PistonViewer {
             }
         } catch (error) {
             this.failureStats.contextRecoveryFailures++;
+            if (this.appLifecycle.canTransition(APP_LIFECYCLE.CONTEXT_LOST)) {
+                this.appLifecycle.transition(APP_LIFECYCLE.CONTEXT_LOST, {
+                    cause: 'context-rebuild-failed',
+                });
+            }
             this._showFatalState('context', error);
         }
     }
@@ -1130,6 +1155,14 @@ class PistonViewer {
 
     _showFatalState(kind, error) {
         this.fatalState = { kind, message: error?.message || String(error) };
+        if (kind !== 'context') {
+            const failureState = kind === 'manifest' && navigator.onLine === false
+                ? APP_LIFECYCLE.OFFLINE
+                : APP_LIFECYCLE.DEGRADED;
+            if (this.appLifecycle.canTransition(failureState)) {
+                this.appLifecycle.transition(failureState, { cause: `fatal-${kind}` });
+            }
+        }
         this._showLoader();
         const loader = document.getElementById('loader');
         const retry = document.getElementById('fatal-retry-btn');
@@ -1244,6 +1277,7 @@ class PistonViewer {
             this.contextRecovery.timer = null;
         }
         this.contextRecovery.active = false;
+        this.contextRecovery.resumeLifecycleState = null;
         this.geometryPlanEpoch++;
         this.activeTextureJobs = 0;
         this.activeWorkerCount = 0;
@@ -1257,9 +1291,15 @@ class PistonViewer {
 
     retryInitWorld() {
         this.log('Retrying viewer initialization.', 'info');
+        if (this.appLifecycle.canTransition(APP_LIFECYCLE.RETRYING)) {
+            this.appLifecycle.transition(APP_LIFECYCLE.RETRYING, { cause: 'user-retry' });
+        }
         this._resetWorldForInitRetry();
+        const bootScope = this.appLifecycle.transition(APP_LIFECYCLE.BOOTING, {
+            cause: 'retry-reset-complete',
+        });
         this._showLoadingState();
-        this.initWorld();
+        this.initWorld(bootScope);
     }
 
     initMinimizeButton() {
@@ -1706,14 +1746,14 @@ class PistonViewer {
         }
     }
 
-    async _loadManifestWithRetry() {
+    async _loadManifestWithRetry(scope) {
         return this.resourceRetries.run(MANIFEST_RETRY_KEY, async () => {
             // This small file is the cache-identity authority for every large
             // asset, so rebakes must revalidate it even when app code did not
             // change. Binaries and textures remain explicitly recipe-keyed.
             const res = await fetch(
                 appendCacheKey('tile_manifest.json', APP_VERSION),
-                { cache: 'no-store' },
+                { cache: 'no-store', signal: scope.signal },
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
             const manifest = await res.json();
@@ -1722,12 +1762,16 @@ class PistonViewer {
         }, {
             onRetry: event => this._logRetry('manifest', 'tile_manifest.json', event),
             onExhausted: () => { this.failureStats.manifestFailures++; },
+            signal: scope.signal,
         });
     }
 
-    async initWorld() {
+    async initWorld(scope = this.appLifecycle.current()) {
+        if (scope.state !== APP_LIFECYCLE.BOOTING || !this.appLifecycle.isCurrent(scope)) return;
         try {
-            this.manifest = await this._loadManifestWithRetry();
+            const manifest = await this._loadManifestWithRetry(scope);
+            if (!this.appLifecycle.isCurrent(scope)) return;
+            this.manifest = manifest;
             this.releaseMode = resolveReleaseMode(this.manifest.release, window.location.search);
             this.profiler = createProfilerForReleaseMode(this, this.releaseMode, PerfProfiler);
             this.profiler?.setMeta({
@@ -1846,6 +1890,7 @@ class PistonViewer {
             this.controls.update();
             this.syncHeightFactorFromControls();
             await this.viewState.restoreFromUrl();
+            if (!this.appLifecycle.isCurrent(scope)) return;
             // restoreFromUrl may yield for projection initialization. Keep
             // visibility gated until its final target has a local manifest
             // floor and the matching pitch morph is available synchronously.
@@ -1866,6 +1911,7 @@ class PistonViewer {
             this.buildHorizon();
             this.updateLOD();
         } catch (e) {
+            if (scope.signal.aborted || !this.appLifecycle.isCurrent(scope)) return;
             console.error("Init error: " + e.message);
             this.log("Init error: " + e.message, "error");
             const manifestRetry = this.resourceRetries.snapshot(MANIFEST_RETRY_KEY);
@@ -3364,7 +3410,27 @@ class PistonViewer {
 
         if (operational >= 1) {
             this.profiler?.milestone('firstTileOperational');
+            if (this.appLifecycle.state === APP_LIFECYCLE.BOOTING) {
+                this.appLifecycle.transition(APP_LIFECYCLE.READY, {
+                    cause: 'first-tile-operational',
+                });
+            }
             this.hideLoader();
+        }
+    }
+
+    _syncAppLifecycleWithEngine() {
+        const state = this.appLifecycle.state;
+        if (state === APP_LIFECYCLE.READY) {
+            if (this.engineState === ENGINE_STATES.SINTERING) {
+                this.appLifecycle.transition(APP_LIFECYCLE.REFINING, { cause: 'background-work-active' });
+            } else if (this.engineState === ENGINE_STATES.STATIC) {
+                this.appLifecycle.transition(APP_LIFECYCLE.SETTLED, { cause: 'render-work-settled' });
+            }
+        } else if (state === APP_LIFECYCLE.REFINING && this.engineState === ENGINE_STATES.STATIC) {
+            this.appLifecycle.transition(APP_LIFECYCLE.SETTLED, { cause: 'render-work-settled' });
+        } else if (state === APP_LIFECYCLE.SETTLED && this.engineState === ENGINE_STATES.SINTERING) {
+            this.appLifecycle.transition(APP_LIFECYCLE.REFINING, { cause: 'background-work-resumed' });
         }
     }
 
@@ -4427,6 +4493,7 @@ class PistonViewer {
             phase,
             timestamp: performance.now(),
             engineState: this.engineState,
+            appLifecycle: this.appLifecycle.snapshot(),
             capability: {
                 profile: this.capabilityProfile.name,
                 workers: this.capabilityProfile.workerCount,
@@ -4631,6 +4698,7 @@ class PistonViewer {
         }
         // --- DERIVE ENGINE STATE ---
         this.engineState = this.deriveEngineState(flat);
+        this._syncAppLifecycleWithEngine();
         // The first no-motion frame is also the moving -> settled swap frame.
         // Keep it from taking the STATIC early-return before horizon, skirt,
         // and resident-level visibility have been restored.

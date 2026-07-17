@@ -1,6 +1,14 @@
 // Dependency-free retry/backoff helpers for recoverable asset loading.
 export const DEFAULT_RETRY_DELAYS_MS = Object.freeze([1000, 4000, 9000]);
 
+function abortReason(signal) {
+    return signal?.reason || new Error('Operation cancelled');
+}
+
+function throwIfAborted(signal) {
+    if (signal?.aborted) throw abortReason(signal);
+}
+
 export function backoffDelayMs(failureCount, {
     delaysMs = DEFAULT_RETRY_DELAYS_MS,
     jitterRatio = 0.2,
@@ -47,23 +55,47 @@ export class ResourceRetryScheduler {
         return entry ? { ...entry } : { attempts: 0, exhausted: false, lastError: null };
     }
 
-    async run(key, operation, { onRetry, onExhausted } = {}) {
+    async sleepUntilRetry(delayMs, signal) {
+        if (!signal) return this.sleep(delayMs);
+        throwIfAborted(signal);
+
+        let onAbort;
+        try {
+            await Promise.race([
+                this.sleep(delayMs),
+                new Promise((_, reject) => {
+                    onAbort = () => reject(abortReason(signal));
+                    signal.addEventListener('abort', onAbort, { once: true });
+                }),
+            ]);
+        } finally {
+            if (onAbort) signal.removeEventListener('abort', onAbort);
+        }
+        throwIfAborted(signal);
+    }
+
+    async run(key, operation, { onRetry, onExhausted, signal } = {}) {
+        throwIfAborted(signal);
         const entry = this.entryFor(key);
         if (entry.exhausted) {
             throw entry.lastError || new Error(`Retry budget exhausted for ${key}`);
         }
 
         while (entry.attempts < this.maxAttempts) {
+            throwIfAborted(signal);
             entry.attempts++;
             try {
                 const result = await operation({
                     key,
                     attempt: entry.attempts,
                     maxAttempts: this.maxAttempts,
+                    signal,
                 });
+                throwIfAborted(signal);
                 this.reset(key);
                 return result;
             } catch (error) {
+                if (signal?.aborted) throw abortReason(signal);
                 entry.lastError = error;
                 if (entry.attempts >= this.maxAttempts) {
                     entry.exhausted = true;
@@ -85,7 +117,7 @@ export class ResourceRetryScheduler {
                         error,
                     });
                 }
-                await this.sleep(delayMs);
+                await this.sleepUntilRetry(delayMs, signal);
             }
         }
 
