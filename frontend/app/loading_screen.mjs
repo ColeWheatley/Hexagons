@@ -267,6 +267,7 @@ export class LoadingScreen {
             phase: root.querySelector('#load-phase'),
             bar: root.querySelector('#load-bar'),
             fill: root.querySelector('#load-bar-fill'),
+            pct: root.querySelector('#load-pct'),
             counters: root.querySelector('#load-counters'),
             quip: root.querySelector('#load-quip'),
             fatalDetail: root.querySelector('#fatal-detail'),
@@ -342,6 +343,7 @@ export class LoadingScreen {
                 // Indeterminate mode is class-driven; a stale inline width
                 // would pin the sliding thumb.
                 if (this.els.fill) this.els.fill.style.width = view.determinate ? `${view.pct}%` : '';
+                if (this.els.pct) this.els.pct.textContent = view.determinate ? `${view.pct}%` : '—';
             }
         }
         this.lastApplied.phase = phase;
@@ -391,6 +393,7 @@ export class LoadingScreen {
                 this.els.progress.hidden = true;
             }
             if (this.els.fill) this.els.fill.style.width = '0%';
+            if (this.els.pct) this.els.pct.textContent = '—';
         }
         this._ensureTimer();
     }

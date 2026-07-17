@@ -3980,6 +3980,9 @@ class PistonViewer {
             this.fetchTileOnWorker(task).then(result => {
                 this.activeWorkerCount--;
                 if (result) this.instantiateQueue.push(result);
+                // The last in-flight failure must re-evaluate the boot guard
+                // after its own worker slot is released.
+                this._maybeShowBootTerrainFailure();
                 this.processQueues(); // Keep the pipe full
             });
         }
