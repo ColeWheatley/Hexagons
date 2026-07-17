@@ -37,7 +37,13 @@ jobs:
           if-no-files-found: warn
 
   release-browser:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_browser
+    # A self-hosted runner must never execute untrusted fork PR code.  Internal
+    # PRs and master pushes are trusted release candidates; manual runs remain
+    # explicitly opt-in for maintenance work.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_browser)
     name: Asset-backed browser release tier
     runs-on: [self-hosted, hexagons-assets, chromium]
     # Includes the faithful 30-minute profiler soak plus the existing browser

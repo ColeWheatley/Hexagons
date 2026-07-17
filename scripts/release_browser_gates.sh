@@ -8,6 +8,13 @@ OUT="${OUT:-artifacts/release-browser}"
 BENCH_DURATION="${BENCH_DURATION:-20}"
 SOAK_SECONDS="${SOAK_SECONDS:-1800}"
 mkdir -p "$OUT"
+# This is intentionally before npm/build: a bad or partial baked corpus should
+# fail quickly, write a diagnostic JSON artifact, and never be mistaken for a
+# browser/build failure.  The explicit flag still permits tattoos only for the
+# exact beta-stubai manifest (enforced by the shared publication policy).
+python3 scripts/verify_release_assets.py \
+  --manifest frontend/app/tile_manifest.json --app-root frontend/app \
+  --output "$OUT/release-assets.json" --allow-beta-diagnostics
 if [[ ! -d frontend/app/tiles_bin || ! -d frontend/app/aerial_pages ]]; then
   echo 'release browser gate requires frontend/app/{tiles_bin,aerial_pages}; refusing partial/no-asset run' >&2
   exit 2
@@ -33,7 +40,8 @@ for trial in 1 2 3; do
 done
 python3 scripts/validate_warm_reload.py "$OUT"/warm-reload-{1,2,3}.json --min-improvement-percent 60
 python3 scripts/validate_perf_medians.py "$OUT"/cold-orbit-{1,2,3}.json \
-  --cold-reports "$OUT"/warm-reload-{1,2,3}.json
+  --cold-reports "$OUT"/warm-reload-{1,2,3}.json \
+  --baseline config/aa20_perf_medians_baseline.json
 # AA-8: prove the real viewer sleeps once settled and resumes after a CDP
 # hidden/visible transition. This is intentionally separate from scripted
 # benchmarks, whose camera driver keeps rAF active by design.
