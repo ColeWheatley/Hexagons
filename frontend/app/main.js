@@ -48,7 +48,10 @@ import { TexturePageGrid } from './texture_page_grid.js';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
+    TIER_STATE,
     TexturePageResidency,
+    isTier,
+    setTierState,
     pruneTextureDispatchQueue,
     promoteVisibleConsumerPages,
     selectTextureDispatchTaskIndex,
@@ -339,8 +342,7 @@ class PistonViewer {
 
         this.tiles = new Map(); // Key: "yq_yr" (island lattice) -> Tile Object
         this.manifest = null;
-        this.loadingTiles = new Set();
-        this.failedTiles = new Set();
+        this.tileStates = new Map(); // key -> 'loading' | 'failed'
         this.loadQueue = [];
         this.geometryRebuildQueue = [];
         this.geometryPlanEpoch = 0;
@@ -1311,9 +1313,8 @@ class PistonViewer {
                 asset.texture?.dispose();
             }
             state.assets.clear();
-            state.loading.clear();
-            state.queued.clear();
-            state.failed.clear();
+            state.tierStates.clear();
+            state._tierLoadingStartMs?.clear();
             state.activeTier = null;
         }
     }
@@ -1337,8 +1338,7 @@ class PistonViewer {
         this.visibilityByKey.clear();
         this.currentVisibilityContext = null;
         this.geometryPageFootprint = null;
-        this.loadingTiles.clear();
-        this.failedTiles.clear();
+        this.tileStates.clear();
         this.failedTextures.clear();
         this.loadQueue.length = 0;
         this.geometryRebuildQueue.length = 0;
@@ -2721,14 +2721,16 @@ class PistonViewer {
     }
 
     _markTileFailed(tileKey, error) {
-        if (!this.failedTiles.has(tileKey)) this.failureStats.tileFailures++;
-        this.failedTiles.add(tileKey);
+        if (this.tileStates.get(tileKey) !== 'failed') this.failureStats.tileFailures++;
+        this.tileStates.set(tileKey, 'failed');
         this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TILES);
         this.log(`Terrain tile failed: ${tileKey} (${error.message})`, 'error');
     }
 
     _markTextureFailed(key, tier, error) {
         const failureKey = this._textureFailureKey(key, tier);
+        const state = this.textureStates.get(key);
+        if (state) setTierState(state, tier, TIER_STATE.FAILED);
         if (!this.failedTextures.has(failureKey)) this.failureStats.textureFailures++;
         this.failedTextures.add(failureKey);
         this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TEXTURES);
@@ -2742,17 +2744,21 @@ class PistonViewer {
         let tileCount = 0;
         let textureCount = 0;
         if (kinds.includes(RECOVERABLE_SWEEP_TILES)) {
-            for (const key of this.failedTiles) {
-                this.resourceRetries.reset(`tile:${key}`);
-                tileCount++;
+            for (const [key, state] of this.tileStates) {
+                if (state === 'failed') {
+                    this.resourceRetries.reset(`tile:${key}`);
+                    tileCount++;
+                }
             }
-            this.failedTiles.clear();
+            for (const [key, state] of this.tileStates) {
+                if (state === 'failed') this.tileStates.delete(key);
+            }
         }
         if (kinds.includes(RECOVERABLE_SWEEP_TEXTURES)) {
             for (const failureKey of this.failedTextures) {
                 const [key, tier] = failureKey.split('|');
                 const state = this.textureStates.get(key);
-                if (state) state.failed.delete(tier);
+                if (state) setTierState(state, tier, TIER_STATE.ABSENT);
                 this.resourceRetries.reset(`texture:${failureKey}`);
                 textureCount++;
             }
@@ -2800,8 +2806,8 @@ class PistonViewer {
     _queueTextureTier(textureResource, tier, priority = 0) {
         if (!textureResource) return;
         const state = this._textureState(textureResource);
-        if (state.assets.has(tier) || state.loading.has(tier)) return;
-        if (state.queued.has(tier)) {
+        if (state.assets.has(tier) || isTier(state, tier, TIER_STATE.LOADING)) return;
+        if (isTier(state, tier, TIER_STATE.QUEUED)) {
             // Mini mode seeds every medium at background priority. Promote
             // that existing task when its tile later enters the frustum.
             const queued = this.textureQueue.find(
@@ -2812,8 +2818,10 @@ class PistonViewer {
         }
         // A failed required asset may become available after a new bake/server
         // restart. Do not spin on the same missing URL in this page session.
-        if (state.failed.has(tier)) return;
-        state.queued.add(tier);
+        if (isTier(state, tier, TIER_STATE.FAILED)) return;
+        setTierState(state, tier, TIER_STATE.QUEUED);
+        if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
+        if (tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighQueued');
         if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
         if (tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighQueued');
         this.textureQueue.push({
@@ -3048,9 +3056,7 @@ class PistonViewer {
             this.bootstrapDiagnostics.firstConsumer?.pageKeys?.includes(state.key)) {
             this.bootstrapDiagnostics.matchingInstalls.push({ key: state.key, t: performance.now() - this.appStartTime });
         }
-        state.loading.delete(task.tier);
-        state.queued.delete(task.tier);
-        state.failed.delete(task.tier);
+        setTierState(state, task.tier, TIER_STATE.ABSENT);
         this.failedTextures.delete(this._textureFailureKey(state.key, task.tier));
 
         const texture = result.bootstrap
@@ -3123,8 +3129,7 @@ class PistonViewer {
             if (task.tier === TEXTURE_TIER.HIGH && state.desiredTier !== TEXTURE_TIER.HIGH) {
                 // Demand changed during transcode. These are still CPU-side
                 // bytes, so avoid a pointless GPU upload and immediate drop.
-                state.loading.delete(task.tier);
-                state.queued.delete(task.tier);
+                setTierState(state, task.tier, TIER_STATE.ABSENT);
                 continue;
             }
             this._installTextureResult(task, result);
@@ -3151,15 +3156,16 @@ class PistonViewer {
             const task = this.textureQueue.splice(index, 1)[0];
             this.textureDispatchSequence++;
             if (task.epoch !== this.viewEpoch) {
-                this.textureStates.get(task.key)?.queued.delete(task.tier);
+                const st = this.textureStates.get(task.key);
+                if (st) setTierState(st, task.tier, TIER_STATE.ABSENT);
                 this.workerLaneStats.texture.cancelledQueued++;
                 continue;
             }
             const state = this._textureState(task.textureResource);
-            state.queued.delete(task.tier);
+            setTierState(state, task.tier, TIER_STATE.ABSENT);
             if (TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
-            if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
-            state.loading.add(task.tier);
+            if (state.assets.has(task.tier) || isTier(state, task.tier, TIER_STATE.LOADING)) continue;
+            setTierState(state, task.tier, TIER_STATE.LOADING);
             if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
             if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighDispatched');
             this.activeTextureJobs++;
@@ -3181,8 +3187,7 @@ class PistonViewer {
                 this.textureResultQueue.push({ task, result });
                 this.needsRender = true;
             }).catch(error => {
-                state.loading.delete(task.tier);
-                state.failed.add(task.tier);
+                setTierState(state, task.tier, TIER_STATE.FAILED);
                 this._markTextureFailed(task.key, task.tier, error);
                 this._texErrorCount++;
                 this._updateTexBadge();
@@ -3493,8 +3498,8 @@ class PistonViewer {
             }
 
             if (classification !== 'outside') {
-                if (!this.tiles.has(key) && !this.loadingTiles.has(key) && !this.failedTiles.has(key)) {
-                    this.loadingTiles.add(key);
+                if (!this.tiles.has(key) && !this.tileStates.has(key)) {
+                    this.tileStates.set(key, 'loading');
                     this.loadQueue.push({
                         t: manifestTile,
                         priority,
@@ -3550,11 +3555,12 @@ class PistonViewer {
     _suppressHighTextureWorkForMotion() {
         this.textureQueue = this.textureQueue.filter(task => {
             if (task.tier !== TEXTURE_TIER.HIGH) return true;
-            this.textureStates.get(task.key)?.queued.delete(TEXTURE_TIER.HIGH);
+            const st = this.textureStates.get(task.key);
+            if (st) setTierState(st, TEXTURE_TIER.HIGH, TIER_STATE.ABSENT);
             return false;
         });
         for (const state of this.textureStates.values()) {
-            state.queued.delete(TEXTURE_TIER.HIGH);
+            setTierState(state, TEXTURE_TIER.HIGH, TIER_STATE.ABSENT);
         }
     }
 
@@ -3581,7 +3587,7 @@ class PistonViewer {
     _advanceViewEpoch() {
         this.viewEpoch++;
         this.loadQueue = cancelStaleViewTasks(this.loadQueue, this.viewEpoch, task => {
-            if (task?.t) this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
+            if (task?.t) this.tileStates.delete(`${task.t.yq}_${task.t.yr}`);
             this.workerLaneStats.geometry.cancelledQueued++;
         });
         this.geometryRebuildQueue = this.geometryRebuildQueue.filter(task => {
@@ -3591,7 +3597,8 @@ class PistonViewer {
             return false;
         });
         this.textureQueue = cancelStaleViewTasks(this.textureQueue, this.viewEpoch, task => {
-            this.textureStates.get(task?.key)?.queued.delete(task?.tier);
+            const st = this.textureStates.get(task?.key);
+            if (st) setTierState(st, task?.tier, TIER_STATE.ABSENT);
             this.workerLaneStats.texture.cancelledQueued++;
         });
     }
@@ -3844,7 +3851,7 @@ class PistonViewer {
             // Camera may have moved while the task waited. Outside-guard work
             // is stale and safe to discard; retained textures are independent.
             if (task.epoch !== this.viewEpoch || this.tiles.has(key) || this.visibilityByKey.get(key)?.classification === 'outside') {
-                this.loadingTiles.delete(key);
+                this.tileStates.delete(key);
                 continue;
             }
 
@@ -3931,7 +3938,7 @@ class PistonViewer {
         } catch (e) {
             console.error("Tile Fetch Error", e);
             this.visibilityAdapter?.detachDecodedIsland(tileKey);
-            this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
+            this.tileStates.delete(`${task.t.yq}_${task.t.yr}`);
             this._markTileFailed(tileKey, e);
             return null;
         }
@@ -4126,7 +4133,7 @@ class PistonViewer {
 
         if (this.visibilityByKey.get(key)?.classification === 'outside') {
             this.visibilityAdapter?.detachDecodedIsland(key);
-            this.loadingTiles.delete(key);
+            this.tileStates.delete(key);
             return;
         }
 
@@ -4158,8 +4165,8 @@ class PistonViewer {
                             key: pageKey,
                             available: Boolean(state),
                             bootstrapResident: Boolean(state?.assets.has(TEXTURE_TIER.BOOTSTRAP)),
-                            bootstrapQueued: Boolean(state?.queued.has(TEXTURE_TIER.BOOTSTRAP)),
-                            bootstrapLoading: Boolean(state?.loading.has(TEXTURE_TIER.BOOTSTRAP)),
+                            bootstrapQueued: isTier(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED),
+                            bootstrapLoading: isTier(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING),
                         };
                     }),
                 };
@@ -4300,11 +4307,11 @@ class PistonViewer {
             // result and reports a falsely slow first textured frame.
             this._updateTexBadge();
 
-            this.loadingTiles.delete(key);
+            this.tileStates.delete(key);
 
         } catch (e) {
             console.error("Instantiation Error", key, e);
-            this.loadingTiles.delete(key);
+            this.tileStates.delete(key);
             this.visibilityAdapter?.detachDecodedIsland(key);
         }
     }
@@ -4338,7 +4345,7 @@ class PistonViewer {
         this.vramLedger.deregisterGeometry(key);
 
         this.tiles.delete(key);
-        this.loadingTiles.delete(key);
+        this.tileStates.delete(key);
         this.visibilityAdapter?.detachDecodedIsland(key);
 
         // The manifest-driven horizon cap takes over for this island again.
@@ -4711,15 +4718,15 @@ class PistonViewer {
                         .reduce((sum, entry) => sum + entry.bytes, 0),
                     requestedPages: Array.from(this.textureStates.values()).filter(state => (
                         state.assets.has(TEXTURE_TIER.BOOTSTRAP)
-                        || state.loading.has(TEXTURE_TIER.BOOTSTRAP)
-                        || state.queued.has(TEXTURE_TIER.BOOTSTRAP)
+                        || isTier(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)
+                        || isTier(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED)
                     )).length,
                 },
                 resident: residentTiers,
                 active: activeTiers,
                 desired: desiredTiers,
                 loading: Array.from(this.textureStates.values())
-                    .reduce((sum, state) => sum + state.loading.size, 0),
+                    .reduce((sum, state) => sum + Array.from(state.tierStates.values()).filter(v => v === TIER_STATE.LOADING).length, 0),
                 queued: this.textureQueue.length,
                 resultQueue: this.textureResultQueue.length,
                 thresholdsPx: {
@@ -4746,7 +4753,7 @@ class PistonViewer {
                     exhausted: manifestRetry.exhausted,
                 },
                 tiles: {
-                    failed: this.failedTiles.size,
+                    failed: Array.from(this.tileStates.values()).filter(v => v === 'failed').length,
                     finalFailures: this.failureStats.tileFailures,
                 },
                 textures: {

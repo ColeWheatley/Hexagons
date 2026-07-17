@@ -11,6 +11,8 @@ const {
     BOOTSTRAP_GPU_BYTES_PER_PAGE,
     BOOTSTRAP_MAX_RESIDENT_BYTES,
     TexturePageResidency,
+    TIER_STATE,
+    isTier,
     textureTierRequestPlan,
     textureStateHasDemand,
     promoteVisibleConsumerPages,
@@ -64,8 +66,8 @@ test('outside corpus pages are not demand-planned, including beta', () => {
     // Outside retains the medium target solely so it receives medium on entry
     // to the predictive guard set; it must have no queued request meanwhile.
     assert.equal(state.desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
-    assert.equal(state.queued.size, 0);
-    assert.equal(state.loading.size, 0);
+    assert.equal(isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED), false);
+    assert.equal(isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING), false);
 });
 
 test('only an outside page bound by visible geometry is promoted to guard medium', () => {

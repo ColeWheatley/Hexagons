@@ -22,8 +22,81 @@ export const PAGE_TEXTURE_RANK = Object.freeze({
     [PAGE_TEXTURE_TIER.HIGH]: 2,
 });
 
-function tierIsTerminal(state, tier) {
-    return Boolean(state?.assets?.has(tier) || state?.failed?.has(tier));
+// Per-tier operational state machine.  Each (page, tier) pair is in exactly
+// one operational state at any time.  The `assets` Map tracks GPU-object
+// residency independently; when a tier is RESIDENT, its GPU object MUST be
+// present in `assets`.
+export const TIER_STATE = Object.freeze({
+    ABSENT: 'absent',
+    QUEUED: 'queued',
+    LOADING: 'loading',
+    FAILED: 'failed',
+});
+
+// Legal per-tier transitions.  RESIDENT is tracked via `assets`, not
+// `tierStates`, so the LOADING→resident handoff happens on the caller side
+// in `_installTextureResult`.
+const VALID_TRANSITIONS = Object.freeze({
+    [TIER_STATE.ABSENT]: new Set([TIER_STATE.QUEUED]),
+    [TIER_STATE.QUEUED]: new Set([TIER_STATE.ABSENT, TIER_STATE.LOADING]),
+    [TIER_STATE.LOADING]: new Set([TIER_STATE.ABSENT, TIER_STATE.FAILED]),
+    [TIER_STATE.FAILED]: new Set([TIER_STATE.ABSENT]),
+});
+
+export class IllegalTierTransitionError extends Error {
+    constructor(key, tier, from, to) {
+        super(`Illegal tier state transition for ${key}/${tier}: ${from} -> ${to}`);
+        this.name = 'IllegalTierTransitionError';
+    }
+}
+
+export function tierState(state, tier) {
+    return state?.tierStates?.get(tier) || TIER_STATE.ABSENT;
+}
+
+export function setTierState(state, tier, newState, { validate = false } = {}) {
+    if (!state || !state.tierStates) return;
+    if (newState === TIER_STATE.ABSENT) {
+        state.tierStates.delete(tier);
+        state._tierLoadingStartMs?.delete(tier);
+        return;
+    }
+    if (validate) {
+        const current = tierState(state, tier);
+        if (current !== newState && !VALID_TRANSITIONS[current]?.has(newState)) {
+            throw new IllegalTierTransitionError(state.key, tier, current, newState);
+        }
+    }
+    state.tierStates.set(tier, newState);
+    if (newState === TIER_STATE.LOADING && state._tierLoadingStartMs) {
+        state._tierLoadingStartMs.set(tier, performance.now());
+    }
+    if (newState !== TIER_STATE.LOADING && state._tierLoadingStartMs) {
+        state._tierLoadingStartMs.delete(tier);
+    }
+}
+
+export function isTier(state, tier, expected) {
+    return tierState(state, tier) === expected;
+}
+
+export function tierIsTerminal(state, tier) {
+    return Boolean(state?.assets?.has(tier) || isTier(state, tier, TIER_STATE.FAILED));
+}
+
+export function tierIsPending(state, tier) {
+    const s = tierState(state, tier);
+    return s !== TIER_STATE.ABSENT && s !== TIER_STATE.FAILED;
+}
+
+export function tierLoadingMs(state, tier) {
+    const started = state?._tierLoadingStartMs?.get(tier);
+    return Number.isFinite(started) ? performance.now() - started : null;
+}
+
+export function tierLoadingExpired(state, tier, maxMs = 15000) {
+    const ms = tierLoadingMs(state, tier);
+    return ms !== null && ms > maxMs;
 }
 
 // The postage tier is the coverage floor: every page in the active demand
@@ -40,9 +113,9 @@ export function lowTextureCoveragePending(states, { includeOutside = true } = {}
     const snapshot = Array.from(values);
     const hasBootstrapWork = snapshot.some(state => (
         state?.assets?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
-        || state?.loading?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
-        || state?.queued?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
-        || state?.failed?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED)
+        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)
+        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.FAILED)
     ));
     const floorTier = hasBootstrapWork ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW;
     for (const state of snapshot) {
@@ -73,7 +146,7 @@ export function pruneTextureDispatchQueue(queue, states, {
         if (demanded && tierDemanded) {
             retained.push(task);
         } else if (state && task?.tier) {
-            state.queued?.delete?.(task.tier);
+            setTierState(state, task.tier, TIER_STATE.ABSENT);
         }
     }
     return retained;
@@ -97,9 +170,9 @@ export function selectTextureDispatchTaskIndex(queue, states, {
         if (!task) continue;
         if (isMoving && task.tier === PAGE_TEXTURE_TIER.HIGH) continue;
         const state = states?.get?.(task.key);
-        const bootstrapPending = Boolean(
-            state?.queued?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
-            || state?.loading?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        const bootstrapPending = (
+            isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED)
+            || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)
         ) && !tierIsTerminal(state, PAGE_TEXTURE_TIER.BOOTSTRAP);
         if (task.tier !== PAGE_TEXTURE_TIER.BOOTSTRAP && bootstrapPending) continue;
         if (lowBarrier && task.tier !== (
@@ -144,7 +217,7 @@ export function desiredTextureTier(state, projectedDiameterPx, classification, t
 export function textureTierRequestPlan(state, { isMoving = false } = {}) {
     const plan = [];
     const needsBootstrap = state && state.assets?.size === 0
-        && !state.failed?.has(PAGE_TEXTURE_TIER.BOOTSTRAP);
+        && !isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.FAILED);
     if (needsBootstrap) plan.push(PAGE_TEXTURE_TIER.BOOTSTRAP);
     if (!state) return plan;
     if (state.desiredTier === PAGE_TEXTURE_TIER.HIGH) {
@@ -152,7 +225,6 @@ export function textureTierRequestPlan(state, { isMoving = false } = {}) {
     } else if (state.desiredTier === PAGE_TEXTURE_TIER.MEDIUM) {
         plan.push(PAGE_TEXTURE_TIER.MEDIUM);
     } else {
-        // Compatibility only: no new demand path selects low128.
         plan.push(PAGE_TEXTURE_TIER.LOW);
     }
     return plan;
@@ -192,9 +264,8 @@ export class TexturePageResidency {
                 page,
                 consumers: new Set(),
                 assets: new Map(),
-                loading: new Set(),
-                queued: new Set(),
-                failed: new Set(),
+                tierStates: new Map(),
+                _tierLoadingStartMs: new Map(),
                 desiredTier: PAGE_TEXTURE_TIER.LOW,
                 activeTier: null,
                 classification: 'outside',
@@ -312,9 +383,6 @@ export class TexturePageResidency {
         if (!asset) return true;
         if (state.activeTier === tier) {
             if (!replacement && !allowEmpty) return false;
-            // The retiring asset must stop being a selection candidate before
-            // consumers are synchronously rebound. Disposal happens last and
-            // exactly once, even when many materials share the page.
             state.assets.delete(tier);
             state.activeTier = replacement?.[0] || null;
             rebind(state);
