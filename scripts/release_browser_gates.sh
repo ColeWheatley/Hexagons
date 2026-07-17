@@ -25,7 +25,6 @@ for trial in 1 2 3; do
   # redundant second set of browser launches.
   python3 scripts/run_bench.py "${BASE_URL}/?bench=orbit&benchDuration=${BENCH_DURATION}" "$OUT/cold-orbit-${trial}.json" --timeout 150
 done
-python3 scripts/validate_perf_medians.py "$OUT"/cold-orbit-{1,2,3}.json
 # AA-7 returning-visitor gate. Each pair uses a fresh profile internally, but
 # the cold and warm navigation inside a pair share one tab/profile. Three
 # independent pairs keep Chrome startup and filesystem noise out of the verdict.
@@ -33,6 +32,8 @@ for trial in 1 2 3; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload&benchDuration=${BENCH_DURATION}" "$OUT/warm-reload-${trial}.json" --warm-reload --timeout 150
 done
 python3 scripts/validate_warm_reload.py "$OUT"/warm-reload-{1,2,3}.json --min-improvement-percent 60
+python3 scripts/validate_perf_medians.py "$OUT"/cold-orbit-{1,2,3}.json \
+  --cold-reports "$OUT"/warm-reload-{1,2,3}.json
 # AA-8: prove the real viewer sleeps once settled and resumes after a CDP
 # hidden/visible transition. This is intentionally separate from scripted
 # benchmarks, whose camera driver keeps rAF active by design.

@@ -23,10 +23,18 @@ class PerfMedianGateTests(unittest.TestCase):
         self.assertEqual(failed, {"orbit frame p95", "orbit frame p99"})
 
     def test_rejects_ready_ttftf_and_missing_p99(self):
-        rows = [report(16000, 31000), report(17000, 32000), report(14000, 29000)]
-        del rows[1]["frames"]["p99_ms"]
-        failed = {check["name"] for check in evaluate(rows) if not check["passed"]}
+        orbit_rows = [report(), report(), report()]
+        del orbit_rows[1]["frames"]["p99_ms"]
+        cold_rows = [report(16000, 31000), report(17000, 32000), report(14000, 29000)]
+        failed = {check["name"] for check in evaluate(orbit_rows, cold_rows) if not check["passed"]}
         self.assertEqual(failed, {"cold ready", "cold TTFTF", "orbit frame p99"})
+
+    def test_uses_stationary_cold_reports_instead_of_orbit_milestones(self):
+        orbit_rows = [report(), report(), report()]
+        for row in orbit_rows:
+            row["milestones"].pop("visibleTexturedCoverage")
+        cold_rows = [report(), report(1100, 550), report(900, 450)]
+        self.assertTrue(all(check["passed"] for check in evaluate(orbit_rows, cold_rows)))
 
 
 if __name__ == "__main__":

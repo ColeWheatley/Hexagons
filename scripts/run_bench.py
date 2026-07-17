@@ -390,6 +390,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
         url = f"{url}{separator}benchRenderDprCap=native"
     profile = tempfile.mkdtemp(prefix="chrome-bench-")
     launch_url = "about:blank" if warm_reload else url
+    target_host = urlsplit(url).hostname
     debug_port = free_debugging_port()
     proc = subprocess.Popen(
         [CHROME, "--headless=new", f"--remote-debugging-port={debug_port}",
@@ -406,7 +407,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                     targets = json.load(f)
                 pages = [t for t in targets if t.get("type") == "page" and (
                     (warm_reload and t.get("url") == "about:blank")
-                    or (not warm_reload and "localhost" in t.get("url", ""))
+                    or (not warm_reload and urlsplit(t.get("url", "")).hostname == target_host)
                 )]
                 if pages:
                     ws_url = pages[0]["webSocketDebuggerUrl"]
