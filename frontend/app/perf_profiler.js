@@ -44,6 +44,7 @@ export class PerfProfiler {
 
         // --- 1Hz sampler output ---
         this.samples = [];
+        this.milestones = {};
 
         // --- Cumulative counters (also mirrored into samples for time-series) ---
         this.memory = { jsHeapPeakBytes: 0, jsHeapEndBytes: 0, contextLostCount: 0, glOutOfMemoryCount: 0 };
@@ -270,6 +271,13 @@ export class PerfProfiler {
         Object.assign(this.meta, partial);
     }
 
+    milestone(name) {
+        try {
+            if (!name || Object.hasOwn(this.milestones, name)) return;
+            this.milestones[name] = round(performance.now() - this.startTime, 1);
+        } catch (e) { /* milestones must never perturb the app */ }
+    }
+
     /** Current snapshot of the run so far — does not mark the run as finished. */
     getReport() {
         this.meta.duration_s = round((performance.now() - this.startTime) / 1000, 1);
@@ -301,6 +309,7 @@ export class PerfProfiler {
             vram: { ...this.vram },
             cache: { ...this.cache },
             textures: { ...this.textures },
+            milestones: { ...this.milestones },
             samples: this.samples,
         };
     }
