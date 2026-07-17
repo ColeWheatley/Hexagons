@@ -65,20 +65,12 @@
                 <div class="stats">
                     <!-- Basic Stats (Always Visible) -->
                     <div class="hud-item">
-                        <span>LOCATION</span>
-                        <span class="value" id="loc-val">SULZENAU, TIROL</span>
-                    </div>
-                    <div class="hud-item">
                         <span>FPS / ZOOM</span>
                         <span class="value" id="fps-counter">--</span>
                     </div>
                     <div class="hud-item">
                         <span>HEXAGONS</span>
                         <span class="value" id="hex-count">-- VISIBLE</span>
-                    </div>
-                    <div class="hud-item">
-                        <span>PRECISION</span>
-                        <span class="value">FLOAT16 (CM)</span>
                     </div>
 
                     <!-- Position & Debug (Collapsible) -->
@@ -90,7 +82,7 @@
                         <div class="collapsible-content">
                             <div class="hud-item">
                                 <span>TRIANGLES</span>
-                                <span class="value" id="tri-count">-- / -- (--)</span>
+                                <span class="value" id="tri-count">--</span>
                             </div>
                             <div class="hud-item">
                                 <span>DRAW CALLS</span>
@@ -119,31 +111,6 @@
                             <div class="hud-item">
                                 <span>VIEW URL</span>
                                 <button id="copy-view-link" class="view-link-btn" type="button">COPY LINK</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- LOD Benchmarks (Collapsible) -->
-                    <div class="collapsible-section collapsed" data-section="benchmarks">
-                        <div class="collapsible-header">
-                            <span class="title">LOD BENCHMARKS (MS)</span>
-                            <span class="arrow">▼</span>
-                        </div>
-                        <div class="collapsible-content">
-                            <div class="hud-item"
-                                style="justify-content: space-between; font-family: 'Courier New', monospace; font-size: 10px;">
-                                <span style="color: #aaa;">LINEAR SCAN</span>
-                                <span class="value" id="bench-loop" style="color: #ff6b9d;">--</span>
-                            </div>
-                            <div class="hud-item"
-                                style="justify-content: space-between; font-family: 'Courier New', monospace; font-size: 10px;">
-                                <span style="color: #aaa;">QUAD TREE</span>
-                                <span class="value" id="bench-tree" style="color: #74b9ff;">--</span>
-                            </div>
-                            <div class="hud-item"
-                                style="justify-content: space-between; font-family: 'Courier New', monospace; font-size: 10px;">
-                                <span style="color: #aaa;">GRID HASH</span>
-                                <span class="value" id="bench-hash" style="color: #2ecc71;">--</span>
                             </div>
                         </div>
                     </div>

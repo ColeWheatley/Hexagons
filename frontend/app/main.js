@@ -307,6 +307,9 @@ class PistonViewer {
         this.fpsState = { frames: 0, activeElapsed: 0, lastActiveFrame: null };
         this.fpsEl = document.getElementById('fps-counter');
         this.hexCountEl = document.getElementById('hex-count');
+        this.triCountEl = document.getElementById('tri-count');
+        this.drawStatsEl = document.getElementById('draw-stats');
+        this.debugSectionEl = document.querySelector('[data-section="debug"]');
         this.tileHeightEl = document.getElementById('tile-height');
         this.cameraHeightEl = document.getElementById('camera-height');
         this.statsUpdateState = { lastUpdate: 0, interval: 500 };
@@ -1645,9 +1648,28 @@ class PistonViewer {
         this.globalStats.count++;
     }
 
+    formatHudNumber(value) {
+        return Number.isFinite(value) ? Math.round(value).toLocaleString() : '--';
+    }
+
+    updateRendererDebugStats() {
+        if (!this.debugSectionEl || this.debugSectionEl.classList.contains('collapsed')) return;
+
+        const renderInfo = this.renderer?.info?.render || {};
+        const memoryInfo = this.renderer?.info?.memory || {};
+        if (this.triCountEl) {
+            this.triCountEl.textContent = this.formatHudNumber(renderInfo.triangles);
+        }
+        if (this.drawStatsEl) {
+            this.drawStatsEl.textContent = `${this.formatHudNumber(renderInfo.calls)} | ` +
+                `G:${this.formatHudNumber(memoryInfo.geometries)} | T:${this.formatHudNumber(memoryInfo.textures)}`;
+        }
+    }
+
     updateRenderStats(now) {
         if (now - this.statsUpdateState.lastUpdate < 500) return;
         this.statsUpdateState.lastUpdate = now;
+        this.updateRendererDebugStats();
 
         let capCount = 0;
         let skirtCount = 0;
