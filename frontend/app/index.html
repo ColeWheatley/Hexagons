@@ -69,7 +69,7 @@
                         <span class="value" id="fps-counter">--</span>
                     </div>
                     <div class="hud-item">
-                        <span>HEXAGONS</span>
+                        <span>VISIBLE GEOMETRY</span>
                         <span class="value" id="hex-count">-- VISIBLE</span>
                     </div>
 
@@ -85,8 +85,8 @@
                                 <span class="value" id="tri-count">--</span>
                             </div>
                             <div class="hud-item">
-                                <span>DRAW CALLS</span>
-                                <span class="value" id="draw-stats">-- | G:-- | T:--</span>
+                                <span>DRAW / GPU OBJECTS</span>
+                                <span class="value" id="draw-stats">Calls: -- | G:-- | T:--</span>
                             </div>
                             <div class="hud-item">
                                 <span>SECTOR</span>
@@ -147,18 +147,18 @@
                                 style="flex-direction: column; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>SETTLED NEAR BANDS</span>
-                                    <span class="value">2 / 5 / 10 km</span>
+                                    <span class="value" id="near-lod-bands">--</span>
                                 </div>
-                                <div style="font-size: 10px; color: #aaa;">unit / L1 / L2, matching the primary viewer</div>
+                                <div style="font-size: 10px; color: #aaa;">unit / L1 / L2</div>
                             </div>
 
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>FAR HIERARCHY</span>
-                                    <span class="value">25 / 60 km</span>
+                                    <span class="value" id="far-lod-bands">--</span>
                                 </div>
-                                <div style="font-size: 10px; color: #aaa;">moving: uniform skirtless L3 (118 m)</div>
-                                <div style="font-size: 10px; color: #aaa;">settled: fixed 2 / 5 / 10 / 25 / 60 km bands</div>
+                                <div id="moving-lod-summary" style="font-size: 10px; color: #aaa;">moving: --</div>
+                                <div id="settled-lod-summary" style="font-size: 10px; color: #aaa;">settled: --</div>
                             </div>
                         </div>
                     </div>
@@ -191,25 +191,6 @@
                 <!-- Frametime Graph (Always Visible) -->
                 <div class="hud-item frametime-item" style="margin-top: 15px;">
                     <canvas id="frametime-graph" width="640" height="80"></canvas>
-                </div>
-
-                <div class="info-panel">
-                    <div class="tech-header">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="3">
-                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                        </svg>
-                        Why Bestagons?
-                    </div>
-                    <div class="tech-description">
-                        Utilizing a single GPU Draw Call for terrain mesh.
-                        <span class="tech-spec">
-                            - 1DrawCall / 15k Hexes<br>
-                            - Zero DrawCall Overhead<br>
-                            - 16-Byte "HEX4" Layout<br>
-                            - Directional Skirt AO
-                        </span>
-                    </div>
                 </div>
 
                 <div class="console-panel">

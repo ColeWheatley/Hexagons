@@ -336,6 +336,7 @@ class PistonViewer {
         this.initMinimizeButton();
         this.initCollapsibleSections();
         this.initLODSliders();
+        this.initLodTruthLabels();
         this.updateFogAndClip();
 
         // WORKER SYSTEM
@@ -661,8 +662,28 @@ class PistonViewer {
             header.addEventListener('click', () => {
                 const section = header.parentElement;
                 section.classList.toggle('collapsed');
+                if (section === this.debugSectionEl && !section.classList.contains('collapsed')) {
+                    this.updateRendererDebugStats();
+                }
             });
         });
+    }
+
+    initLodTruthLabels() {
+        const km = value => `${value / 1000}`;
+        const nearBands = Array.from(this.settledLodRadii.slice(0, 3), km);
+        const farBands = Array.from(this.settledLodRadii.slice(3, 5), km);
+        const movingWidth = G.levelSize(this.movingLevel);
+        this._setHudText('near-lod-bands', `${nearBands.join(' / ')} km`);
+        this._setHudText('far-lod-bands', `${farBands.join(' / ')} km`);
+        this._setHudText(
+            'moving-lod-summary',
+            `moving: uniform skirtless L${this.movingLevel} (${movingWidth.toFixed(0)} m)`,
+        );
+        this._setHudText(
+            'settled-lod-summary',
+            `settled: fixed ${[...nearBands, ...farBands].join(' / ')} km bands`,
+        );
     }
 
     initLODSliders() {
@@ -695,6 +716,7 @@ class PistonViewer {
                 this.highTextureEnterPx = parseInt(texSlider.value, 10);
                 if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
                 this.needsLODUpdate = true;
+                this.needsRender = true;
             });
         }
 
@@ -712,6 +734,7 @@ class PistonViewer {
                 terrainBtn.style.color = '#fff';
                 gradientBtn.style.background = 'transparent';
                 gradientBtn.style.color = '#ccc';
+                this.needsRender = true;
             });
             gradientBtn.addEventListener('click', () => {
                 this.gradientMode = 1.0;
@@ -721,6 +744,7 @@ class PistonViewer {
                 gradientBtn.style.color = '#fff';
                 terrainBtn.style.background = 'transparent';
                 terrainBtn.style.color = '#ccc';
+                this.needsRender = true;
             });
         }
 
@@ -966,6 +990,7 @@ class PistonViewer {
         if (this.horizonMesh?.material?.userData?.shader) {
             this.horizonMesh.material.userData.shader.uniforms.uHazeRange.value.set(dist * 0.8, HORIZON_DISTANCE);
         }
+        this.needsRender = true;
     }
 
     async initWorld() {
@@ -1716,7 +1741,7 @@ class PistonViewer {
             this.triCountEl.textContent = this.formatHudNumber(renderInfo.triangles);
         }
         if (this.drawStatsEl) {
-            this.drawStatsEl.textContent = `${this.formatHudNumber(renderInfo.calls)} | ` +
+            this.drawStatsEl.textContent = `Calls: ${this.formatHudNumber(renderInfo.calls)} | ` +
                 `G:${this.formatHudNumber(memoryInfo.geometries)} | T:${this.formatHudNumber(memoryInfo.textures)}`;
         }
     }

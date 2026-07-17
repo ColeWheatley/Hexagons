@@ -86,8 +86,11 @@ assert.match(
 );
 
 const hud = contents.get('frontend/app/index.html');
-assert.match(hud, /moving: uniform skirtless L3 \(118 m\)/);
-assert.match(hud, /settled: fixed 2 \/ 5 \/ 10 \/ 25 \/ 60 km bands/);
+assert.match(hud, /id="moving-lod-summary"[^>]*>moving: --</);
+assert.match(hud, /id="settled-lod-summary"[^>]*>settled: --</);
+assert.match(main, /G\.levelSize\(this\.movingLevel\)/);
+assert.match(main, /Array\.from\(this\.settledLodRadii\.slice\(0, 3\), km\)/);
+assert.match(main, /Array\.from\(this\.settledLodRadii\.slice\(3, 5\), km\)/);
 
 const design = contents.get('GOSPER_DESIGN.md');
 assert.match(design, /actual rectangular perspective frustum/);
