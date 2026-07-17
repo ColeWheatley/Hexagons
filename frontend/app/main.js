@@ -1741,6 +1741,10 @@ class PistonViewer {
         this.materialChurn.resizeEvents++;
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
+        // CDP applies an emulated DPR after the document is created. Re-read
+        // the benchmark-only native cap here so the comparison arm measures
+        // the requested high-DPR backbuffer rather than startup DPR=1.
+        this.renderDprCap = renderDprCapForLocation(window.location.search, window.devicePixelRatio);
         this.renderPixelRatio = applyRenderResolution(this.renderer, {
             width: window.innerWidth,
             height: window.innerHeight,

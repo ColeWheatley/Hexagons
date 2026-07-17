@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const filename = path.join(ROOT, 'frontend/app/render_policy.js');
+const mainFilename = path.join(ROOT, 'frontend/app/main.js');
 const source = await fs.readFile(filename, 'utf8');
 const context = vm.createContext({ URLSearchParams });
 const module = new vm.SourceTextModule(source, { context, identifier: filename });
@@ -40,6 +41,9 @@ assert.deepEqual({ ...rendererOptionsForLocation('?bench=orbit') }, { antialias:
 assert.equal(renderDprCapForLocation('?bench=orbit', 3), 2, 'bench does not accidentally disable the cap');
 assert.equal(renderDprCapForLocation('?bench=orbit&benchRenderDprCap=native', 3), 3);
 assert.equal(renderDprCapForLocation('?benchRenderDprCap=native', 3), 2, 'production URL cannot disable the cap');
+const mainSource = await fs.readFile(mainFilename, 'utf8');
+assert.match(mainSource, /onResize\(\)[\s\S]*?renderDprCapForLocation\(window\.location\.search, window\.devicePixelRatio\)/,
+    'a CDP DPR override applied after startup re-evaluates the benchmark-only native cap');
 
 const calls = [];
 const renderer = {
