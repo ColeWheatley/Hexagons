@@ -230,8 +230,10 @@ async function assertNoExternalOrigins(files) {
     const failures = [];
     for (const relativePath of files) {
         const contents = await fs.readFile(path.join(distDir, relativePath), 'utf8');
-        const matches = contents.match(urlPattern);
-        if (matches) {
+        // `view_persistence` uses example.invalid only as URL()'s inert test
+        // base. It is never fetched or emitted as an application resource.
+        const matches = contents.match(urlPattern)?.filter((url) => url !== 'https://example.invalid/');
+        if (matches?.length) {
             failures.push(`${relativePath}: ${[...new Set(matches)].join(', ')}`);
         }
     }

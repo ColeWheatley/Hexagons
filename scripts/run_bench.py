@@ -16,6 +16,7 @@ Requires: pip install websockets (python3.14 user site on this machine).
 """
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import urllib.request
 
 import websockets
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME = os.environ.get("CHROME_BIN") or shutil.which("google-chrome") or shutil.which("chromium") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PORT = 9333
 LS_KEY = "hexagons:perfProfiler:lastRun"
 
@@ -82,11 +83,11 @@ class CDP:
         return res.get("result", {}).get("value")
 
 
-async def run(url, out_json, screenshot=None, timeout=300):
+async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900"):
     profile = tempfile.mkdtemp(prefix="chrome-bench-")
     proc = subprocess.Popen(
         [CHROME, "--headless=new", f"--remote-debugging-port={PORT}",
-         f"--user-data-dir={profile}", "--no-first-run", "--window-size=1440,900",
+         f"--user-data-dir={profile}", "--no-first-run", f"--window-size={viewport}",
          "--hide-crash-restore-bubble", url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -168,8 +169,9 @@ def main():
     url, out_json = args[0], args[1]
     screenshot = args[args.index("--screenshot") + 1] if "--screenshot" in args else None
     timeout = int(args[args.index("--timeout") + 1]) if "--timeout" in args else 300
+    viewport = args[args.index("--viewport") + 1] if "--viewport" in args else "1440,900"
     print(f"[bench] {url}", flush=True)
-    return asyncio.run(run(url, out_json, screenshot, timeout))
+    return asyncio.run(run(url, out_json, screenshot, timeout, viewport))
 
 
 if __name__ == "__main__":
