@@ -72,6 +72,35 @@ export function collectDisplayedTexturePages(tiles, visibilityByKey) {
     return displayed;
 }
 
+export function countUnpaintedVisibleTiles(tiles, visibilityByKey) {
+    let count = 0;
+
+    for (const [key, tile] of mapEntries(tiles)) {
+        if (!tile || tile.container?.visible === false || tile.mesh?.visible === false) continue;
+        if (visibleClassification(visibilityByKey, key) !== 'visible') continue;
+
+        let unpainted = false;
+        visitRenderedMaterials(tile.mesh, material => {
+            if (unpainted) return;
+            const bindings = material.userData?.texturePageBindings;
+            if (!Array.isArray(bindings)) return;
+            let validEntries = 0;
+            for (const binding of bindings) {
+                if (binding?.valid && binding?.texture) {
+                    validEntries++;
+                } else {
+                    unpainted = true;
+                    return;
+                }
+            }
+            if (validEntries === 0) unpainted = true;
+        });
+        if (unpainted) count++;
+    }
+
+    return count;
+}
+
 /** Count unique residency states per tier.  queued+loading is one pending page. */
 export function collectTextureTierResidency(states) {
     const loaded = tierCounts();
