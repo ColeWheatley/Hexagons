@@ -37,13 +37,6 @@ from urllib.parse import urlsplit
 import websockets
 
 CHROME = os.environ.get("CHROME_BIN") or shutil.which("google-chrome") or shutil.which("chromium") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9333
-
-def reserve_debug_port():
-    """Avoid attaching to a stale/concurrent Chrome CDP instance in CI."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(('127.0.0.1', 0))
-        return probe.getsockname()[1]
 LS_KEY = "hexagons:perfProfiler:lastRun"
 
 # A fixed, production-like "good LTE" profile. 100 ms request latency with a
@@ -193,6 +186,13 @@ class CDP:
             "awaitPromise": await_promise,
         })
         return res.get("result", {}).get("value")
+
+
+def free_debugging_port():
+    """Avoid attaching to another concurrent benchmark's Chrome instance."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 SERVICE_WORKER_STATUS = """(async () => {
@@ -381,8 +381,6 @@ def print_done(report, out_json, label=""):
 
 async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", warm_reload=False,
                device_scale_factor=1, render_cap="capped"):
-    global PORT
-    PORT = reserve_debug_port()
     if render_cap not in ("capped", "native"):
         raise ValueError("--render-cap must be capped or native")
     if device_scale_factor <= 0:
@@ -392,8 +390,9 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
         url = f"{url}{separator}benchRenderDprCap=native"
     profile = tempfile.mkdtemp(prefix="chrome-bench-")
     launch_url = "about:blank" if warm_reload else url
+    debug_port = free_debugging_port()
     proc = subprocess.Popen(
-        [CHROME, "--headless=new", f"--remote-debugging-port={PORT}",
+        [CHROME, "--headless=new", f"--remote-debugging-port={debug_port}",
          f"--user-data-dir={profile}", "--no-first-run", f"--window-size={viewport}",
          "--hide-crash-restore-bubble", launch_url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
@@ -403,7 +402,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
         ws_url = None
         for _ in range(60):
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json") as f:
+                with urllib.request.urlopen(f"http://127.0.0.1:{debug_port}/json") as f:
                     targets = json.load(f)
                 pages = [t for t in targets if t.get("type") == "page" and (
                     (warm_reload and t.get("url") == "about:blank")
