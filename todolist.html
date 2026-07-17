@@ -230,18 +230,18 @@
   <div class="done-when"><b>Verified:</b> low/mid/high select 2/3/6 workers and 64/128/256 MiB budgets; Save-Data and 3g transfer 98.5% fewer texture bytes than high in the integrated matrix; constrained profiles request zero high pages; high retains a full 4096 px upload; all five runs report zero context loss/OOM.</div>
 </div>
 
-<div class="item" data-id="aa12">
-  <div class="title-line"><input type="checkbox" id="aa12"><label for="aa12">AA-12 — Ship a small search index instead of parsing 1.7 MB of GeoJSON, and rank matches properly</label></div>
-  <div class="meta"><span>Frontend + backend</span><span class="gain-h">Gain: high (search feel)</span><span class="solver-cheap">Implementation + 50-query/82 KB gzip gates pass; long-task browser gate remains</span></div>
+<div class="item checked" data-id="aa12">
+  <div class="title-line"><input type="checkbox" id="aa12" checked><label for="aa12">AA-12 — Ship a small search index instead of parsing 1.7 MB of GeoJSON, and rank matches properly</label></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-h">Gain: high (search feel)</span><span class="solver-cheap">✓ 50-query/82 KB gzip contracts + live cold-search gate</span></div>
   <p>The search box loads the raw 1.73 MB peaks file (the GeoJSON with all 4,368 summit names) and parses it on the main thread the first time you click it. Matching is exact-substring only — no diacritic folding, so typing "zuckerhutl" won't find "Zuckerhütl" — and the result list is cut to 10 <em>before</em> checking which results are actually on the baked map, so reachable peaks can be hidden behind unreachable ones. Bake a compact index (normalized names, aliases, type, elevation, coordinates, coverage flag), do fuzzy diacritic-insensitive ranking, and rank available results before limiting.</p>
-  <div class="done-when"><b>Done when:</b> a ~50-query fixture (umlauts, typos, prefixes) passes; search payload drops well below 1.73 MB; no long main-thread task over 50 ms on first search; an on-map match is never hidden by off-map ones.</div>
+  <div class="done-when"><b>Verified:</b> 50-query umlaut/typo/prefix fixture passes; payload is 82,427 B gzip; on-map-first limiting passes; live cold search returned two rows with zero long tasks and keyboard-selected Habicht in 65.9 ms.</div>
 </div>
 
-<div class="item" data-id="aa13">
-  <div class="title-line"><input type="checkbox" id="aa13"><label for="aa13">AA-13 — Fix the lying and dead UI: FPS readout, static labels, no-op controls</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (trust)</span><span class="solver-frontier">🟣 Frontier acceptance passed at <code>40e201c</code></span><span>Browser interaction QA remains</span></div>
+<div class="item checked" data-id="aa13">
+  <div class="title-line"><input type="checkbox" id="aa13" checked><label for="aa13">AA-13 — Fix the lying and dead UI: FPS readout, static labels, no-op controls</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (trust)</span><span class="solver-frontier">🟣 Frontier acceptance passed at <code>40e201c</code></span><span>✓ Live control/HUD gate</span></div>
   <p>Several HUD elements actively mislead: the FPS counter shows 2–4 when the app is healthily idle (it divides <em>rendered</em> frames by wall-clock time, and render-on-demand legitimately skips frames — this is the KNOWN_BUGS "sintered FPS" mystery, mostly a display artifact); the location label is hardcoded to "SULZENAU, TIROL" forever; the triangle/precision/benchmark fields show placeholder dashes that nothing updates; the "ADVANCED TOUCH" toggle and the log COPY button have no code behind them at all. Show "idle" when idle and real FPS when active; wire or delete every dead element.</p>
-  <div class="done-when"><b>Done when:</b> idle never displays as 2–4 FPS; every visible control has a test proving it does something within one frame; no static placeholder text remains.</div>
+  <div class="done-when"><b>Verified:</b> 20/20 STATIC samples display <code>FPS: IDLE</code>; all 12 expected controls—including fatal Retry—produce observable state changes; no visible fields or console retain static placeholders. The browser gate caught and fixed STATIC maintenance renders previously reporting numeric FPS.</div>
 </div>
 
 <div class="item" data-id="aa14">
@@ -251,18 +251,18 @@
   <div class="done-when"><b>Done when:</b> scripted keys produce deterministic motion; text inputs keep their keys; the shareable URL updates; Safari on macOS passes pinch + twist; Chrome and Firefox on macOS pass pinch with a clean no-twist fallback; iOS behavior is unchanged.</div>
 </div>
 
-<div class="item" data-id="aa15">
-  <div class="title-line"><input type="checkbox" id="aa15"><label for="aa15">AA-15 — Remember the visitor's place and settings between sessions</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">Persistence contracts pass; browser reload QA remains</span></div>
+<div class="item checked" data-id="aa15">
+  <div class="title-line"><input type="checkbox" id="aa15" checked><label for="aa15">AA-15 — Remember the visitor's place and settings between sessions</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">✓ Two-path live reload + URL precedence gate</span></div>
   <p>The app already builds shareable URLs encoding the camera position (the COPY LINK button), but nothing persists across sessions — every visit starts back at the default view with default slider settings, and the visible location/URL doesn't update after a search selection or custom touch gesture. Persist camera + settings to localStorage, restore when no explicit view URL is present (URL always wins), and make search selections and touch moves update the shareable state like mouse moves do.</p>
-  <div class="done-when"><b>Done when:</b> set view → reload → same view; a shared URL still overrides; selecting a search result updates the URL within 500 ms.</div>
+  <div class="done-when"><b>Verified:</b> URL-free reload restores the stored six-component pose within 0.0003865 scene units; an explicit shared URL overrides a conflicting stored pose within 0.0001471; keyboard search changes camera and URL in 65.9 ms. The live gate caught and fixed the persisted <code>sceneY_m</code> field being read as URL-shaped <code>sceneY</code>.</div>
 </div>
 
-<div class="item" data-id="aa16">
-  <div class="title-line"><input type="checkbox" id="aa16"><label for="aa16">AA-16 — Accessibility pass on the UI shell</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (and cheap)</span><span class="solver-cheap">DOM/keyboard/reduced-motion contracts pass; axe/screen-reader gate remains</span></div>
+<div class="item checked" data-id="aa16">
+  <div class="title-line"><input type="checkbox" id="aa16" checked><label for="aa16">AA-16 — Accessibility pass on the UI shell</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (and cheap)</span><span class="solver-cheap">✓ Live keyboard/reduced-motion/axe gate</span></div>
   <p>The overlay UI is essentially invisible to assistive tech: the search box has no combobox/listbox roles or result announcements, panels collapse via bare click-handlers on divs, collapsed content stays in the tab order, there's no reduced-motion handling (the loader's skier animation always runs), and focus is never visibly managed. All standard patterns, all verifiable by automated audit.</p>
-  <div class="done-when"><b>Done when:</b> axe-core reports zero serious/critical issues; full search flow works keyboard-only; <code>prefers-reduced-motion</code> stills the animations.</div>
+  <div class="done-when"><b>Verified:</b> axe-core reports zero serious/critical issues; CDP Tab + typing + ArrowDown + Enter completes the Habicht search flow; map keys are isolated while typing; reduced-motion computes a 0.00001 s, one-iteration loader animation.</div>
 </div>
 
 <div class="item checked" data-id="aa17">
@@ -440,7 +440,7 @@
 <p><b>Wave 0 (closed 2026-07-17):</b> P1 + P2 + P3 — fresh 197-island/149-page bake, headless ANGLE Metal benchmark, and 490.1 ms localhost TTFTF baseline verified.</p>
 <p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–6 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, direct texture ladder/residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, and adaptive capability budgets. A*-2's complete resource lifecycle and transition suite are integrated at <code>f0d4775</code>; A*-3's measured exact-parity material-churn fix is integrated at <code>c3ec04d</code>. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
 <p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The WebP three-run median is <b>237 ms (57% faster)</b>; the final integrated cold trace is 208 ms profiler-relative, with first high installed at 541 ms and zero serialization warnings. Warm good-LTE TTFTF improves 87.1%. The 60-second orbit is 119.9 FPS with 9.5 ms p95. Fault recovery repaints in 161 ms; Save-Data/3g transfer 98.5% fewer texture bytes than high. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
-<p><b>Still objectively open:</b> AA-10 retains its human DPR screenshot-quality gate; AA-12/13/15/16/20 are running through the strengthened release-browser matrix; AA-14 retains physical Mac trackpad feel/fallback checks. AV-1 and AV-9 still need visual/on-device acceptance. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source. AA-1, AA-3, AA-22, A*-2 and A*-3 are closed by their live objective evidence.</p>
+<p><b>Still objectively open:</b> AA-20 is running through the final exact-build release-browser matrix. AA-10 retains its human DPR screenshot-quality gate; AA-14 retains physical Mac trackpad feel/fallback checks. AV-1 and AV-9 still need visual/on-device acceptance. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source. AA-1, AA-3, AA-12, AA-13, AA-15, AA-16, AA-22, A*-2 and A*-3 are closed by their live objective evidence.</p>
 <p><b>Resolved by Cole:</b> current rotation is approved and should reach notebook touchpads where APIs permit; slope palette/thresholds stay with a subtle dynamic legend/scale/compass; offline/app packaging and persistent labels are deferred; settled blur is accepted; and 8×6 residency is the tentative production texture profile. H-4 (public voice/hierarchy) and H-6 (data-provenance policy) remain human decisions.</p>
 </div>
 
