@@ -60,6 +60,13 @@ import {
     createTouchGestureScratch,
 } from './touch_gesture.js?v=touchalloc1';
 import {
+    commitIfChanged,
+    normalizedWheelPixels,
+    resolveNavigationKey,
+    shouldHandleNormalizedPinch,
+    supportsDesktopGestureEvents,
+} from './desktop_navigation.js';
+import {
     buildTexturePageShaderSwitch,
     MAX_TEXTURE_PAGE_BINDINGS,
 } from './texture_page_shader.js';
@@ -265,6 +272,8 @@ class PistonViewer {
         );
         this.observedCameraPose = new Float64Array(10);
         this.viewState = new ShareableViewState(this);
+        this.defaultViewPose = null;
+        this.initDesktopNavigation();
 
         this.needsRender = true;
         this.lastLODCamPos = new THREE.Vector3().copy(this.camera.position);
@@ -523,6 +532,117 @@ class PistonViewer {
         el.addEventListener('pointerup', clearTouch, { passive: true });
         el.addEventListener('pointercancel', clearTouch, { passive: true });
         el.addEventListener('lostpointercapture', clearTouch, { passive: true });
+    }
+
+    initDesktopNavigation() {
+        const canvas = this.renderer.domElement;
+        const commitMotion = (changed) => commitIfChanged(changed, () => {
+            this.camera.lookAt(this.controls.target);
+            this.controls.update();
+            this.needsRender = true;
+            this.notifyCameraMotion(performance.now());
+            this.viewState?.commitViewChange();
+        });
+
+        window.addEventListener('keydown', (event) => {
+            const action = resolveNavigationKey(event);
+            if (!action) return;
+            event.preventDefault();
+            commitMotion(this.applyDesktopNavigationAction(action));
+        });
+
+        // Chromium and Firefox expose trackpad pinch as ctrl+wheel. Normalize
+        // deltaMode here because their pixel/line units otherwise feel wildly
+        // different. This capture listener is scoped to the canvas and consumes
+        // only pinch-shaped wheel events; ordinary wheel zoom stays MapControls.
+        canvas.addEventListener('wheel', (event) => {
+            if (!shouldHandleNormalizedPinch(event, navigator)) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const pixels = normalizedWheelPixels(event, canvas.clientHeight || window.innerHeight);
+            commitMotion(this.dollyDesktop(Math.exp(pixels * 0.002)));
+        }, { capture: true, passive: false });
+
+        // Safari's desktop GestureEvent is the only web API that exposes twist.
+        // iOS/iPadOS is excluded by supportsDesktopGestureEvents, leaving the
+        // existing PointerEvent two-finger implementation byte-for-byte intact.
+        if (supportsDesktopGestureEvents(window, navigator)) {
+            let previousScale = 1;
+            let previousRotation = 0;
+            canvas.addEventListener('gesturestart', (event) => {
+                previousScale = event.scale || 1;
+                previousRotation = event.rotation || 0;
+                event.preventDefault();
+            }, { passive: false });
+            canvas.addEventListener('gesturechange', (event) => {
+                event.preventDefault();
+                const scale = event.scale || previousScale;
+                const rotation = event.rotation || previousRotation;
+                const zoomChanged = this.dollyDesktop(previousScale / scale);
+                const yawChanged = this.yawDesktop((rotation - previousRotation) * Math.PI / 180);
+                previousScale = scale;
+                previousRotation = rotation;
+                commitMotion(zoomChanged || yawChanged);
+            }, { passive: false });
+        }
+    }
+
+    applyDesktopNavigationAction(action) {
+        if (action === 'reset') return this.resetDefaultView();
+        if (action === 'zoom-in') return this.dollyDesktop(0.82);
+        if (action === 'zoom-out') return this.dollyDesktop(1.22);
+
+        const distance = this.camera.position.distanceTo(this.controls.target);
+        const step = Math.max(25, distance * 0.08);
+        const forward = new THREE.Vector3(
+            this.controls.target.x - this.camera.position.x,
+            0,
+            this.controls.target.z - this.camera.position.z,
+        );
+        if (forward.lengthSq() < 1e-8) forward.set(0, 0, -1);
+        forward.normalize();
+        const right = new THREE.Vector3(-forward.z, 0, forward.x);
+        const delta = action === 'pan-forward' ? forward
+            : action === 'pan-back' ? forward.multiplyScalar(-1)
+                : action === 'pan-right' ? right : right.multiplyScalar(-1);
+        delta.multiplyScalar(step);
+        this.camera.position.add(delta);
+        this.controls.target.add(delta);
+        return true;
+    }
+
+    dollyDesktop(factor) {
+        if (!Number.isFinite(factor) || factor <= 0) return false;
+        const offset = this.camera.position.clone().sub(this.controls.target);
+        const distance = offset.length();
+        const nextDistance = Math.max(this.controls.minDistance,
+            Math.min(this.controls.maxDistance, distance * factor));
+        if (!Number.isFinite(distance) || distance < 1e-8 || Math.abs(nextDistance - distance) < 1e-6) return false;
+        this.camera.position.copy(this.controls.target).add(offset.multiplyScalar(nextDistance / distance));
+        return true;
+    }
+
+    yawDesktop(radians) {
+        if (!Number.isFinite(radians) || Math.abs(radians) < 1e-5) return false;
+        const offset = this.camera.position.clone().sub(this.controls.target);
+        offset.applyAxisAngle(this.controls.up || new THREE.Vector3(0, 1, 0), radians);
+        this.camera.position.copy(this.controls.target).add(offset);
+        return true;
+    }
+
+    captureDefaultView() {
+        this.defaultViewPose = {
+            camera: this.camera.position.clone(),
+            target: this.controls.target.clone(),
+        };
+    }
+
+    resetDefaultView() {
+        if (!this.defaultViewPose) return false;
+        this.camera.position.copy(this.defaultViewPose.camera);
+        this.controls.target.copy(this.defaultViewPose.target);
+        this.bootstrapVisibilityFloor?.(this.controls.target);
+        return true;
     }
 
     handleTwoFingerGesture(event) {
@@ -1658,6 +1778,7 @@ class PistonViewer {
 
             this.camera.position.set(startX, 1200, startZ);
             this.controls.target.set(startX, 0, startZ);
+            this.captureDefaultView();
             this.bootstrapVisibilityFloor(this.controls.target);
             this.notifyCameraMotion(performance.now());
             this.controls.update();
