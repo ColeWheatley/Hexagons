@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hexagons — Consolidated Upgrade Todolist</title>
+<style>
+  :root {
+    --bg:#fff; --fg:#1a1d21; --muted:#5b636d; --line:#e2e6eb; --card:#f6f8fa;
+    --accent:#0b6bcb; --accent-bg:#eaf3fc;
+    --p-bg:#fdeaea; --p-fg:#a12b2b;
+    --aa-bg:#eaf6ee; --aa-fg:#1d6b3a;
+    --as-bg:#e8f0fb; --as-fg:#274f8f;
+    --av-bg:#fdf6e3; --av-fg:#8a6d00;
+    --h-bg:#f3ecfa; --h-fg:#6b3fa0;
+    --cheap:#1d6b3a; --std:#274f8f; --frontier:#8f2774; --visual:#8a6d00;
+    --done:#9aa4ae;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#14171b; --fg:#e6e9ed; --muted:#98a2ad; --line:#2b3138; --card:#1c2127;
+      --accent:#6cb2f5; --accent-bg:#1a2a3c;
+      --p-bg:#362022; --p-fg:#ef9a9a;
+      --aa-bg:#1b2e22; --aa-fg:#7fd39a;
+      --as-bg:#1c2738; --as-fg:#93b8ec;
+      --av-bg:#33301c; --av-fg:#e3c860;
+      --h-bg:#2a2233; --h-fg:#c6a3ee;
+      --cheap:#7fd39a; --std:#93b8ec; --frontier:#e792c8; --visual:#e3c860;
+      --done:#5c6570;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.58 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:1000px; margin:0 auto; padding:40px 24px 90px; }
+  h1 { font-size:1.65rem; margin:0 0 4px; }
+  h2 { font-size:1.3rem; margin:48px 0 4px; padding-top:22px; border-top:1px solid var(--line); }
+  h2 .badge { vertical-align:3px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  code { font:0.85em ui-monospace,"SF Mono",Menlo,monospace; background:var(--card); padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; font-size:0.7rem; font-weight:700; letter-spacing:.05em;
+           padding:2px 9px; border-radius:99px; text-transform:uppercase; }
+  .badge.p  { background:var(--p-bg);  color:var(--p-fg); }
+  .badge.aa { background:var(--aa-bg); color:var(--aa-fg); }
+  .badge.as { background:var(--as-bg); color:var(--as-fg); }
+  .badge.av { background:var(--av-bg); color:var(--av-fg); }
+  .badge.h  { background:var(--h-bg);  color:var(--h-fg); }
+  .item { border:1px solid var(--line); border-radius:12px; padding:16px 18px 14px; margin:14px 0; background:var(--bg); }
+  .item.checked { opacity:.55; }
+  .item.checked .title-line label { text-decoration:line-through; }
+  .title-line { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .title-line input[type=checkbox] { transform:translateY(2px) scale(1.25); accent-color:var(--accent); flex:none; }
+  .title-line label { font-weight:700; font-size:1.03rem; cursor:pointer; }
+  .meta { display:flex; gap:8px; flex-wrap:wrap; margin:7px 0 9px; font-size:0.78rem; }
+  .meta span { background:var(--card); border:1px solid var(--line); border-radius:99px; padding:1px 10px; color:var(--muted); }
+  .meta .gain-vh { color:var(--aa-fg); font-weight:700; }
+  .meta .gain-h  { color:var(--aa-fg); }
+  .meta .gain-m  { color:var(--av-fg); }
+  .meta .gain-l  { color:var(--muted); }
+  .meta .solver-cheap { color:var(--cheap); font-weight:600; }
+  .meta .solver-std { color:var(--std); font-weight:600; }
+  .meta .solver-frontier { color:var(--frontier); font-weight:600; }
+  .meta .solver-visual { color:var(--visual); font-weight:600; }
+  .item p { margin:7px 0; }
+  .item .done-when { font-size:0.9rem; color:var(--muted); border-left:3px solid var(--line); padding-left:12px; margin-top:10px; }
+  .item .done-when b { color:var(--fg); }
+  .callout { border:1px solid var(--line); border-left:4px solid var(--accent); background:var(--accent-bg);
+             border-radius:8px; padding:13px 17px; margin:16px 0; }
+  .gloss { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:6px 20px 14px; margin:20px 0; }
+  .gloss dt { font-weight:700; margin-top:11px; }
+  .gloss dd { margin:2px 0 0 0; color:var(--muted); }
+  .legend-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin:16px 0; }
+  .legend-grid > div { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:11px 14px; font-size:0.88rem; }
+  .legend-grid b { display:block; margin-bottom:3px; }
+  .foot { margin-top:50px; font-size:0.85rem; color:var(--muted); border-top:1px solid var(--line); padding-top:16px; }
+  details { margin:14px 0; }
+  summary { cursor:pointer; font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Hexagons — Consolidated Upgrade Todolist</h1>
+<p class="sub">The single consolidated Fable + Codex frontend upgrade board, 2026-07-17. The two source audits were removed after consolidation. Checkboxes persist in your browser (localStorage). Each item says what it is in plain language, why it matters, when it's done, and what kind of solver to send it to.</p>
+
+<div class="legend-grid">
+  <div><b><span class="badge p">P · Prerequisite</span></b>Unblockers. The measurable items below can't be verified until these are done.</div>
+  <div><b><span class="badge aa">AA · Delegate now</span></b>Clear implementation, objective pass/fail (load time, bytes, memory, FPS, automated tests). Rank by gain and fire.</div>
+  <div><b><span class="badge as">A* · Agent project</span></b>Objective outcome, but broad enough (architecture, diagnosis) that it needs milestones, not one-shot delegation.</div>
+  <div><b><span class="badge av">AV · Agent + visual gate</span></b>An agent builds it; a human (or a visual-harness agent) approves how it looks and feels.</div>
+  <div><b><span class="badge h">H · Human first</span></b>A product/design/safety decision must be made before any agent can build the right thing.</div>
+</div>
+
+<div class="legend-grid">
+  <div><b>🟢 Cheap &amp; simple</b>Mechanical, well-specified, hard to get wrong. Default to Codex Terra at low effort; use Sol low when the slice is small but code-dense.</div>
+  <div><b>🔵 Standard</b>Well-scoped implementation with a few judgment calls. Terra high or Sol low/medium is the normal fit.</div>
+  <div><b>🟣 Frontier</b>Real problem-solving: cross-stack design, subtle invariants, diagnosis. Use frontier Sol at high/xhigh effort; a cheap pass is not the acceptance review.</div>
+  <div><b>👁 Visual harness</b>The solver must drive a browser, take screenshots, and judge them — Sol-class visual tooling (not necessarily Ultra). Pure-text agents fail these silently.</div>
+</div>
+
+<details class="gloss" open>
+<summary>Glossary — terms used below</summary>
+<dl>
+  <dt>Manifest (<code>tile_manifest.json</code>)</dt><dd>A ~95 KB JSON "table of contents": lists every terrain island and every texture page with its bounds and sizes. It's the first thing the app downloads; nothing renders without it.</dd>
+  <dt>Gosper island / geometry binaries (<code>gosper_*.bin</code>)</dt><dd>The unit of terrain. One island = a snowflake-shaped cluster of 16,807 small hexes (6.4 m each), stored as one ~280 KB binary file holding elevations and slopes. The current map is 197 islands around Stubai. "Matching binaries" in the Codex audit meant: the manifest lists 197 of these files but zero existed on disk — the checkout's data was from an older format.</dd>
+  <dt>Texture pages &amp; tiers</dt><dd>The aerial photography, cut into 1024 m squares ("pages"), each baked at three resolutions ("tiers"): low 128 px, medium 256 px, high 4096 px. Stored as KTX2 files — a GPU-compressed image format that stays compressed in video memory, so a high page costs ~7 MB of VRAM instead of ~67 MB.</dd>
+  <dt>Basis transcoder</dt><dd>A WebAssembly decoder (~a few MB of memory per copy) that converts KTX2 files into whatever compressed format the user's specific GPU speaks. Runs inside the worker threads.</dd>
+  <dt>Worker pool ("round-robin workers")</dt><dd>2–6 background browser threads that parse geometry binaries and decode textures so the main thread doesn't stutter. "Round-robin" just means jobs are dealt to them in turn — and currently each one may load its own copy of the Basis decoder.</dd>
+  <dt>Residency / VRAM ledger</dt><dd>"Residency" = which texture pages are currently held in memory. The VRAM ledger (<code>vram_ledger.js</code>) is the app's own bookkeeping of GPU memory use; the high tier has a 256 MB budget with least-recently-used eviction.</dd>
+  <dt>The peaks GeoJSON</dt><dd>Yes — <code>assets/tirol_peaks.geojson</code> is the file with the peak names: 4,368 Tirol summits with name, elevation, prominence. It's 1.73 MB and is parsed on the main thread the first time you click the search box.</dd>
+  <dt>DPR (devicePixelRatio)</dt><dd>How many physical pixels per CSS pixel. A retina laptop is 2, phones up to 3+. Rendering at DPR 3 costs ~9× the pixels of DPR 1. The app currently renders at full native DPR, uncapped.</dd>
+  <dt>Render-on-demand</dt><dd>The animation loop runs every frame but skips actually drawing when nothing changed. Saves battery — and is why the FPS readout "drops to 2–4" when idle: the counter divides rendered frames by wall-clock time.</dd>
+  <dt>Sintered / engine states</dt><dd>The app's activity ladder: MOVING (camera in motion) → SINTERING (just stopped, upgrading quality) → STATIC (settled, renders only on demand).</dd>
+  <dt>TTFTF</dt><dd>Time To First Textured Frame — from page open until the visible terrain is fully painted with real imagery. The single best first-impression metric.</dd>
+  <dt>Diagnostic tattoos</dt><dd>Colored watermarks the baker stamps onto texture tiers in dev bakes (green=low, blue=medium, pink=high) so you can see which tier is on screen. The live beta currently shows them to the public.</dd>
+</dl>
+</details>
+
+<!-- ==================== P ==================== -->
+<h2><span class="badge p">P</span> Prerequisites</h2>
+
+<div class="item checked" data-id="p1">
+  <div class="title-line"><input type="checkbox" id="p1" checked><label for="p1">P1 — Rebake the map so the code and the data match again</label></div>
+  <div class="meta"><span>Backend</span><span class="gain-vh">Gain: unblocks everything</span><span class="solver-cheap">✓ Closed 2026-07-17</span></div>
+  <p>The app's code and manifest expect the new Gosper-format geometry files and <code>aerial_pages/</code> texture folders, but the checkout contained only the previous generation's data — so a fresh clone literally cannot render. Root cause found during this session: <code>hex_backend/aerial_tifs</code> (the source aerial photos the baker reads) had been replaced by a symlink pointing at itself, so the baker saw zero photos, skipped everything, and even overwrote the manifest with an empty one. The real Stubai photos had been moved to <code>hex_backend/stubai/</code> — but that subset was missing 63 edge tiles, which are being re-downloaded from the Tirol government server now.</p>
+  <div class="done-when"><b>Verified:</b> the current manifest and asset tree contain 197 Gosper islands and 149 low, medium, and high texture pages; the cold-load run streamed textured terrain.</div>
+</div>
+
+<div class="item checked" data-id="p2">
+  <div class="title-line"><input type="checkbox" id="p2" checked><label for="p2">P2 — Get the automated benchmark working in a headless browser again</label></div>
+  <div class="meta"><span>Tooling</span><span class="gain-vh">Gain: unblocks all measured items</span><span class="solver-cheap">✓ Closed 2026-07-17</span></div>
+  <p>The repo has a good benchmark harness: <code>scripts/run_bench.py</code> launches Chrome without a window, runs a scripted camera flight (<code>?bench=orbit</code>), and collects a JSON performance report. It was last recorded as <b>blocked</b> because the browser available inside the Codex sandbox couldn't do WebGL (3D rendering), making every measurement invalid. On this machine, normal headless Chrome does support WebGL — the fix is running the bench from outside the sandbox, or granting the sandbox the real Chrome. Every "done when" below that mentions load time, FPS, or memory assumes this works.</p>
+  <div class="done-when"><b>Verified:</b> headless reports identify <code>ANGLE Metal Renderer: Apple M1 Pro</code>, expose ASTC/S3TC/ETC support, and produce completed orbit and cold-load JSON reports.</div>
+</div>
+
+<div class="item checked" data-id="p3">
+  <div class="title-line"><input type="checkbox" id="p3" checked><label for="p3">P3 — Teach the profiler to measure first-load speed</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: unblocks first-load gates</span><span class="solver-cheap">✓ Closed 2026-07-17</span></div>
+  <p>The built-in profiler measures frame times, memory, and evictions — but has no notion of "how fast did the map appear," which is where the biggest wins on this list live. Add milestone timestamps: manifest loaded, first terrain mesh visible, loader dismissed, first real texture on screen, and visible-area-fully-textured (TTFTF). They ride along in the existing report JSON, so the bench harness picks them up for free.</p>
+  <div class="done-when"><b>Verified:</b> the cold-load report contains monotonic manifest, first-tile, first-texture, visible-coverage, and loader milestones. The current localhost TTFTF baseline is <b>490.1 ms</b>.</div>
+</div>
+
+<!-- ==================== AA ==================== -->
+<h2><span class="badge aa">AA</span> Delegate now — objective pass/fail, ranked by gain</h2>
+<p class="sub">Every one of these can go to Codex with a numeric gate. Order is by expected user-experience gain.</p>
+
+<div class="item" data-id="aa1">
+  <div class="title-line"><input type="checkbox" id="aa1"><label for="aa1">AA-1 — Make publishing a release atomic and self-verifying</label></div>
+  <div class="meta"><span>Backend + deploy</span><span class="gain-vh">Gain: very high (prevents broken site)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>Deploying today means the baker syncs files to the S3 bucket and that's it — nothing verifies that every geometry binary and texture page the manifest promises actually made it up, with the right content types and cache headers. The "app expects 197 files, zero exist" situation this repo was just in is exactly the failure this prevents, but in production. Change the deploy to: upload all assets first, verify each referenced URL responds correctly (existence, hash, headers, one sample decode), refuse to publish any manifest that still has diagnostic tattoos enabled, and only then flip the manifest "pointer" — so a half-finished upload leaves the previous working version live.</p>
+  <div class="done-when"><b>Done when:</b> a deliberately interrupted upload leaves the old release working; a tattooed manifest is rejected; every published URL passes the automated check.</div>
+</div>
+
+<div class="item" data-id="aa2">
+  <div class="title-line"><input type="checkbox" id="aa2"><label for="aa2">AA-2 — Make failures finite and recoverable (fetches, workers, GPU resets)</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (reliability)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>Right now, a failed terrain download silently never appears (no retry); a failed manifest leaves the loading screen spinning forever; and if the GPU resets (which happens — laptops on battery, driver hiccups, memory pressure) the app goes permanently blank because nothing listens for the "context restored" event. Add: bounded retries with increasing delays for every network fetch, an explicit user-visible error state with a Retry button instead of an infinite spinner, a rebuild path after GPU context loss, and a friendly "this device isn't supported" screen instead of a silent console exception.</p>
+  <div class="done-when"><b>Done when:</b> under a fault-injection proxy that drops 10% of requests, all terrain eventually appears; a forced GPU context loss recovers within 5 s; no failure leaves the spinner up more than 10 s; no resource is retried more than 3 times.</div>
+</div>
+
+<div class="item" data-id="aa3">
+  <div class="title-line"><input type="checkbox" id="aa3"><label for="aa3">AA-3 — Keep profiler overhead out of production; bound it in Stubai beta</label></div>
+  <div class="meta"><span>Frontend + release config</span><span class="gain-vh">Gain: very high (hidden cost on every session)</span><span class="solver-cheap">🟢 Cheap after the mode flag is explicit</span><span>Scope set by Cole</span></div>
+  <p>Make mode explicit in release/manifest configuration: <b>beta means the small Stubai-only imagery square</b>; production means the selected production region. Stubai beta may retain bounded crash-recovery telemetry because it is useful during testing, but it must use a ring buffer/incremental statistics instead of an ever-growing frame array and repeated whole-run serialization. Production visitors get no profiler instance or periodic persistence by default. Full-fidelity profiling remains an explicit <code>?bench=1</code> override in either mode. Do not infer mode from page count or geographic extent.</p>
+  <div class="done-when"><b>Done when:</b> a 30-minute Stubai-beta session shows flat profiler memory; production exposes no profiler or profiler timer unless <code>?bench=1</code>; benchmark reports remain equivalent; a config test proves Stubai beta and production select the intended behavior.</div>
+</div>
+
+<div class="item" data-id="aa4">
+  <div class="title-line"><input type="checkbox" id="aa4"><label for="aa4">AA-4 — Load textures instantly on first visit via a tiny "bootstrap" tier (WebP)</label></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-vh">Gain: very high (first impression)</span><span class="solver-frontier">🟣 Frontier — cross-stack design touching the bake pipeline, texture contract, and VRAM bookkeeping</span></div>
+  <p>Cole's idea. First load is network-bound, and for photographic imagery a small WebP is a fraction of the bytes of the equivalent KTX2 file at similar perceptual quality — plus the browser decodes WebP off-thread for free, no WASM transcoder in the critical path. Add a fourth, deliberately <em>transient</em> tier: a tiny WebP per page fetched first so terrain is painted almost immediately, then lazily replaced by the proper compressed low tier when the network is quiet, at which point the WebP version is released. The catch that makes this frontier-grade: a decoded WebP sits in GPU memory <em>uncompressed</em> (~15× more bytes per pixel than the compressed tiers), so the VRAM ledger must track the interim pages and the lazy replacement is mandatory correctness, not polish.</p>
+  <div class="done-when"><b>Done when:</b> cold-cache TTFTF improves ≥25% (3 runs, median), steady-state VRAM is unchanged, and total first-session bytes rise by no more than the low tier's size.</div>
+</div>
+
+<div class="item" data-id="aa5">
+  <div class="title-line"><input type="checkbox" id="aa5"><label for="aa5">AA-5 — Only load texture pages the camera can actually see</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (bytes + VRAM)</span><span class="solver-frontier">🟣 Frontier — touches the visibility planner; subtle regressions are easy</span></div>
+  <p>The live beta downloads <em>all</em> 149 low-resolution and <em>all</em> 149 medium-resolution texture pages up front — the entire map's imagery — regardless of where the camera is pointing. On the current Stubai square that's tolerable; for the larger selected production region it will not be. Make low/medium residency demand-driven like the high tier already is: keep pages that are visible, a guard ring around the view, and a small predictive set — nothing else before idle. Compounds directly with AA-4: demand-driven + bootstrap WebP is the complete first-load story.</p>
+  <div class="done-when"><b>Done when:</b> no off-screen page is requested before idle; cold-load bytes and peak VRAM drop; scripted orbit/traverse flights show zero visibly-blank pages.</div>
+</div>
+
+<div class="item" data-id="aa6">
+  <div class="title-line"><input type="checkbox" id="aa6"><label for="aa6">AA-6 — Bundle the code, self-host dependencies, compress everything</label></div>
+  <div class="meta"><span>Frontend + deploy</span><span class="gain-vh">Gain: very high (startup)</span><span class="solver-std">🔵 Standard (build tooling has a wide blast radius)</span></div>
+  <p>Startup currently pays for: ~15 separate unminified JavaScript module requests (the main file alone is 169 KB raw, ~45 KB gzipped); the Three.js 3D library fetched from a third-party CDN (unpkg — extra connection, and their outage is your outage); a Google font that blocks rendering; and a completely dead touch library (<code>hammer.min.js</code>) that is loaded and referenced nowhere. Also: geometry binaries, the manifest, and the 1.73 MB peaks file are served uncompressed (the manifest gzips 94.7→13.3 KB). Bundle + minify with content-hashed filenames (replacing the hand-maintained <code>?v=</code> cache-busters), vendor Three.js, self-host the font, delete the dead library and the never-imported <code>lod_controller.js</code> and the unused CSS map layer, and precompress text/binary assets for the CDN.</p>
+  <div class="done-when"><b>Done when:</b> app reaches ready with all third-party domains blocked; requests before first render drop from ~15 to ~3; transfer bytes drop ≥40%; benchmark FPS unregressed.</div>
+</div>
+
+<div class="item" data-id="aa7">
+  <div class="title-line"><input type="checkbox" id="aa7"><label for="aa7">AA-7 — Cache assets for instant repeat visits (service worker)</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (returning users)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>Nothing is cached across visits today — the page shell and manifest are explicitly marked "never store," so every visit re-pays most of the startup cost. Since every large asset URL already carries a version key that changes when data is rebaked, a cache-first service worker for geometry, textures, and bundled code is safe and mechanical. Note this is <em>not</em> the "offline mountain mode" product feature (that's H-3, a real decision about storage budgets and consent) — this is just standard browser caching done right.</p>
+  <div class="done-when"><b>Done when:</b> second visit fetches only the manifest; warm reload TTFTF improves ≥60%; a rebake with new version keys invalidates cleanly.</div>
+</div>
+
+<div class="item" data-id="aa8">
+  <div class="title-line"><input type="checkbox" id="aa8"><label for="aa8">AA-8 — Stop doing per-frame work while the app sits idle</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (battery, background CPU)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>Even when the map is completely settled, the animation loop wakes up 60× per second and does real work — queue maintenance, camera math, culling checks, profiler feeding — before deciding "nothing changed" and skipping the draw. And it keeps doing all of it when the tab is hidden (there's no visibility handling at all). Restructure to event-driven waking: input, resize, a worker finishing, or a settle timer wakes the scheduler; a hidden tab pauses it entirely. This also relates to the KNOWN_BUGS question of whether "sintered mode" is wasting battery — after this change, the answer is provably no.</p>
+  <div class="done-when"><b>Done when:</b> after 2 s settled: zero renders and ≤1 scheduler callback/second; input wakes within one frame; hidden-tab CPU is ~0%; loading still progresses normally.</div>
+</div>
+
+<div class="item" data-id="aa9">
+  <div class="title-line"><input type="checkbox" id="aa9"><label for="aa9">AA-9 — Give textures their own worker lane and stop duplicating the decoder</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (memory + first texture)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>The 2–6 background worker threads treat geometry parsing and texture decoding as interchangeable jobs dealt out in turn. Two consequences: each worker may end up loading its own multi-megabyte copy of the Basis texture decoder, and after a fast pan a burst of geometry jobs can starve texture decoding — terrain appears but stays unpainted. Dedicate one or two workers to textures with a single pre-warmed decoder, keep the rest for geometry, and let stale jobs from an abandoned view be cancelled rather than completed (view epochs / abortable jobs).</p>
+  <div class="done-when"><b>Done when:</b> at most two decoder instances exist; peak JS heap drops measurably; under throttled load, first textured terrain improves ≥20%; a rapid pan cancels the previous view's queued jobs.</div>
+</div>
+
+<div class="item" data-id="aa10">
+  <div class="title-line"><input type="checkbox" id="aa10"><label for="aa10">AA-10 — Cap retina rendering cost, drop the screenshot tax, and share static GPU buffers</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (FPS on retina/phones)</span><span class="solver-cheap">🟢 Cheap (bench-gated)</span><span>Direction approved by Cole</span></div>
+  <p>The renderer draws at the display's full native pixel density, uncapped — on a 3× phone that's ~9× the pixels of 1×, mostly invisible on photographic terrain — and never re-checks when the window moves between monitors. Separately, <code>preserveDrawingBuffer: true</code> (which keeps every rendered frame around so screenshots work) is on for all users all the time; it costs memory and performance and is only needed by the benchmark's screenshot capture. Cap DPR at 2 (optionally dropping to 1.5 while the camera is moving), re-apply on resize, and enable the screenshot flag only under <code>?bench</code>. While touching the GPU setup, share the identical cap/skirt <code>BufferAttribute</code> objects and avoid throwaway per-mesh instance buffers instead of uploading the same static geometry repeatedly.</p>
+  <div class="done-when"><b>Done when:</b> frame-time p95 improves on a DPR&gt;2 profile; bench screenshots still work; a screenshot diff at DPR 2 vs native shows no meaningful quality loss; cap/skirt meshes reference the same static attributes and GPU buffer/upload counts fall with geometry parity.</div>
+</div>
+
+<div class="item" data-id="aa11">
+  <div class="title-line"><input type="checkbox" id="aa11"><label for="aa11">AA-11 — Adapt budgets to the visitor's device and connection</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (low-end devices)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>A 4 GB Android phone on hotel Wi-Fi gets the same worker count, texture budgets, and prefetch appetite as an M1 Max on fiber. The browser exposes enough signals to do better: device memory, CPU core count, the user's data-saver preference, effective connection type, and the app's own history of GPU context losses. Use them to scale worker count, texture cache size, prefetch radius, and quality demand. (Comments in the code explicitly rejected "device profiling" — this is not per-device hacks, it's responding to standard signals.)</p>
+  <div class="done-when"><b>Done when:</b> a low/mid/high device test matrix stays within explicit memory budgets with zero GPU context losses; data-saver mode measurably transfers fewer bytes; high-end quality is unchanged.</div>
+</div>
+
+<div class="item" data-id="aa12">
+  <div class="title-line"><input type="checkbox" id="aa12"><label for="aa12">AA-12 — Ship a small search index instead of parsing 1.7 MB of GeoJSON, and rank matches properly</label></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-h">Gain: high (search feel)</span><span class="solver-cheap">🟢 Cheap</span></div>
+  <p>The search box loads the raw 1.73 MB peaks file (the GeoJSON with all 4,368 summit names) and parses it on the main thread the first time you click it. Matching is exact-substring only — no diacritic folding, so typing "zuckerhutl" won't find "Zuckerhütl" — and the result list is cut to 10 <em>before</em> checking which results are actually on the baked map, so reachable peaks can be hidden behind unreachable ones. Bake a compact index (normalized names, aliases, type, elevation, coordinates, coverage flag), do fuzzy diacritic-insensitive ranking, and rank available results before limiting.</p>
+  <div class="done-when"><b>Done when:</b> a ~50-query fixture (umlauts, typos, prefixes) passes; search payload drops well below 1.73 MB; no long main-thread task over 50 ms on first search; an on-map match is never hidden by off-map ones.</div>
+</div>
+
+<div class="item" data-id="aa13">
+  <div class="title-line"><input type="checkbox" id="aa13"><label for="aa13">AA-13 — Fix the lying and dead UI: FPS readout, static labels, no-op controls</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (trust)</span><span class="solver-frontier">🟣 Frontier acceptance passed at <code>40e201c</code></span><span>Browser interaction QA remains</span></div>
+  <p>Several HUD elements actively mislead: the FPS counter shows 2–4 when the app is healthily idle (it divides <em>rendered</em> frames by wall-clock time, and render-on-demand legitimately skips frames — this is the KNOWN_BUGS "sintered FPS" mystery, mostly a display artifact); the location label is hardcoded to "SULZENAU, TIROL" forever; the triangle/precision/benchmark fields show placeholder dashes that nothing updates; the "ADVANCED TOUCH" toggle and the log COPY button have no code behind them at all. Show "idle" when idle and real FPS when active; wire or delete every dead element.</p>
+  <div class="done-when"><b>Done when:</b> idle never displays as 2–4 FPS; every visible control has a test proving it does something within one frame; no static placeholder text remains.</div>
+</div>
+
+<div class="item" data-id="aa14">
+  <div class="title-line"><input type="checkbox" id="aa14"><label for="aa14">AA-14 — Keyboard and macOS trackpad controls</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-std">🔵 Standard + brief human feel check</span><span>macOS only; explicitly excludes iOS</span></div>
+  <p>Add keyboard pan (WASD/arrows), zoom (+/−), and home/reset, with input arbitration so keys are ignored while typing. On Mac desktop browsers, add canvas-scoped trackpad pinch with normalized wheel input. Add twist-to-yaw only when WebKit's non-standard <code>GestureEvent</code> is available (Safari); feature-detect it and preserve pinch/keyboard fallbacks in Chrome and Firefox, where general trackpad twist is not exposed as a portable web API. This does not change iOS gestures. The exact yaw direction/pivot still gets the short H-1 feel check.</p>
+  <div class="done-when"><b>Done when:</b> scripted keys produce deterministic motion; text inputs keep their keys; the shareable URL updates; Safari on macOS passes pinch + twist; Chrome and Firefox on macOS pass pinch with a clean no-twist fallback; iOS behavior is unchanged.</div>
+</div>
+
+<div class="item" data-id="aa15">
+  <div class="title-line"><input type="checkbox" id="aa15"><label for="aa15">AA-15 — Remember the visitor's place and settings between sessions</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">🟢 Cheap</span></div>
+  <p>The app already builds shareable URLs encoding the camera position (the COPY LINK button), but nothing persists across sessions — every visit starts back at the default view with default slider settings, and the visible location/URL doesn't update after a search selection or custom touch gesture. Persist camera + settings to localStorage, restore when no explicit view URL is present (URL always wins), and make search selections and touch moves update the shareable state like mouse moves do.</p>
+  <div class="done-when"><b>Done when:</b> set view → reload → same view; a shared URL still overrides; selecting a search result updates the URL within 500 ms.</div>
+</div>
+
+<div class="item" data-id="aa16">
+  <div class="title-line"><input type="checkbox" id="aa16"><label for="aa16">AA-16 — Accessibility pass on the UI shell</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (and cheap)</span><span class="solver-cheap">🟢 Cheap</span></div>
+  <p>The overlay UI is essentially invisible to assistive tech: the search box has no combobox/listbox roles or result announcements, panels collapse via bare click-handlers on divs, collapsed content stays in the tab order, there's no reduced-motion handling (the loader's skier animation always runs), and focus is never visibly managed. All standard patterns, all verifiable by automated audit.</p>
+  <div class="done-when"><b>Done when:</b> axe-core reports zero serious/critical issues; full search flow works keyboard-only; <code>prefers-reduced-motion</code> stills the animations.</div>
+</div>
+
+<div class="item" data-id="aa17">
+  <div class="title-line"><input type="checkbox" id="aa17"><label for="aa17">AA-17 — Stop allocating garbage on every touch move</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium (mobile smoothness)</span><span class="solver-cheap">🟢 Cheap</span></div>
+  <p>The touch-gesture handlers create fresh vectors, raycasters, planes, and quaternions on every pointer-move event — dozens of tiny allocations per frame during a pinch, which triggers garbage-collection pauses exactly when smoothness matters most. Preallocate and reuse scratch objects. Pure mechanics; camera behavior must be bit-identical.</p>
+  <div class="done-when"><b>Done when:</b> allocation profiling shows near-zero per-move garbage; recorded gesture fixtures produce identical camera paths.</div>
+</div>
+
+<div class="item" data-id="aa18">
+  <div class="title-line"><input type="checkbox" id="aa18"><label for="aa18">AA-18 — Slim the landing page and add link previews</label></div>
+  <div class="meta"><span>Landing page</span><span class="gain-l">Priority: low</span><span class="solver-visual">Cole-owned; do not delegate as a redesign</span></div>
+  <p>The marketing landing directory is 107 MB, of which ~82 MB is orphaned files nothing references (a 48 MB comparison PNG, a 33 MB texture test file, leftovers). The ~26 MB of images the page <em>does</em> load should be recompressed to near-lossless WebP. And the page has no social-preview metadata at all — a shared link renders as a bare URL. Delete orphans, recompress with an SSIM (image-similarity) gate so quality is provably preserved, add OpenGraph/Twitter tags.</p>
+  <div class="done-when"><b>Done when:</b> referenced page weight drops ≥60% at SSIM ≥0.99 per image; ~82 MB of orphans deleted; a link-preview validator shows a proper card.</div>
+</div>
+
+<div class="item checked" data-id="aa19">
+  <div class="title-line"><input type="checkbox" id="aa19" checked><label for="aa19">AA-19 — Keep the camera from clipping through mountains</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">✓ Done in <code>41a87ef</code></span></div>
+  <p>The recent camera-clearance fix samples the camera eye position, clamps it to terrain plus the 50 m margin before visibility/render work, and covers the prior valley-target/high-eye-cell failure as well as partial morph and invalid-input cases.</p>
+  <div class="done-when"><b>Verified:</b> <code>tests/gosper/test_visibility_planner.mjs</code> passes, including the camera-clearance regressions, at commit <code>41a87ef243eebc1194b34a90b1da66bc702eb696</code>.</div>
+</div>
+
+<div class="item" data-id="aa20">
+  <div class="title-line"><input type="checkbox" id="aa20"><label for="aa20">AA-20 — CI gates so none of this regresses</label></div>
+  <div class="meta"><span>Tooling</span><span class="gain-h">Gain: high (enabler)</span><span class="solver-std">🔵 Standard</span></div>
+  <p>Once P2/P3 work, wire the whole measurement story into CI: cold-load and soak runs (3-trial medians), fault-injection, accessibility audit, and viewport-overlap screenshots at 320/390/768/1280 px widths, run against the exact assets a release would publish. This converts every "done when" on this list from a one-time check into a permanent floor.</p>
+  <div class="done-when"><b>Done when:</b> CI fails on: ready-time or TTFTF regression, frame p95/p99 regression, memory-slope growth, retry-storm, axe violations, or UI-overlap at any tested width.</div>
+</div>
+
+<div class="item" data-id="aa21">
+  <div class="title-line"><input type="checkbox" id="aa21"><label for="aa21">AA-21 — Keep map coverage mode-specific: Stubai beta, selected-Tirol production</label></div>
+  <div class="meta"><span>Backend + content + release config</span><span class="gain-h">Gain: high (scope correctness)</span><span class="solver-std">🔵 Standard after Cole selects the production boundary</span><span>No full-Tirol bake</span></div>
+  <p>This is a scope guard, not a mandate to maximize coverage. Beta contains only a small square around Stubai. Production contains only the part of Tirol Cole selects—never all of Tirol by default. Encode those as explicit coverage profiles so the baker, manifest, search availability, and deploy verifier agree. Manifest sharding is conditional: measure the selected production manifest first and add regional chunks only if its startup cost requires them.</p>
+  <div class="done-when"><b>Done when:</b> one explicit config selects <code>beta-stubai</code> or the approved production boundary; CI/deploy rejects assets outside or missing from that profile; search availability matches it; no full-Tirol bake is queued; sharding has a measured go/no-go gate.</div>
+</div>
+
+<!-- ==================== A* ==================== -->
+<h2><span class="badge as">A*</span> Agent projects — objective, but milestone them</h2>
+
+<div class="item" data-id="as1">
+  <div class="title-line"><input type="checkbox" id="as1"><label for="as1">A*-1 — Split geometry files so coarse terrain arrives before fine detail</label></div>
+  <div class="meta"><span>Frontend + backend + data</span><span class="gain-h">Potential gain: high</span><span class="solver-frontier">🟣 Frontier after the data gate</span><span>Conditional — do not delegate yet</span></div>
+  <p>Each island's ~280 KB geometry file must download completely before any of it renders, even though the coarse silhouette is a small fraction of the bytes. Cole is open to splitting the format <b>only as part of a real fidelity upgrade</b>: substantially higher-resolution textures plus terrain resolution below 2 m. The current DEM source cannot support that. First establish a licensable sub-2 m elevation source for the approved coverage, matching imagery resolution, storage/bandwidth budgets, and a bake sample that shows visible gain. Only then design coarse-first geometry/range requests, fine-detail streaming, caching, and backward compatibility as one migration.</p>
+  <div class="done-when"><b>Gate to start:</b> a representative bake proves sub-2 m terrain plus higher-resolution textures improves visible detail enough to justify its bytes and source cost. <b>Implementation done when:</b> throttled cold load shows earlier coarse terrain, fine detail/textures stream on demand, and final geometry matches the new source within tolerance.</div>
+</div>
+
+<div class="item" data-id="as2">
+  <div class="title-line"><input type="checkbox" id="as2"><label for="as2">A*-2 — Extract the loading/recovery logic into an explicit state machine</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium-high (makes everything else safer)</span><span class="solver-frontier">🟣 Frontier — 3,700-line-file surgery where the risk is what you didn't notice</span></div>
+  <p>The main file is 3,681 lines interleaving UI, loading, scheduling, error recovery, camera controls, rendering, and profiling. Boot/ready/refining/degraded/offline/retrying/context-lost states are all implicit in scattered flags — which is why the loader can hang forever and recovery paths don't exist. Extract an explicit, testable state machine for app lifecycle with every transition cancellable. Do it in reviewed milestones; a cheap model will "finish" this while quietly changing behavior.</p>
+  <div class="done-when"><b>Done when:</b> transition tests cover boot → ready → refining → settled plus degraded/offline/retrying/context-lost/recovered; illegal transitions fail tests; behavior parity on the benchmark suite.</div>
+</div>
+
+<div class="item" data-id="as3">
+  <div class="title-line"><input type="checkbox" id="as3"><label for="as3">A*-3 — Diagnose and eliminate shader/material churn</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (if confirmed)</span><span class="solver-frontier">🟣 Frontier for diagnosis; execution can then be 🔵 standard</span></div>
+  <p>Codex's live session observed repeated Three.js texture-serialization warnings on viewport changes — a symptom of materials being recompiled or uniforms being churned when nothing meaningful changed, which burns main-thread time every frame. First milestone: build a reproducible benchmark that demonstrates the churn. Second: share stable uniforms, compile only on real program-variant changes, stop traversing unchanged materials. Diagnosis-first ordering matters — don't let an agent "fix" an unreproduced problem.</p>
+  <div class="done-when"><b>Done when:</b> a reproducing bench shows ≥10% less render-cycle main-thread time after the fix, with pixel-identical output and unchanged LOD selection.</div>
+</div>
+
+<!-- ==================== AV ==================== -->
+<h2><span class="badge av">AV</span> Agent + visual gate — build delegable, look needs eyes</h2>
+
+<div class="item" data-id="av1">
+  <div class="title-line"><input type="checkbox" id="av1"><label for="av1">AV-1 — Un-overlap the mobile UI</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (mobile is broken today)</span><span class="solver-visual">👁 Visual harness required; layout sign-off by Cole</span></div>
+  <p>On a phone-sized viewport (390×844) the UI literally collides: the search box overlaps the main panel by ~44 px, the texture debug badge overlaps the slope legend, and the legend renders <em>behind</em> the 3D canvas. Rebuild the overlay shell with assigned, non-overlapping zones (search / branding / controls / legend / diagnostics) and compact-vs-expanded states. The zone assignment wants a quick wireframe approval; the implementation and the no-collision proof are automatable.</p>
+  <div class="done-when"><b>Done when:</b> bounding-box + screenshot tests at 320/390/768/1280 px show zero collisions and every control actually receives taps (hit-testing reaches it).</div>
+</div>
+
+<div class="item" data-id="av2">
+  <div class="title-line"><input type="checkbox" id="av2"><label for="av2">AV-2 — Separate the public app from the engineering HUD</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (what visitors see)</span><span class="solver-visual">👁 Visual harness; hierarchy sign-off by Cole</span></div>
+  <p>A first-time visitor currently faces developer telemetry: a per-texture-tier debug badge, a frame-time graph, LOD tuning sliders, benchmark readouts, a status-log console, and a marketing blurb, all in one glass panel. Move everything diagnostic behind <code>?debug=1</code> and leave a clean public surface (search + a few core actions). What survives on the public surface is a taste call (see H-4) — but the mechanical split and the "production DOM contains no diagnostics" test are delegable now.</p>
+  <div class="done-when"><b>Done when:</b> default DOM has zero diagnostic elements; <code>?debug=1</code> restores everything; core actions pass task-flow tests.</div>
+</div>
+
+<div class="item" data-id="av3">
+  <div class="title-line"><input type="checkbox" id="av3"><label for="av3">AV-3 — Kill the magenta flash and cross-fade texture upgrades</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (perceived polish)</span><span class="solver-std">🔵 Standard build + 👁 visual/human accept</span></div>
+  <p>Two hard-swap behaviors make streaming look broken: terrain whose imagery hasn't arrived renders <em>solid magenta</em> (an intentional dev sentinel that shipped), and every low→medium→high upgrade is an instant swap that visibly pops. Replace the magenta with a neutral placeholder (elevation-tinted like the horizon, or the page's average color baked into the manifest), and blend tier swaps with a short shader cross-fade. Implementation is standard; whether 150 ms or 400 ms feels right — and which placeholder color — is a look call.</p>
+  <div class="done-when"><b>Done when:</b> automated screenshots contain no magenta during a cold-load flight; a human approves the fade timing and placeholder tint.</div>
+</div>
+
+<div class="item" data-id="av4">
+  <div class="title-line"><input type="checkbox" id="av4"><label for="av4">AV-4 — Honest loading: real progress, truthful phases, designed failure states</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high</span><span class="solver-std">🔵 Standard build + copy/pacing sign-off by Cole</span></div>
+  <p>The loading screen is decorative — an animated skier with no actual progress, dismissed as soon as <em>one</em> terrain mesh exists, held a minimum 900 ms for drama ("hero moment"), and left spinning forever on failure. Wire real progress from the manifest's known sizes (bytes/tiles loaded vs. planned), add designed states for refining/degraded/offline/retry, and make the failure state actionable. Whether the skier and the 900 ms hold stay is Cole's call (H-4); the truthful plumbing underneath is not.</p>
+  <div class="done-when"><b>Done when:</b> progress is monotonic and derived from real byte counts; every failure path reaches a designed state; live beta's current 0.9 s ready time is not accidentally regressed.</div>
+</div>
+
+<div class="item" data-id="av5">
+  <div class="title-line"><input type="checkbox" id="av5"><label for="av5">AV-5 — A real toolbar: compass, home, fullscreen, share</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high</span><span class="solver-visual">👁 Visual harness; placement sign-off by Cole</span></div>
+  <p>Basic map affordances don't exist: no north indicator (and no way to tell you've rotated), no home/reset, no fullscreen, no scale reference — and the one genuinely social feature (shareable camera URLs, already built!) is buried as a "COPY-LINK" row inside a collapsed debug section. A compact toolbar with 44 px touch targets surfaces all of it. Camera/state behavior is deterministic-testable; placement and iconography need eyes.</p>
+  <div class="done-when"><b>Done when:</b> each action has a deterministic state test; targets ≥44 px on touch; share uses the Web Share API on mobile.</div>
+</div>
+
+<div class="item" data-id="av6">
+  <div class="title-line"><input type="checkbox" id="av6"><label for="av6">AV-6 — Make search arrival feel like arriving</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high</span><span class="solver-visual">👁 Visual harness; motion sign-off by Cole</span></div>
+  <p>Picking a peak teleports the camera instantly — disorienting, no sense of where you came from or landed (the code even has a "Fly there" comment above the teleport). Animate a bounded fly-to (instant under reduced-motion), drop a marker at the destination with a small card (name, elevation), and give unavailable results a useful explanation rather than just graying them out. Duration and arc are feel decisions; everything else is testable.</p>
+  <div class="done-when"><b>Done when:</b> flight duration/easing within declared bounds; marker/card/URL stay in sync; reduced-motion is instant; Cole approves the feel.</div>
+</div>
+
+<div class="item" data-id="av7">
+  <div class="title-line"><input type="checkbox" id="av7"><label for="av7">AV-7 — Texture quality ladder and the "blurry after settling" bug</label></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-h">Gain: high</span><span class="solver-visual">👁 Visual harness + bench; final imagery sign-off by Cole</span></div>
+  <p>Imagery jumps straight from 256 px pages to a 4096 px source at one threshold — a huge quality/cost cliff; intermediate tiers (1024/2048) or trimmed top mip levels would smooth both. Select the tier from each page's projected on-screen footprint rather than one fixed high-texture cutoff, and evaluate that ladder together with DPR and MSAA policy so resolution cost is adapted coherently instead of by independent thresholds. Same workstream closes the imagery-trust loop: instrument how long refinement takes, verify the suspected fix for the KNOWN_BUGS "textures stay blurry after settling" issue (settled-mode materials that missed upgrade registration), and add an automated screenshot check that no diagnostic tattoo colors ever ship in a public release. Side-by-side captures make every trade visible — but a human picks the ladder point (with H-8).</p>
+  <div class="done-when"><b>Done when:</b> transition matrices cover projected-footprint tier choice, DPR, and MSAA across devices/zooms; frame time, VRAM, and transferred bytes improve without visible oscillation; no tile remains below its target tier after availability; screenshot sweep finds zero tattoo colors in release mode.</div>
+</div>
+
+<div class="item" data-id="av8">
+  <div class="title-line"><input type="checkbox" id="av8"><label for="av8">AV-8 — Touch feel: coast after flick, untangle two-finger gestures</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (mobile feel)</span><span class="solver-visual">👁 Visual harness + on-device human check</span></div>
+  <p>One-finger pans stop dead on release (momentum is deliberately killed to avoid drift — but the result feels broken on touch). And the custom two-finger gesture applies zoom, rotation, and tilt <em>simultaneously</em> — a pure pinch drifts your heading and tilt. Restore a short coast after flicks and separate gestures with intent detection (pure pinch stays pinch; twist stays twist; vertical two-finger drag stays tilt). Tolerances are measurable; feel needs a thumb on real glass. Also fix the page-zoom fight: browser pinch-zoom isn't disabled on the canvas, so the OS zoom competes with the map's.</p>
+  <div class="done-when"><b>Done when:</b> gesture-fixture tests hold each axis within tolerance; coast settles within 500 ms; Cole approves on a phone.</div>
+</div>
+
+<div class="item" data-id="av9">
+  <div class="title-line"><input type="checkbox" id="av9"><label for="av9">AV-9 — Legend repair + mobile ergonomics sweep</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">🟢 Cheap build + palette/wording sign-off (pairs with H-2)</span></div>
+  <p>The slope legend has broken markup (an unclosed div), sits behind the canvas on mobile, and its color bins should provably match what the terrain shader actually draws. Same sweep: enforce ≥44 px touch targets everywhere (some are 16–28 px), respect phone notch safe-areas, keep 200% browser zoom operable, and honor reduced-motion. All verifiable; final palette/wording belongs with the slope-semantics decision (H-2).</p>
+  <div class="done-when"><b>Done when:</b> legend visible above canvas at every viewport; sampled shader output maps to displayed bins; target-size and zoom checks pass.</div>
+</div>
+
+<!-- ==================== H ==================== -->
+<h2><span class="badge h">H</span> Human first — decide before delegating</h2>
+
+<div class="item" data-id="h1">
+  <div class="title-line"><input type="checkbox" id="h1"><label for="h1">H-1 — Choose the rotation model</label></div>
+  <div class="meta"><span>Interaction design</span><span class="gain-vh">Gain: very high (known pain)</span><span class="solver-frontier">Decision: Cole. Then prototype pair via 🟣 frontier + 👁 visual</span></div>
+  <p>Already flagged in KNOWN_BUGS as "non-intuitive, pending UX discussion" — and the current two-finger rotation is custom code with a comment admitting the direction was reversed. Decide: does rotation orbit the point you're looking at, or spin the world? Is north-up sticky with a snap-back? What do trackpad twist vs. touch twist vs. keyboard do? Cheapest path to a good decision: have an agent build two instrumented variants and A/B them on-device.</p>
+</div>
+
+<div class="item" data-id="h2">
+  <div class="title-line"><input type="checkbox" id="h2"><label for="h2">H-2 — Decide what the slope colors actually claim</label></div>
+  <div class="meta"><span>Product / safety</span><span class="gain-h">Gain: high (this is safety language)</span><span class="solver-frontier">Decision: Cole (domain). Execution then 🟢 cheap</span></div>
+  <p>The legend currently says "DANGER" for steep slopes. For a ski-terrain product that word is a claim — is this a neutral terrain-angle readout, difficulty guidance, or avalanche-adjacent hazard communication? Those carry very different obligations (thresholds, disclaimers, data-resolution caveats). Decide the semantics, thresholds, palette, and wording; after that, the shader/legend alignment work in AV-9 is mechanical.</p>
+</div>
+
+<div class="item" data-id="h3">
+  <div class="title-line"><input type="checkbox" id="h3"><label for="h3">H-3 — Is offline-in-the-mountains a product feature?</label></div>
+  <div class="meta"><span>Product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">Decision: Cole. Then an 🟣 A*-grade project</span></div>
+  <p>Distinct from AA-7's plain browser caching: a real "download this region for the hut trip" feature means region selection UI, storage budgets and eviction, update/consent flows, and stale-data behavior. Plausibly the killer feature for actual mountain use — and a real commitment. Decide scope before anyone builds PWA machinery.</p>
+</div>
+
+<div class="item" data-id="h4">
+  <div class="title-line"><input type="checkbox" id="h4"><label for="h4">H-4 — Choose the public voice and information hierarchy</label></div>
+  <div class="meta"><span>Product / brand</span><span class="gain-h">Gain: high</span><span class="solver-visual">Decision: Cole. Wireframes via 👁 visual agent as fodder</span></div>
+  <p>How much "Bestagons" personality and engineering showmanship belongs in a first-time visitor's experience versus an optional deep-dive? This gates AV-2 (what stays on the public surface), AV-4 (does the skier + 900 ms "hero moment" stay?), AV-5 (toolbar contents), and the landing page's framing. One decision, four unblocked items.</p>
+</div>
+
+<div class="item" data-id="h5">
+  <div class="title-line"><input type="checkbox" id="h5"><label for="h5">H-5 — Decide the map's geographic context: labels, peaks, resorts</label></div>
+  <div class="meta"><span>Cartography / product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">Decision: Cole. Then 🟣 frontier (label placement is genuinely hard)</span></div>
+  <p>The terrain is gorgeous but anonymous — no persistent peak names, resort markers, valley labels, or boundaries; all the data sits unused in the search files. Which labels appear at which zoom, and how dense, is a cartographic taste decision that shapes the product's identity. After the decision, implementation (collision-avoiding label placement in 3D) is legitimately hard — frontier work, not cheap work.</p>
+</div>
+
+<div class="item" data-id="h6">
+  <div class="title-line"><input type="checkbox" id="h6"><label for="h6">H-6 — Trust: imagery dates, coverage edges, data provenance</label></div>
+  <div class="meta"><span>Product / domain</span><span class="gain-m">Gain: medium-high</span><span class="solver-cheap">Decision: Cole. Then 🟢 cheap</span></div>
+  <p>Decide how the app communicates what it's showing: aerial capture year (the photos are dated), terrain-model resolution, where coverage ends and why some search results are unavailable, and any freshness warnings. Mostly manifest schema + small UI; the policy is the work.</p>
+</div>
+
+<div class="item" data-id="h7">
+  <div class="title-line"><input type="checkbox" id="h7"><label for="h7">H-7 — Verify the settled-blur fix on a real device</label></div>
+  <div class="meta"><span>QA</span><span class="gain-l">Gain: closes a known bug</span><span class="solver-visual">Cole's eyes (or 👁 visual agent screenshot sweep as pre-check)</span></div>
+  <p>KNOWN_BUGS: after panning stops, textures sometimes stayed blurry. The suspected cause (settled-mode materials missing upgrade registration) is already patched — it just needs visual confirmation on-device. AV-7's instrumentation makes this systematic; until then it's a two-minute look.</p>
+</div>
+
+<div class="item" data-id="h8">
+  <div class="title-line"><input type="checkbox" id="h8"><label for="h8">H-8 — Pick the production texture-quality point</label></div>
+  <div class="meta"><span>Product</span><span class="gain-m">Gain: medium</span><span class="solver-visual">Decision: Cole via blind comparison (👁 agent prepares it)</span></div>
+  <p>The codec sweep already measured the trade: 8×6-block encoding = best memory residency (SSIM 0.947), 6×6 = the balanced knee (0.959), 4×4 = maximum fidelity at ~3× the memory. Numbers are settled; which point <em>ships</em> is a judgment best made blind on real terrain, on a phone and a retina desktop. Note the current data was baked 6×6 while the code's default is now 8×6 — today that choice is being made by accident.</p>
+</div>
+
+<!-- ==================== waves ==================== -->
+<h2>Suggested firing order</h2>
+<div class="callout">
+<p><b>Wave 0 (closed 2026-07-17):</b> P1 + P2 + P3 — fresh 197-island/149-page bake, headless ANGLE Metal benchmark, and 490.1 ms localhost TTFTF baseline verified.</p>
+<p><b>Wave 1 (standalone Codex clones, live status 2026-07-17):</b> <code>codex/wave1-hud-truth</code> received its required frontier-Sol AA-13 review and fixes at <code>40e201c</code>; code/static gates pass and browser interaction QA remains. Its AA-3 work is still open because it does not yet distinguish <code>beta-stubai</code> from production. <code>codex/wave1-bundle</code> completed AA-6 at <code>d6a3fde</code>. <code>codex/wave1-resilience</code> remains active on AA-2 after <code>c5bbcf6</code>. Review, conflict resolution, and bench gates remain before any merge.</p>
+<p><b>Wave 2 (Codex):</b> AA-4 + AA-5 together (🟣 frontier config — they share the texture-residency design) · AA-9 · AA-10 · AA-12.</p>
+<p><b>Wave 3:</b> AA-1 · AA-7 · AA-8 · AA-11 · remaining eligible 🟢 items in a batch · AA-20 CI to lock it all in. AA-18 stays in Cole's low-priority landing-page backlog; AA-21 waits for his production boundary; A*-1 waits for a viable sub-2 m data source.</p>
+<p><b>Meanwhile, Cole:</b> the five decisions that unblock the AV queue — H-1 (rotation), H-2 (slope wording), H-4 (voice/hierarchy), H-8 (texture point), and a yes/no on H-3 (offline). Each is a coffee-length decision, and together they unblock all nine AV items.</p>
+</div>
+
+<p class="foot">This file is the surviving consolidated Fable + Codex board; the two source audit files were intentionally removed after their recommendations were merged. Product decisions recorded 2026-07-17: bounded profiling only in Stubai beta (production off unless benching), retina/screenshot optimization approved, AA-13 requires frontier review, macOS trackpad controls exclude iOS, AA-18 is low-priority/Cole-owned, AA-19 is complete, production coverage is selected Tirol rather than all Tirol, and A*-1 is conditional on a real sub-2 m terrain + higher-resolution imagery path. Checkbox state lives in your browser only.</p>
+
+<script>
+(function(){
+  const KEY = 'hexagons:upgradeTodolist:v1';
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) {}
+  document.querySelectorAll('.item').forEach(item => {
+    const id = item.dataset.id;
+    const box = item.querySelector('input[type=checkbox]');
+    if (state[id]) { box.checked = true; item.classList.add('checked'); }
+    box.addEventListener('change', () => {
+      state[id] = box.checked;
+      item.classList.toggle('checked', box.checked);
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+    });
+  });
+})();
+</script>
+
+</main>
+</body>
+</html>
