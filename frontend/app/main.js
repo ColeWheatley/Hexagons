@@ -4,7 +4,7 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js?v=pageonly1';
 import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
 import { CacheManager } from './cache_manager.js?v=pageonly1';
-import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
+import { PerfProfiler } from './perf_profiler.js?v=bounded1';
 import { initBenchmark } from './benchmark.js?v=pageonly1';
 import { ShareableViewState } from './view_state.js?v=pageonly1';
 import {
@@ -332,9 +332,12 @@ class PistonViewer {
         this.atmosphereSettings = { hazeDistance: DEFAULT_HAZE_DISTANCE };
 
         // Debug/Stats
-        this.fpsState = { lastSample: performance.now(), frames: 0 };
+        this.fpsState = { frames: 0, activeElapsed: 0, lastActiveFrame: null };
         this.fpsEl = document.getElementById('fps-counter');
         this.hexCountEl = document.getElementById('hex-count');
+        this.triCountEl = document.getElementById('tri-count');
+        this.drawStatsEl = document.getElementById('draw-stats');
+        this.debugSectionEl = document.querySelector('[data-section="debug"]');
         this.tileHeightEl = document.getElementById('tile-height');
         this.cameraHeightEl = document.getElementById('camera-height');
         this.statsUpdateState = { lastUpdate: 0, interval: 500 };
@@ -382,6 +385,7 @@ class PistonViewer {
         this.initMinimizeButton();
         this.initCollapsibleSections();
         this.initLODSliders();
+        this.initLodTruthLabels();
         this.updateFogAndClip();
 
         // WORKER SYSTEM
@@ -741,6 +745,61 @@ class PistonViewer {
 
     initDebugConsole() {
         this.log("PistonViewer Initialized.", "success");
+        this.initCopyLogButton();
+    }
+
+    initCopyLogButton() {
+        const btn = document.getElementById('copy-log-btn');
+        const output = document.getElementById('console-output');
+        if (!btn || !output) return;
+
+        const idleText = btn.textContent || 'COPY';
+        let resetHandle = null;
+        btn.addEventListener('click', async () => {
+            const lines = Array.from(output.querySelectorAll('.log-line'))
+                .map(line => line.textContent.trim())
+                .filter(Boolean);
+            const text = lines.length ? lines.join('\n') : output.textContent.trim();
+            try {
+                await this.writeClipboardText(text);
+                btn.textContent = 'COPIED';
+                btn.classList.add('copied');
+            } catch (e) {
+                btn.textContent = 'FAILED';
+                btn.classList.remove('copied');
+                console.warn('[HUD] Failed to copy status log:', e);
+            }
+
+            if (resetHandle) clearTimeout(resetHandle);
+            resetHandle = setTimeout(() => {
+                btn.textContent = idleText;
+                btn.classList.remove('copied');
+            }, 1200);
+        });
+    }
+
+    async writeClipboardText(text) {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        this.execCommandCopyText(text);
+    }
+
+    execCommandCopyText(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            if (!document.execCommand('copy')) throw new Error('execCommand copy returned false');
+        } finally {
+            document.body.removeChild(textarea);
+        }
     }
 
     installGlobalBackstop() {
@@ -1039,8 +1098,28 @@ class PistonViewer {
             header.addEventListener('click', () => {
                 const section = header.parentElement;
                 section.classList.toggle('collapsed');
+                if (section === this.debugSectionEl && !section.classList.contains('collapsed')) {
+                    this.updateRendererDebugStats();
+                }
             });
         });
+    }
+
+    initLodTruthLabels() {
+        const km = value => `${value / 1000}`;
+        const nearBands = Array.from(this.settledLodRadii.slice(0, 3), km);
+        const farBands = Array.from(this.settledLodRadii.slice(3, 5), km);
+        const movingWidth = G.levelSize(this.movingLevel);
+        this._setHudText('near-lod-bands', `${nearBands.join(' / ')} km`);
+        this._setHudText('far-lod-bands', `${farBands.join(' / ')} km`);
+        this._setHudText(
+            'moving-lod-summary',
+            `moving: uniform skirtless L${this.movingLevel} (${movingWidth.toFixed(0)} m)`,
+        );
+        this._setHudText(
+            'settled-lod-summary',
+            `settled: fixed ${[...nearBands, ...farBands].join(' / ')} km bands`,
+        );
     }
 
     initLODSliders() {
@@ -1073,6 +1152,7 @@ class PistonViewer {
                 this.highTextureEnterPx = parseInt(texSlider.value, 10);
                 if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
                 this.needsLODUpdate = true;
+                this.needsRender = true;
             });
         }
 
@@ -1090,6 +1170,7 @@ class PistonViewer {
                 terrainBtn.style.color = '#fff';
                 gradientBtn.style.background = 'transparent';
                 gradientBtn.style.color = '#ccc';
+                this.needsRender = true;
             });
             gradientBtn.addEventListener('click', () => {
                 this.gradientMode = 1.0;
@@ -1099,6 +1180,7 @@ class PistonViewer {
                 gradientBtn.style.color = '#fff';
                 terrainBtn.style.background = 'transparent';
                 terrainBtn.style.color = '#ccc';
+                this.needsRender = true;
             });
         }
 
@@ -1344,6 +1426,7 @@ class PistonViewer {
         if (this.horizonMesh?.material?.userData?.shader) {
             this.horizonMesh.material.userData.shader.uniforms.uHazeRange.value.set(dist * 0.8, HORIZON_DISTANCE);
         }
+        this.needsRender = true;
     }
 
     _logRetry(kind, key, event) {
@@ -2111,9 +2194,28 @@ class PistonViewer {
         this.globalStats.count++;
     }
 
+    formatHudNumber(value) {
+        return Number.isFinite(value) ? Math.round(value).toLocaleString() : '--';
+    }
+
+    updateRendererDebugStats() {
+        if (!this.debugSectionEl || this.debugSectionEl.classList.contains('collapsed')) return;
+
+        const renderInfo = this.renderer?.info?.render || {};
+        const memoryInfo = this.renderer?.info?.memory || {};
+        if (this.triCountEl) {
+            this.triCountEl.textContent = this.formatHudNumber(renderInfo.triangles);
+        }
+        if (this.drawStatsEl) {
+            this.drawStatsEl.textContent = `Calls: ${this.formatHudNumber(renderInfo.calls)} | ` +
+                `G:${this.formatHudNumber(memoryInfo.geometries)} | T:${this.formatHudNumber(memoryInfo.textures)}`;
+        }
+    }
+
     updateRenderStats(now) {
         if (now - this.statsUpdateState.lastUpdate < 500) return;
         this.statsUpdateState.lastUpdate = now;
+        this.updateRendererDebugStats();
 
         let capCount = 0;
         let skirtCount = 0;
@@ -2142,17 +2244,32 @@ class PistonViewer {
         }
     }
 
-    updateFps() {
+    updateFps(now, willRender) {
         if (!this.fpsEl) return;
-        const now = performance.now();
-        this.fpsState.frames += 1;
-        const elapsed = now - this.fpsState.lastSample;
-        if (elapsed < 500) return;
-        const fps = (this.fpsState.frames * 1000) / elapsed;
         const dist = this.camera.position.distanceTo(this.controls.target);
+
+        if (!willRender && this.engineState === ENGINE_STATES.STATIC) {
+            this.fpsEl.textContent = `FPS: IDLE | Zoom: ${dist.toFixed(0)}`;
+            this.fpsState.frames = 0;
+            this.fpsState.activeElapsed = 0;
+            this.fpsState.lastActiveFrame = null;
+            return;
+        }
+
+        if (!willRender) return;
+
+        if (this.fpsState.lastActiveFrame !== null) {
+            this.fpsState.activeElapsed += Math.max(0, now - this.fpsState.lastActiveFrame);
+        }
+        this.fpsState.lastActiveFrame = now;
+        this.fpsState.frames += 1;
+        if (this.fpsState.activeElapsed < 500 || this.fpsState.frames < 2) return;
+
+        const fps = ((this.fpsState.frames - 1) * 1000) / this.fpsState.activeElapsed;
         this.fpsEl.textContent = `FPS: ${fps.toFixed(0)} | Zoom: ${dist.toFixed(0)}`;
-        this.fpsState.frames = 0;
-        this.fpsState.lastSample = now;
+        this.fpsState.frames = 1;
+        this.fpsState.activeElapsed = 0;
+        this.fpsState.lastActiveFrame = now;
     }
 
     updateFrametimeGraph() {
@@ -4163,14 +4280,15 @@ class PistonViewer {
 
         // --- RENDER CHECK ---
         // STATIC state: must NOT render. Early-out if nothing moved and no flags set.
-        this.profiler?.frame(now, this.engineState, moved || this.needsRender);
-        if (!moved && !this.needsRender) return;
+        const willRender = moved || this.needsRender;
+        this.profiler?.frame(now, this.engineState, willRender);
+        this.updateFps(now, willRender);
+        if (!willRender) return;
 
         // ===== BEGIN TIMED RENDER CYCLE =====
         const cycleStart = performance.now();
 
         this.updateRenderStats(now);
-        this.updateFps();
         this.updateFrametimeGraph();
 
         // --- VISIBILITY PASS ---

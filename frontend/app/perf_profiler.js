@@ -11,6 +11,11 @@
 const LS_KEY = 'hexagons:perfProfiler:lastRun';
 const PERSIST_INTERVAL_MS = 2000;
 const SAMPLE_INTERVAL_MS = 1000;
+const SAMPLE_KEEP_FIRST = 60;
+const SAMPLE_RECENT_CAP = 600;
+const HISTOGRAM_BUCKET_MS = 0.5;
+const HISTOGRAM_MAX_MS = 100;
+const HISTOGRAM_BUCKET_COUNT = Math.floor(HISTOGRAM_MAX_MS / HISTOGRAM_BUCKET_MS) + 1;
 const ACTIVE_STATES = ['MOVING_2D', 'MOVING_3D', 'SINTERING', 'STATIC'];
 
 function percentile(sortedAsc, p) {
@@ -25,20 +30,33 @@ function round(n, dp = 2) {
     return Math.round(n * f) / f;
 }
 
+function createFrameAccumulator() {
+    return {
+        count: 0,
+        sum: 0,
+        max: 0,
+        over20: 0,
+        over33: 0,
+        over100: 0,
+        buckets: new Array(HISTOGRAM_BUCKET_COUNT).fill(0),
+    };
+}
+
 export class PerfProfiler {
     /** @param {*} viewer - the PistonViewer instance (window.pistonViewer) */
-    constructor(viewer) {
+    constructor(viewer, options = {}) {
         this.viewer = viewer;
+        this.benchMode = options.benchMode ?? this._detectBenchMode();
         this.startTime = performance.now();
         this.runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
         // --- Frame tracking (fed by frame()) ---
         this.frames = { total: 0, rendered: 0, skipped: 0 };
-        // Active frames only: array of {dt, state}. "Active" = willRender OR engineState !== STATIC.
-        // (See main.js's idle early-return quirk: rAF fires every vsync even when idle, so idle
-        // frame deltas are ~16ms heartbeats, not real render cost — they must be excluded from
-        // percentiles/stutter counts or they drown out the signal.)
-        this._active = [];
+        // In bench mode keep the historical full-fidelity frame list so benchmark reports retain
+        // exact percentiles. Normal always-on sessions use bounded running statistics below.
+        this._exactActiveFrames = this.benchMode ? [] : null;
+        this._runningFrameStats = this.benchMode ? null : createFrameAccumulator();
+        this._runningFrameStatsByState = this.benchMode ? null : new Map();
         this._lastFrameTime = null;
         this._lastPersist = performance.now();
 
@@ -74,6 +92,16 @@ export class PerfProfiler {
         // Insurance: persist an initial placeholder immediately, in case the tab dies
         // within the first couple of seconds (before the periodic persist would fire).
         this._persist();
+    }
+
+    _detectBenchMode() {
+        try {
+            return typeof location !== 'undefined' &&
+                typeof location.search === 'string' &&
+                new URLSearchParams(location.search).has('bench');
+        } catch (e) {
+            return false;
+        }
     }
 
     // ─── Recovery ──────────────────────────────────────────────────────
@@ -149,7 +177,7 @@ export class PerfProfiler {
             const dt = now - this._lastFrameTime;
             const isActive = willRender || engineState !== 'STATIC';
             if (isActive && dt >= 0 && Number.isFinite(dt)) {
-                this._active.push({ dt, state: engineState });
+                this._recordActiveFrame(dt, engineState);
             }
         }
         this._lastFrameTime = now;
@@ -240,11 +268,53 @@ export class PerfProfiler {
         this._pollGlError();
         sample.glOutOfMemoryCount = this.memory.glOutOfMemoryCount;
 
-        this.samples.push(sample);
+        this._recordSample(sample);
         this._persist();
     }
 
     // ─── Stats computation ─────────────────────────────────────────────
+
+    _recordActiveFrame(dt, state) {
+        if (this.benchMode) {
+            this._exactActiveFrames.push({ dt, state });
+            return;
+        }
+
+        this._recordFrameStat(this._runningFrameStats, dt);
+        if (!this._runningFrameStatsByState.has(state)) {
+            this._runningFrameStatsByState.set(state, createFrameAccumulator());
+        }
+        this._recordFrameStat(this._runningFrameStatsByState.get(state), dt);
+    }
+
+    _recordFrameStat(stats, dt) {
+        stats.count++;
+        stats.sum += dt;
+        stats.max = Math.max(stats.max, dt);
+        if (dt > 20) stats.over20++;
+        if (dt > 33) stats.over33++;
+        if (dt > 100) stats.over100++;
+        const bucket = Math.min(
+            HISTOGRAM_BUCKET_COUNT - 1,
+            Math.max(0, Math.floor(dt / HISTOGRAM_BUCKET_MS)),
+        );
+        stats.buckets[bucket]++;
+    }
+
+    _recordSample(sample) {
+        if (this.benchMode) {
+            this.samples.push(sample);
+            return;
+        }
+
+        const sampleCap = SAMPLE_KEEP_FIRST + SAMPLE_RECENT_CAP;
+        if (this.samples.length < sampleCap) {
+            this.samples.push(sample);
+            return;
+        }
+        this.samples.splice(SAMPLE_KEEP_FIRST, 1);
+        this.samples.push(sample);
+    }
 
     _computeFrameStats(entries) {
         const dts = entries.map((e) => e.dt).sort((a, b) => a - b);
@@ -262,6 +332,39 @@ export class PerfProfiler {
             over33: dts.filter((d) => d > 33).length,
             over100: dts.filter((d) => d > 100).length,
         };
+    }
+
+    _computeRunningFrameStats(stats) {
+        const n = stats?.count || 0;
+        const avgMs = n ? stats.sum / n : 0;
+        return {
+            count: n,
+            fps_avg: n && avgMs > 0 ? round(1000 / avgMs, 1) : 0,
+            // Histogram percentiles return the bucket's lower edge. For non-overflow buckets,
+            // the estimate is within <0.5ms (HISTOGRAM_BUCKET_MS) of the exact frame time.
+            p50_ms: round(this._histogramPercentile(stats, 0.50)),
+            p95_ms: round(this._histogramPercentile(stats, 0.95)),
+            p99_ms: round(this._histogramPercentile(stats, 0.99)),
+            worst_ms: round(n ? stats.max : 0),
+            over20: stats?.over20 || 0,
+            over33: stats?.over33 || 0,
+            over100: stats?.over100 || 0,
+        };
+    }
+
+    _histogramPercentile(stats, p) {
+        const n = stats?.count || 0;
+        if (!n) return 0;
+
+        const idx = Math.min(n - 1, Math.max(0, Math.floor(p * n)));
+        let seen = 0;
+        for (let i = 0; i < stats.buckets.length; i++) {
+            seen += stats.buckets[i];
+            if (seen > idx) {
+                return i === stats.buckets.length - 1 ? stats.max : i * HISTOGRAM_BUCKET_MS;
+            }
+        }
+        return stats.max;
     }
 
     // ─── Report / export ───────────────────────────────────────────────
@@ -282,12 +385,7 @@ export class PerfProfiler {
     getReport() {
         this.meta.duration_s = round((performance.now() - this.startTime) / 1000, 1);
 
-        const cumulative = this._computeFrameStats(this._active);
-        const perState = {};
-        for (const state of ACTIVE_STATES) {
-            const entries = this._active.filter((e) => e.state === state);
-            if (entries.length) perState[state] = this._computeFrameStats(entries);
-        }
+        const { cumulative, perState } = this._getFrameStatsForReport();
 
         return {
             meta: { ...this.meta },
@@ -310,8 +408,28 @@ export class PerfProfiler {
             cache: { ...this.cache },
             textures: { ...this.textures },
             milestones: { ...this.milestones },
-            samples: this.samples,
+            samples: this.samples.slice(),
         };
+    }
+
+    _getFrameStatsForReport() {
+        if (this.benchMode) {
+            const cumulative = this._computeFrameStats(this._exactActiveFrames);
+            const perState = {};
+            for (const state of ACTIVE_STATES) {
+                const entries = this._exactActiveFrames.filter((e) => e.state === state);
+                if (entries.length) perState[state] = this._computeFrameStats(entries);
+            }
+            return { cumulative, perState };
+        }
+
+        const cumulative = this._computeRunningFrameStats(this._runningFrameStats);
+        const perState = {};
+        for (const state of ACTIVE_STATES) {
+            const stats = this._runningFrameStatsByState.get(state);
+            if (stats?.count) perState[state] = this._computeRunningFrameStats(stats);
+        }
+        return { cumulative, perState };
     }
 
     /** Mark the run finished, persist the final report, log [PERF_REPORT], and return it.
