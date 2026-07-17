@@ -1643,6 +1643,11 @@ class PistonViewer {
                 throw new Error(`Manifest texture tier ${name} must be ${size}px`);
             }
         }
+        if (textureContract.bootstrap?.container !== 'webp' ||
+            textureContract.bootstrap?.size_px !== 32 ||
+            textureContract.bootstrap?.gpu_bytes !== 4096) {
+            throw new Error('Manifest needs the 32px transient WebP bootstrap tier');
+        }
     }
 
     async _loadManifestWithRetry() {
@@ -2519,7 +2524,9 @@ class PistonViewer {
     }
 
     _textureUrls(tier, key) {
-        const contractTier = tier === TEXTURE_TIER.LOW
+        const contractTier = tier === TEXTURE_TIER.BOOTSTRAP
+            ? 'bootstrap'
+            : tier === TEXTURE_TIER.LOW
             ? 'low'
             : (tier === TEXTURE_TIER.MEDIUM ? 'medium' : 'high');
         const url = this.texturePageGrid.urlFor(key, contractTier);
@@ -2642,8 +2649,9 @@ class PistonViewer {
         }
         this.cacheManager.updatePriority(state.key, state.perceptibility);
 
-        // The postage tier is the non-grey coverage invariant. Once decoded it
-        // remains resident; no high/geometry decision is allowed to evict it.
+        // The tiny WebP is the first-paint floor. It is deliberately transient:
+        // the KTX2 postage tier replaces it without double-charging VRAM.
+        this._queueTextureTier(textureResource, TEXTURE_TIER.BOOTSTRAP, priority + 1500);
         this._queueTextureTier(textureResource, TEXTURE_TIER.LOW, priority + 1000);
 
         if (TEXTURE_RANK[state.desiredTier] >= TEXTURE_RANK[TEXTURE_TIER.MEDIUM]) {
@@ -2784,6 +2792,9 @@ class PistonViewer {
             state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
         }
+        if (!this.isMiniBake && state.classification === 'outside' && state.assets.has(TEXTURE_TIER.LOW)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.LOW);
+        }
     }
 
     _dropTextureTier(key, tier, fromHighPool = false) {
@@ -2816,7 +2827,9 @@ class PistonViewer {
         state.failed.delete(task.tier);
         this.failedTextures.delete(this._textureFailureKey(state.key, task.tier));
 
-        const texture = this.buildCompressedTexture(result);
+        const texture = result.bootstrap
+            ? this.buildBootstrapTexture(result)
+            : this.buildCompressedTexture(result);
         if (task.tier === TEXTURE_TIER.HIGH) {
             const admitted = this.cacheManager.admitHigh(
                 state.key,
@@ -2855,6 +2868,9 @@ class PistonViewer {
             this._textureLedgerLocation(task.textureResource),
         );
         this._reconcileTextureState(state);
+        if (task.tier === TEXTURE_TIER.LOW && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP);
+        }
         this.updateTexStats(result);
 
         if (task.tier === TEXTURE_TIER.HIGH) {
@@ -2915,7 +2931,10 @@ class PistonViewer {
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, () => (
-                this.postWorkerJob('LOAD_TEXTURE', { urls: task.urls })
+                this.postWorkerJob('LOAD_TEXTURE', {
+                    urls: task.urls,
+                    bootstrap: task.tier === TEXTURE_TIER.BOOTSTRAP,
+                })
             ), {
                 onRetry: event => this._logRetry('texture', `${task.key}/${task.tier}`, event),
             }).then(result => {
@@ -3616,6 +3635,17 @@ class PistonViewer {
         return texture;
     }
 
+    buildBootstrapTexture(texResult) {
+        const texture = new THREE.Texture(texResult.imageBitmap);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.flipY = false;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        return texture;
+    }
+
     // Dumb telemetry accumulator for the perf harness — no logging loop, just
     // running totals read externally via window.pistonViewer.texStats.
     updateTexStats(texResult) {
@@ -4206,8 +4236,8 @@ class PistonViewer {
             }
         }
 
-        const residentTiers = { low128: 0, medium256: 0, high4096: 0 };
-        const activeTiers = { low128: 0, medium256: 0, high4096: 0, none: 0 };
+        const residentTiers = { bootstrap32: 0, low128: 0, medium256: 0, high4096: 0 };
+        const activeTiers = { bootstrap32: 0, low128: 0, medium256: 0, high4096: 0, none: 0 };
         const desiredTiers = { low128: 0, medium256: 0, high4096: 0 };
         for (const state of this.textureStates.values()) {
             for (const tier of state.assets.keys()) residentTiers[tier]++;

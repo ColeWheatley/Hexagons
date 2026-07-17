@@ -171,6 +171,7 @@ class TexturePageGridTests(unittest.TestCase):
         self.assertEqual(entry["key"], "57_201")
         self.assertEqual((entry["min_x"], entry["min_y"]), (58368.0, 205824.0))
         self.assertEqual(entry["urls"]["high"], "aerial_pages/high/texture_57_201.ktx2")
+        self.assertEqual(entry["urls"]["bootstrap"], "aerial_pages/bootstrap/texture_57_201.webp")
         self.assertEqual((entry["hMin"], entry["hMax"], entry["coverage_tile_count"]), (900.0, 3300.0, 4))
         self.assertEqual((entry["renderMin"], entry["renderMax"]), (-1524.0, 3300.0))
         self.assertEqual(entry["boundary_padding"], {
@@ -205,11 +206,11 @@ class TexturePageGridTests(unittest.TestCase):
             Path(paths["medium"]).unlink()
             self.assertFalse(waffle.texture_page_is_current(page, "4.0.2+tattoo-2", temp_dir))
         self.assertEqual(
-            waffle.texture_page_cache_version(False), "4.0.2+codec-production"
+            waffle.texture_page_cache_version(False), "4.1.0+codec-production"
         )
         self.assertEqual(
             waffle.texture_page_cache_version(True),
-            "4.0.2+codec-production+tattoo-2",
+            "4.1.0+codec-production+tattoo-2",
         )
 
     def test_page_coverage_validator_checks_only_samples_owned_by_page(self):

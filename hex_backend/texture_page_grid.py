@@ -57,7 +57,10 @@ class TexturePage:
             "min_y": min_y,
             "max_x": max_x,
             "max_y": max_y,
-            "urls": {str(tier["name"]): self.url(str(tier["name"])) for tier in tiers},
+            "urls": {
+                "bootstrap": f"aerial_pages/bootstrap/{self.asset_stem}.webp",
+                **{str(tier["name"]): self.url(str(tier["name"])) for tier in tiers},
+            },
         }
 
 
@@ -102,5 +105,4 @@ def pages_for_coverage_bounds(bounds_iter: Iterable[Sequence[float]]) -> list[Te
     for bounds in bounds_iter:
         pages.update(pages_for_bounds(bounds))
     return sorted(pages)
-
 
