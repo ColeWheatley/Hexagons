@@ -1,6 +1,7 @@
 #!/bin/bash
 # @atlas: Orchestration script for an explicitly approved selected-Tirol bake.
 # A full-Tirol bake is intentionally not a release mode.
+set -euo pipefail
 
 # Ensure we are in the project root
 cd "$(dirname "$0")/.."

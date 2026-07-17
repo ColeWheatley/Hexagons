@@ -45,6 +45,7 @@ class AtomicReleasePublishTest(unittest.TestCase):
             self.assertEqual(store.head(f"releases/{first}/aerial_pages/low/texture_4_5.ktx2")["ContentType"], "image/ktx2")
             self.assertEqual(store.head("tile_manifest.json")["CacheControl"], release_publish.NO_CACHE)
             self.assertIn(f"releases/{first}/", active["binary"]["url_template"])
+            self.assertIn(f"releases/{first}/", active["texture_pages"]["pages"][0]["urls"]["low"])
             (app / "tiles_bin" / "gosper_1_2.bin").write_bytes(b"GSP3changed")
             second = release_publish.publish(manifest, app, store)
             self.assertNotEqual(first, second)

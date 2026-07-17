@@ -37,7 +37,8 @@ def content_type(path: Path) -> str:
 
 
 class Store:
-    def put(self, source: Path, key: str, *, cache_control: str, content_type: str) -> None: raise NotImplementedError
+    def put(self, source: Path, key: str, *, cache_control: str, content_type: str,
+            sha256_hex: str | None = None) -> None: raise NotImplementedError
     def head(self, key: str) -> dict[str, Any]: raise NotImplementedError
     def get(self, key: str) -> bytes: raise NotImplementedError
 
@@ -46,10 +47,11 @@ class LocalStore(Store):
     """Filesystem fake S3 used by tests and ``--dry-run``."""
     def __init__(self, root: Path): self.root = root
     def _path(self, key: str) -> Path: return self.root / key
-    def put(self, source: Path, key: str, *, cache_control: str, content_type: str) -> None:
+    def put(self, source: Path, key: str, *, cache_control: str, content_type: str,
+            sha256_hex: str | None = None) -> None:
         target = self._path(key); target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-        target.with_name(target.name + ".meta.json").write_text(json.dumps({"ContentLength": target.stat().st_size, "ContentType": content_type, "CacheControl": cache_control, "Metadata": {"sha256": sha256(target)}}))
+        target.with_name(target.name + ".meta.json").write_text(json.dumps({"ContentLength": target.stat().st_size, "ContentType": content_type, "CacheControl": cache_control, "Metadata": {"sha256": sha256_hex or sha256(target)}}))
     def head(self, key: str) -> dict[str, Any]:
         target = self._path(key)
         if not target.exists(): raise FileNotFoundError(key)
@@ -61,8 +63,10 @@ class AwsStore(Store):
     def __init__(self, bucket: str, prefix: str): self.bucket, self.prefix = bucket, prefix.strip("/")
     def _url(self, key: str) -> str: return f"s3://{self.bucket}/{self.prefix}/{key}"
     def _run(self, args: list[str]) -> bytes: return subprocess.run(args, check=True, capture_output=True).stdout
-    def put(self, source: Path, key: str, *, cache_control: str, content_type: str) -> None:
-        self._run(["aws", "s3", "cp", str(source), self._url(key), "--only-show-errors", "--cache-control", cache_control, "--content-type", content_type, "--metadata", f"sha256={sha256(source)}"])
+    def put(self, source: Path, key: str, *, cache_control: str, content_type: str,
+            sha256_hex: str | None = None) -> None:
+        digest = sha256_hex or sha256(source)
+        self._run(["aws", "s3", "cp", str(source), self._url(key), "--only-show-errors", "--cache-control", cache_control, "--content-type", content_type, "--metadata", f"sha256={digest}"])
     def head(self, key: str) -> dict[str, Any]:
         return json.loads(self._run(["aws", "s3api", "head-object", "--bucket", self.bucket, "--key", f"{self.prefix}/{key}"]))
     def get(self, key: str) -> bytes: return self._run(["aws", "s3", "cp", self._url(key), "-"])
@@ -96,9 +100,10 @@ def decode_sample(asset: Asset, payload: bytes) -> None:
         raise ValueError(f"{asset.logical}: not a GSP payload")
 
 
-def release_id(manifest_path: Path, assets: list[Asset]) -> str:
+def release_id(manifest_path: Path, assets: list[Asset], digests: dict[str, str]) -> str:
     digest = hashlib.sha256(manifest_path.read_bytes())
-    for asset in sorted(assets, key=lambda item: item.logical): digest.update(asset.logical.encode() + bytes.fromhex(sha256(asset.local)))
+    for asset in sorted(assets, key=lambda item: item.logical):
+        digest.update(asset.logical.encode() + bytes.fromhex(digests[asset.logical]))
     return digest.hexdigest()[:20]
 
 
@@ -106,17 +111,28 @@ def version_manifest(manifest: dict[str, Any], release: str) -> dict[str, Any]:
     result = json.loads(json.dumps(manifest))
     result.setdefault("release", {})["asset_release"] = release
     result.setdefault("binary", {})["url_template"] = f"releases/{release}/tiles_bin/gosper_{{yq}}_{{yr}}.bin"
-    result.setdefault("texture_pages", {})["url_template"] = f"releases/{release}/aerial_pages/{{tier}}/texture_{{page_x}}_{{page_y}}.ktx2"
+    texture_contract = result.setdefault("texture_pages", {})
+    texture_contract["url_template"] = f"releases/{release}/aerial_pages/{{tier}}/texture_{{page_x}}_{{page_y}}.ktx2"
+    tier_names = [tier["name"] for tier in texture_contract.get("tiers", [])]
+    for page in texture_contract.get("pages", []):
+        page["urls"] = {
+            tier: f"releases/{release}/aerial_pages/{tier}/texture_{page['page_x']}_{page['page_y']}.ktx2"
+            for tier in tier_names
+        }
     return result
 
 
-def verify(store: Store, key: str, asset: Asset, cache_control: str) -> None:
+def verify(store: Store, key: str, asset: Asset, cache_control: str,
+           expected_sha: str | None = None, *, decode: bool = False) -> None:
+    expected_sha = expected_sha or sha256(asset.local)
     head = store.head(key)
     if int(head["ContentLength"]) != asset.local.stat().st_size or head.get("ContentType") != content_type(asset.local) or head.get("CacheControl") != cache_control:
         raise ValueError(f"head verification failed for {key}")
-    if head.get("Metadata", {}).get("sha256") != sha256(asset.local) or sha256_bytes(store.get(key)) != sha256(asset.local):
+    payload = store.get(key)
+    if head.get("Metadata", {}).get("sha256") != expected_sha or sha256_bytes(payload) != expected_sha:
         raise ValueError(f"hash verification failed for {key}")
-    decode_sample(asset, store.get(key))
+    if decode:
+        decode_sample(asset, payload)
 
 
 def sha256_bytes(payload: bytes) -> str: return hashlib.sha256(payload).hexdigest()
@@ -128,22 +144,32 @@ def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_afte
     assets = referenced_assets(manifest, app_root)
     missing = [str(item.local) for item in assets if not item.local.is_file()]
     if missing: raise FileNotFoundError("manifest references missing assets: " + ", ".join(missing))
-    release = release_id(manifest_path, assets)
+    digests = {asset.logical: sha256(asset.local) for asset in assets}
+    release = release_id(manifest_path, assets, digests)
     staged = version_manifest(manifest, release)
     with tempfile.TemporaryDirectory() as temp:
         staged_path = Path(temp) / "tile_manifest.json"; staged_path.write_text(json.dumps(staged, separators=(",", ":")))
         staged_asset = Asset(staged_path, "tile_manifest.json")
+        staged_sha = sha256(staged_path)
+        decoded_types: set[str] = set()
         for index, asset in enumerate(assets, 1):
             key = f"releases/{release}/{asset.logical}"
-            store.put(asset.local, key, cache_control=IMMUTABLE, content_type=content_type(asset.local))
-            verify(store, key, asset, IMMUTABLE)
+            digest = digests[asset.logical]
+            store.put(asset.local, key, cache_control=IMMUTABLE,
+                      content_type=content_type(asset.local), sha256_hex=digest)
+            suffix = asset.local.suffix.lower()
+            verify(store, key, asset, IMMUTABLE, digest,
+                   decode=suffix in {".bin", ".ktx2"} and suffix not in decoded_types)
+            decoded_types.add(suffix)
             if interrupt_after == index: raise RuntimeError("simulated interrupted upload")
         staged_key = f"releases/{release}/tile_manifest.json"
-        store.put(staged_path, staged_key, cache_control=IMMUTABLE, content_type="application/json")
-        verify(store, staged_key, staged_asset, IMMUTABLE)
+        store.put(staged_path, staged_key, cache_control=IMMUTABLE,
+                  content_type="application/json", sha256_hex=staged_sha)
+        verify(store, staged_key, staged_asset, IMMUTABLE, staged_sha)
         # This is intentionally the only mutable write and happens last.
-        store.put(staged_path, "tile_manifest.json", cache_control=NO_CACHE, content_type="application/json")
-        verify(store, "tile_manifest.json", staged_asset, NO_CACHE)
+        store.put(staged_path, "tile_manifest.json", cache_control=NO_CACHE,
+                  content_type="application/json", sha256_hex=staged_sha)
+        verify(store, "tile_manifest.json", staged_asset, NO_CACHE, staged_sha)
     return release
 
 
