@@ -459,6 +459,16 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                     )
 
                 cold_responses = summarize_network_events(cdp.events)
+                # The initial cold document necessarily loads its shell before
+                # the newly installed worker controls it. Seed Cache Storage
+                # with one *unmeasured*, worker-controlled navigation before
+                # measuring the returning-visitor navigation below.
+                await cdp.call("Network.clearBrowserCache")
+                cdp.events.clear()
+                await cdp.call("Page.navigate", {"url": url})
+                seed = await wait_for_report(
+                    cdp, timeout, excluded_run_id=cold.get("meta", {}).get("runId"), label="sw-seed",
+                )
                 await cdp.call("Network.emulateNetworkConditions", {
                     "offline": False,
                     "latency": 0,
@@ -474,10 +484,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                 cdp.events.clear()
                 await cdp.call("Page.navigate", {"url": url})
                 warm = await wait_for_report(
-                    cdp,
-                    timeout,
-                    excluded_run_id=cold.get("meta", {}).get("runId"),
-                    label="warm",
+                    cdp, timeout, excluded_run_id=seed.get("meta", {}).get("runId"), label="warm",
                 )
                 after_raw = await cdp.js(SERVICE_WORKER_STATUS, await_promise=True)
                 after = json.loads(after_raw)
@@ -498,6 +505,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     },
                     "cold": cold,
+                    "serviceWorkerSeed": seed,
                     "warm": warm,
                     "comparison": {
                         "coldTTFTFMs": cold_ttftf,
