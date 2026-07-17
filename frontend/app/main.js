@@ -2856,7 +2856,11 @@ class PistonViewer {
         const hasDisplayedPage = TEXTURE_HUD_ROWS.some(({ tier }) => displayed[tier].size > 0);
         if (!this._textureMilestonesDone && hasDisplayedPage) {
             this.profiler?.milestone('firstTexture');
-            if (countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
+            const bootGeometryDrained = (
+                (this.loadQueue?.length ?? 0) === 0 &&
+                (this.instantiateQueue?.length ?? 0) === 0
+            );
+            if (bootGeometryDrained && countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
                 this.profiler?.milestone('visibleTexturedCoverage');
             }
             const milestones = this.profiler?.milestones || {};
