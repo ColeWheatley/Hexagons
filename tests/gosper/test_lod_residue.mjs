@@ -86,8 +86,9 @@ assert.match(
 );
 
 const hud = contents.get('frontend/app/index.html');
-assert.match(hud, /id="moving-lod-summary"[^>]*>moving: --</);
-assert.match(hud, /id="settled-lod-summary"[^>]*>settled: --</);
+assert.match(hud, /id="moving-lod-summary"[^>]*><\/div>/);
+assert.match(hud, /id="settled-lod-summary"[^>]*><\/div>/);
+assert.doesNotMatch(hud, /(?:moving|settled): --/);
 assert.match(main, /G\.levelSize\(this\.movingLevel\)/);
 assert.match(main, /Array\.from\(this\.settledLodRadii\.slice\(0, 3\), km\)/);
 assert.match(main, /Array\.from\(this\.settledLodRadii\.slice\(3, 5\), km\)/);
