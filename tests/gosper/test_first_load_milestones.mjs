@@ -11,6 +11,8 @@ async function importFrontendModule(relativePath) {
 }
 
 const {
+    TEXTURE_HUD_ROWS,
+    collectDisplayedTexturePages,
     countUnpaintedVisibleTiles,
 } = await importFrontendModule('../../frontend/app/texture_hud_telemetry.js');
 const {
@@ -42,6 +44,47 @@ function tile(materials, { containerVisible = true, meshVisible = true } = {}) {
 
 function visibility(classification = 'visible') {
     return new Map([['tile-a', { classification }]]);
+}
+
+function profilerStub() {
+    return {
+        milestones: {},
+        milestone(name) {
+            if (this.milestones[name] === undefined) this.milestones[name] = true;
+        },
+    };
+}
+
+function recordTextureMilestones(viewer) {
+    const displayed = collectDisplayedTexturePages(viewer.tiles, viewer.visibilityByKey);
+    const hasDisplayedPage = TEXTURE_HUD_ROWS.some(({ tier }) => displayed[tier].size > 0);
+    if (!viewer._textureMilestonesDone && hasDisplayedPage) {
+        viewer.profiler?.milestone('firstTexture');
+        const bootGeometryDrained = (
+            (viewer.loadQueue?.length ?? 0) === 0 &&
+            (viewer.instantiateQueue?.length ?? 0) === 0
+        );
+        if (bootGeometryDrained && countUnpaintedVisibleTiles(viewer.tiles, viewer.visibilityByKey) === 0) {
+            viewer.profiler?.milestone('visibleTexturedCoverage');
+        }
+        const milestones = viewer.profiler?.milestones || {};
+        viewer._textureMilestonesDone = (
+            milestones.firstTexture !== undefined &&
+            milestones.visibleTexturedCoverage !== undefined
+        );
+    }
+}
+
+function milestoneViewer({ loadQueue = [], instantiateQueue = [], textureQueue = [] } = {}) {
+    return {
+        tiles: new Map([['tile-a', tile([material([binding()])])]]),
+        visibilityByKey: visibility(),
+        loadQueue,
+        instantiateQueue,
+        textureQueue,
+        profiler: profilerStub(),
+        _textureMilestonesDone: false,
+    };
 }
 
 assert.equal(
@@ -88,6 +131,33 @@ assert.equal(
     0,
     'non-visible classifications are skipped',
 );
+
+const queuedLoadViewer = milestoneViewer({ loadQueue: [{}] });
+recordTextureMilestones(queuedLoadViewer);
+assert.deepEqual(
+    queuedLoadViewer.profiler.milestones,
+    { firstTexture: true },
+    'non-empty loadQueue blocks visibleTexturedCoverage',
+);
+assert.equal(queuedLoadViewer._textureMilestonesDone, false);
+
+const queuedInstantiateViewer = milestoneViewer({ instantiateQueue: [{}] });
+recordTextureMilestones(queuedInstantiateViewer);
+assert.deepEqual(
+    queuedInstantiateViewer.profiler.milestones,
+    { firstTexture: true },
+    'non-empty instantiateQueue blocks visibleTexturedCoverage',
+);
+assert.equal(queuedInstantiateViewer._textureMilestonesDone, false);
+
+const drainedViewer = milestoneViewer({ textureQueue: [{}] });
+recordTextureMilestones(drainedViewer);
+assert.deepEqual(
+    drainedViewer.profiler.milestones,
+    { firstTexture: true, visibleTexturedCoverage: true },
+    'drained geometry queues and painted visible tiles record TTFTF',
+);
+assert.equal(drainedViewer._textureMilestonesDone, true);
 
 const originalPerformance = globalThis.performance;
 const originalLocalStorage = globalThis.localStorage;
