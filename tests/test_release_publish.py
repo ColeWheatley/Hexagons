@@ -66,5 +66,18 @@ class AtomicReleasePublishTest(unittest.TestCase):
                 release_publish.publish(manifest, app, store)
             self.assertFalse((root / "s3").exists())
 
+    def test_allows_diagnostics_only_for_explicit_beta_stubai(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); app, manifest = self.fixture(root); payload = json.loads(manifest.read_text())
+            payload["texture_pages"]["diagnostic_tattoos"] = True
+            payload["release"] = {"mode": "beta", "profile": "beta-stubai", "coverage_profile": "stubai-small-square"}
+            manifest.write_text(json.dumps(payload))
+            store = release_publish.LocalStore(root / "s3")
+            release_publish.publish(manifest, app, store, allow_beta_diagnostics=True)
+            payload["release"]["profile"] = "production-selected-tirol"; payload["release"]["mode"] = "production"
+            manifest.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "diagnostic-tattoo"):
+                release_publish.publish(manifest, app, store, allow_beta_diagnostics=True)
+
 
 if __name__ == "__main__": unittest.main()

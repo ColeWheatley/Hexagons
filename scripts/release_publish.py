@@ -92,8 +92,17 @@ def referenced_assets(manifest: dict[str, Any], root: Path) -> list[Asset]:
     return assets
 
 
-def reject_diagnostics(manifest: dict[str, Any]) -> None:
-    if manifest.get("texture_pages", {}).get("diagnostic_tattoos"):
+def reject_diagnostics(manifest: dict[str, Any], *, allow_beta_diagnostics: bool = False) -> None:
+    """Keep diagnostics out of production, with an explicit beta-only escape hatch."""
+    if not manifest.get("texture_pages", {}).get("diagnostic_tattoos"):
+        return
+    release = manifest.get("release", {})
+    is_beta_stubai = (
+        release.get("mode") == "beta"
+        and release.get("profile") == "beta-stubai"
+        and release.get("coverage_profile") == "stubai-small-square"
+    )
+    if not (allow_beta_diagnostics and is_beta_stubai):
         raise ValueError("refusing diagnostic-tattoo manifest")
 
 
@@ -154,9 +163,10 @@ def verify(store: Store, key: str, asset: Asset, cache_control: str,
 def sha256_bytes(payload: bytes) -> str: return hashlib.sha256(payload).hexdigest()
 
 
-def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_after: int | None = None) -> str:
+def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_after: int | None = None,
+            allow_beta_diagnostics: bool = False) -> str:
     manifest = json.loads(manifest_path.read_text())
-    reject_diagnostics(manifest)
+    reject_diagnostics(manifest, allow_beta_diagnostics=allow_beta_diagnostics)
     assets = referenced_assets(manifest, app_root)
     missing = [str(item.local) for item in assets if not item.local.is_file()]
     if missing: raise FileNotFoundError("manifest references missing assets: " + ", ".join(missing))
@@ -194,6 +204,8 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=Path("frontend/app/tile_manifest.json"))
     parser.add_argument("--app-root", type=Path, default=Path("frontend/app"))
     parser.add_argument("--bucket"); parser.add_argument("--prefix", default="powfinder/app")
+    parser.add_argument("--allow-beta-diagnostics", action="store_true",
+                        help="allow diagnostic tattoos only for the beta-stubai manifest")
     parser.add_argument("--dry-run", action="store_true", help="publish to a temporary local fake-S3 only")
     parser.add_argument("--fake-s3", type=Path, help="filesystem fake-S3 root (never contacts AWS)")
     args = parser.parse_args()
@@ -201,6 +213,6 @@ def main() -> None:
     elif args.dry_run: store = LocalStore(Path(tempfile.mkdtemp(prefix="hexagons-fake-s3-")))
     elif args.bucket: store = AwsStore(args.bucket, args.prefix)
     else: parser.error("provide --bucket for S3 or --dry-run/--fake-s3 for local verification")
-    print(f"published release {publish(args.manifest, args.app_root, store)}")
+    print(f"published release {publish(args.manifest, args.app_root, store, allow_beta_diagnostics=args.allow_beta_diagnostics)}")
 
 if __name__ == "__main__": main()
