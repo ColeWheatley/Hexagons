@@ -446,6 +446,7 @@ export class HexSearch {
                 v.controls.update();
                 v.needsRender = true;
                 v.needsLODUpdate = true;
+                v.viewState?.commitViewChange();
 
                 v.updateLOD();
             }

@@ -4,6 +4,14 @@
 // dynamically subtracts a view-dependent floor and morphs height with pitch,
 // so camera.position.y is not an absolute elevation above sea level.
 import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utility.js?v=pageonly1';
+import {
+    hasExplicitViewParams,
+    readPersistedEnvelope,
+    sanitizePublicSettings,
+    sanitizeStoredView,
+    VIEW_STORAGE_VERSION,
+    writePersistedEnvelope,
+} from './view_persistence.js?v=pageonly1';
 
 const SCHEMA_VERSION = '1';
 const SETTLE_DEBOUNCE_MS = 450;
@@ -46,7 +54,7 @@ export class ShareableViewState {
             if (!this.userGestureChanged) return;
             clearTimeout(this.writeTimer);
             this.writeTimer = setTimeout(() => {
-                if (!viewer.isUserInteracting) this.replaceUrl();
+                if (!viewer.isUserInteracting) this.commitViewChange();
             }, SETTLE_DEBOUNCE_MS);
         });
 
@@ -146,26 +154,66 @@ export class ShareableViewState {
         return url.href;
     }
 
+    hasExplicitViewUrl(input = window.location.href) {
+        return hasExplicitViewParams(input, window.location.href);
+    }
+
+    getPublicSettings() {
+        return sanitizePublicSettings({
+            hazeDistanceKm: Math.round((this.viewer.atmosphereSettings?.hazeDistance || 0) / 1000),
+            highTextureEnterPx: this.viewer.highTextureEnterPx,
+            gradientMode: this.viewer.gradientMode,
+        });
+    }
+
+    storage() {
+        try {
+            return window.localStorage;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    persist({ includeView = true } = {}) {
+        const storage = this.storage();
+        const existing = readPersistedEnvelope(storage);
+        const state = includeView ? this.getState() : existing?.view;
+        const view = state ? sanitizeStoredView({
+            schema: 1, target: state.target, camera: state.camera,
+        }) : null;
+        const settings = this.getPublicSettings() || existing?.settings || null;
+        return writePersistedEnvelope(storage, {
+            version: VIEW_STORAGE_VERSION, view, settings,
+        });
+    }
+
+    // Call this for all non-MapControls camera paths (search, custom touch,
+    // keyboard adapters). It keeps the URL and next-session state identical.
+    commitViewChange() {
+        const url = this.replaceUrl();
+        this.persist();
+        return url;
+    }
+
+    commitSettingsChange() {
+        this.persist({ includeView: true });
+    }
+
+    restorePublicSettings() {
+        const settings = readPersistedEnvelope(this.storage())?.settings;
+        if (!settings) return false;
+        this.viewer.applyPublicSettings?.(settings);
+        return true;
+    }
+
     async copyLink() {
         const url = this.replaceUrl();
         await navigator.clipboard.writeText(url);
         return url;
     }
 
-    async applyUrl(input = window.location.href) {
-        let url;
-        try {
-            url = input.startsWith?.('?')
-                ? new URL(input, window.location.href)
-                : new URL(input, window.location.href);
-        } catch (_) {
-            return false;
-        }
-        if (url.searchParams.get('view') !== SCHEMA_VERSION) return false;
-        const target = parsePoint(url.searchParams.get('at'));
-        const camera = parsePoint(url.searchParams.get('eye'));
+    async applyPoints(target, camera) {
         if (!target || !camera || !(await initProjection())) return false;
-
         const targetScene = this.gpsToScene(target);
         const cameraScene = this.gpsToScene(camera);
         const separation = Math.hypot(
@@ -188,11 +236,26 @@ export class ShareableViewState {
         return true;
     }
 
-    async restoreFromUrl() {
-        const params = new URLSearchParams(window.location.search);
-        if (!params.has('view') && !params.has('at') && !params.has('eye')) {
-            await initProjection(); // prepare GPS output for the first user move
+    async applyUrl(input = window.location.href) {
+        let url;
+        try {
+            url = input.startsWith?.('?')
+                ? new URL(input, window.location.href)
+                : new URL(input, window.location.href);
+        } catch (_) {
             return false;
+        }
+        if (url.searchParams.get('view') !== SCHEMA_VERSION) return false;
+        const target = parsePoint(url.searchParams.get('at'));
+        const camera = parsePoint(url.searchParams.get('eye'));
+        return this.applyPoints(target, camera);
+    }
+
+    async restoreFromUrl() {
+        if (!this.hasExplicitViewUrl()) {
+            await initProjection(); // prepare GPS output for the first user move
+            const stored = readPersistedEnvelope(this.storage())?.view;
+            return stored ? this.applyPoints(stored.target, stored.camera) : false;
         }
         const restored = await this.applyUrl(window.location.href);
         if (!restored) this.viewer.log('Invalid shareable view URL; using the default start.', 'warn');
