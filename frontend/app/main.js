@@ -49,6 +49,7 @@ import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
     collectTextureTierResidency,
+    countUnpaintedVisibleTiles,
 } from './texture_hud_telemetry.js?v=pageonly1';
 import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=pageonly1';
 import {
@@ -353,6 +354,7 @@ class PistonViewer {
             highSourceSize: null,
             highSkippedTopMips: 0,
         };
+        this._textureMilestonesDone = false;
         this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
@@ -2851,6 +2853,18 @@ class PistonViewer {
         }
 
         const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
+        const hasDisplayedPage = TEXTURE_HUD_ROWS.some(({ tier }) => displayed[tier].size > 0);
+        if (!this._textureMilestonesDone && hasDisplayedPage) {
+            this.profiler?.milestone('firstTexture');
+            if (countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
+                this.profiler?.milestone('visibleTexturedCoverage');
+            }
+            const milestones = this.profiler?.milestones || {};
+            this._textureMilestonesDone = (
+                milestones.firstTexture !== undefined &&
+                milestones.visibleTexturedCoverage !== undefined
+            );
+        }
         const residency = collectTextureTierResidency(this.textureStates);
         const snapshot = TEXTURE_HUD_ROWS.map(({ tier }) => ({
             tier,
