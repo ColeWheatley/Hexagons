@@ -1,0 +1,3767 @@
+{
+ "meta": {
+  "scenario": "orbit",
+  "texturePipeline": "ktx2",
+  "appVersion": "v0.10.0-rc5",
+  "timestamp": "2026-07-17T16:21:03.077Z",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
+  "duration_s": 22.9,
+  "crashed": false,
+  "finished": true,
+  "runId": "1784305240211-14sp5g",
+  "profilerMode": "full",
+  "releaseProfile": "beta-stubai",
+  "releaseMode": "beta",
+  "capabilityProfile": "high"
+ },
+ "frames": {
+  "total": 2580,
+  "rendered": 2492,
+  "skipped": 88,
+  "fps_avg_active": 113.1,
+  "p50_ms": 8.3,
+  "p95_ms": 9.6,
+  "p99_ms": 16.6,
+  "worst_ms": 200.1,
+  "over20": 10,
+  "over33": 6,
+  "over100": 6,
+  "perState": {
+   "MOVING_2D": {
+    "count": 871,
+    "fps_avg": 119.6,
+    "p50_ms": 8.3,
+    "p95_ms": 10,
+    "p99_ms": 10.3,
+    "worst_ms": 16.7,
+    "over20": 0,
+    "over33": 0,
+    "over100": 0
+   },
+   "MOVING_3D": {
+    "count": 1601,
+    "fps_avg": 120,
+    "p50_ms": 8.3,
+    "p95_ms": 9.2,
+    "p99_ms": 9.9,
+    "worst_ms": 10.4,
+    "over20": 0,
+    "over33": 0,
+    "over100": 0
+   },
+   "SINTERING": {
+    "count": 106,
+    "fps_avg": 48.7,
+    "p50_ms": 8.4,
+    "p95_ms": 165.9,
+    "p99_ms": 191.7,
+    "worst_ms": 200.1,
+    "over20": 10,
+    "over33": 6,
+    "over100": 6
+   }
+  }
+ },
+ "memory": {
+  "jsHeapPeakBytes": 291876225,
+  "jsHeapEndBytes": 291876225,
+  "contextLostCount": 0,
+  "glOutOfMemoryCount": 0
+ },
+ "vram": {
+  "peakLedgerBytes": 139472952,
+  "endLedgerBytes": 139472952,
+  "budgetBytes": 268435456,
+  "peakUtilization": 0.2781
+ },
+ "cache": {
+  "evictions": 0,
+  "evictedBytes": 0,
+  "redownloads": 0
+ },
+ "textures": {
+  "upgrades": 0,
+  "texStats": {
+   "count": 879,
+   "totalTranscodeMs": 1947.7000014781952,
+   "maxTranscodeMs": 169.19999992847443,
+   "formatKey": "astc-8x6",
+   "totalGpuBytes": 91425264,
+   "maxTextureSize": 16384,
+   "highUploadSize": 4096,
+   "highSourceSize": 4096,
+   "highSkippedTopMips": 0,
+   "firstTextureHeapBytes": 7939965
+  }
+ },
+ "milestones": {
+  "manifestLoaded": 0.4,
+  "firstBootstrapQueued": 18.6,
+  "firstBootstrapDispatched": 20.3,
+  "firstBootstrapDecoded": 42.2,
+  "firstBootstrapInstalled": 42.5,
+  "firstTexture": 56.5,
+  "firstTileOperational": 57.7,
+  "visibleTexturedCoverage": 213.8,
+  "firstHighQueued": 314.1,
+  "firstHighDispatched": 315.9,
+  "firstHighInstalled": 555.4,
+  "loaderHidden": 863.2
+ },
+ "samples": [
+  {
+   "t": 1,
+   "jsHeap": {
+    "used": 115181460,
+    "total": 143015588,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 2,
+   "jsHeap": {
+    "used": 123661495,
+    "total": 146186927,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 3,
+   "jsHeap": {
+    "used": 123648630,
+    "total": 148913826,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 4,
+   "jsHeap": {
+    "used": 131379905,
+    "total": 152832549,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 5,
+   "jsHeap": {
+    "used": 138917023,
+    "total": 156911503,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 6,
+   "jsHeap": {
+    "used": 130253661,
+    "total": 158871193,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 30,
+    "triangles": 66444,
+    "geometries": 156,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63411200,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 29,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 38,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30351968,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 7,
+   "jsHeap": {
+    "used": 138533102,
+    "total": 163235622,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 31,
+    "triangles": 66738,
+    "geometries": 157,
+    "textures": 21,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63423276,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 30,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 40,
+    "totalTranscodeMs": 658.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 30360160,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 8,
+   "jsHeap": {
+    "used": 147719463,
+    "total": 173478255,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 37,
+    "triangles": 68502,
+    "geometries": 163,
+    "textures": 25,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 63588676,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 36,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 3,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 57,
+    "totalTranscodeMs": 661.1000000238419,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 30506352,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 9,
+   "jsHeap": {
+    "used": 145031754,
+    "total": 182079990,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 52,
+    "triangles": 72912,
+    "geometries": 178,
+    "textures": 39,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 64205864,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 51,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 122,
+    "totalTranscodeMs": 675.2999999523163,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 31155392,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 10,
+   "jsHeap": {
+    "used": 159289460,
+    "total": 177115580,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 75,
+    "triangles": 79674,
+    "geometries": 201,
+    "textures": 60,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 65064588,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 74,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 195,
+    "totalTranscodeMs": 695.0000001192093,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 31990320,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 11,
+   "jsHeap": {
+    "used": 196626429,
+    "total": 225589693,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 109,
+    "triangles": 89670,
+    "geometries": 235,
+    "textures": 83,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66140900,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 108,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 8,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 288,
+    "totalTranscodeMs": 718.2000005245209,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 32983728,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 12,
+   "jsHeap": {
+    "used": 190209726,
+    "total": 239685002,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 127,
+    "triangles": 94962,
+    "geometries": 253,
+    "textures": 95,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66655372,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 126,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 3,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 332,
+    "totalTranscodeMs": 729.2000006437302,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 33444672,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 13,
+   "jsHeap": {
+    "used": 205927385,
+    "total": 251928357,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 135,
+    "triangles": 97314,
+    "geometries": 261,
+    "textures": 99,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66862252,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 134,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 355,
+    "totalTranscodeMs": 732.9000005722046,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 33640960,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 14,
+   "jsHeap": {
+    "used": 204472393,
+    "total": 254932061,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 137,
+    "triangles": 97902,
+    "geometries": 263,
+    "textures": 100,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66907828,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 136,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 359,
+    "totalTranscodeMs": 733.9000005722046,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 33682864,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 15,
+   "jsHeap": {
+    "used": 211636708,
+    "total": 255966352,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 138,
+    "triangles": 98196,
+    "geometries": 264,
+    "textures": 100,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66915808,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 137,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 2,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 361,
+    "totalTranscodeMs": 733.9000005722046,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 33691056,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 16,
+   "jsHeap": {
+    "used": 219419124,
+    "total": 261156868,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 140,
+    "triangles": 98784,
+    "geometries": 266,
+    "textures": 101,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66935864,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 139,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 7,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 369,
+    "totalTranscodeMs": 736.0000005960464,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 33774864,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 17,
+   "jsHeap": {
+    "used": 227683435,
+    "total": 271064815,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 130,
+    "triangles": 95844,
+    "geometries": 256,
+    "textures": 95,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66641504,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 129,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 4,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 475,
+    "totalTranscodeMs": 761.8000005483627,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 34872560,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 18,
+   "jsHeap": {
+    "used": 231499569,
+    "total": 261356085,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 127,
+    "triangles": 94962,
+    "geometries": 253,
+    "textures": 88,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66330540,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 126,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 8,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 1
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 568,
+    "totalTranscodeMs": 782.500000834465,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 35789408,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 19,
+   "jsHeap": {
+    "used": 229759988,
+    "total": 270298784,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 129,
+    "triangles": 95232,
+    "geometries": 255,
+    "textures": 94,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66621308,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 128,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 4,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 672,
+    "totalTranscodeMs": 814.8000007867813,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 37057552,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 20,
+   "jsHeap": {
+    "used": 214367493,
+    "total": 271215573,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 132,
+    "triangles": 96432,
+    "geometries": 258,
+    "textures": 94,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 59223224,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.0834
+   },
+   "tiles": {
+    "loaded": 131,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 5,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 777,
+    "totalTranscodeMs": 841.2000008821487,
+    "maxTranscodeMs": 165.60000002384186,
+    "totalGpuBytes": 38176672,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 21,
+   "jsHeap": {
+    "used": 237159610,
+    "total": 292283462,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 138,
+    "triangles": 98196,
+    "geometries": 264,
+    "textures": 100,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 66950464,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.1112
+   },
+   "tiles": {
+    "loaded": 137,
+    "loadQueue": 0,
+    "textureQueue": 0,
+    "textureResultQueue": 1,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 873,
+    "totalTranscodeMs": 1024.1000014543533,
+    "maxTranscodeMs": 165.60000002384186,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 46642128,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  },
+  {
+   "t": 22,
+   "jsHeap": {
+    "used": 291876225,
+    "total": 357529449,
+    "limit": 4395630592
+   },
+   "renderInfo": {
+    "calls": 635,
+    "triangles": 5722284,
+    "geometries": 636,
+    "textures": 106,
+    "programs": 2
+   },
+   "vram": {
+    "totalBytes": 139472952,
+    "highTextureBudgetBytes": 268435456,
+    "highTextureBudgetUtilization": 0.2781
+   },
+   "tiles": {
+    "loaded": 137,
+    "loadQueue": 0,
+    "textureQueue": 7,
+    "textureResultQueue": 0,
+    "geometryRebuildQueue": 0,
+    "activeWorkers": 0
+   },
+   "cache": {
+    "evictions": 0,
+    "evictedBytes": 0,
+    "redownloads": 0
+   },
+   "texStats": {
+    "count": 879,
+    "totalTranscodeMs": 1947.7000014781952,
+    "maxTranscodeMs": 169.19999992847443,
+    "formatKey": "astc-8x6",
+    "totalGpuBytes": 91425264,
+    "maxTextureSize": 16384,
+    "highUploadSize": 4096,
+    "highSourceSize": 4096,
+    "highSkippedTopMips": 0,
+    "firstTextureHeapBytes": 7939965
+   },
+   "glOutOfMemoryCount": 0
+  }
+ ],
+ "headlessGL": {
+  "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
+  "astc": true,
+  "bptc": true,
+  "s3tc": true,
+  "etc": true
+ },
+ "staticBufferInstrumentation": {
+  "staticAttributeReferences": 5743,
+  "uniqueStaticAttributes": 13,
+  "avoidedStaticAttributeUploads": 5730
+ },
+ "materialChurn": {
+  "scenario": "orbit",
+  "duration": 20,
+  "counters": {
+   "compileCalls": 324,
+   "materialShaderSetups": 1296,
+   "materialReplacements": 0,
+   "traversalCalls": 856,
+   "traversedObjects": 8884,
+   "textureSerializationWarnings": 0,
+   "uniformPasses": 2400,
+   "uniformCandidates": 29343,
+   "uniformWrites": 2520,
+   "unchangedUniformWritesAvoided": 26823,
+   "resizeEvents": 0,
+   "motionEvents": 1,
+   "renderCycleCount": 2400,
+   "renderCycleTotalMs": 2639.8000017404556,
+   "renderCycleMaxMs": 4.900000095367432,
+   "renderCycleAverageMs": 1.0999166673918566
+  },
+  "lod": {
+   "movingLevel": 3,
+   "isMoving": false,
+   "tiles": [
+    {
+     "key": "274_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "274_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "275_-230",
+     "finestBuilt": 1,
+     "selection": "161,7|1127,49|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-231",
+     "finestBuilt": 0,
+     "selection": "63,7,98,84,189,7|441,49,686,588,1323,49|3087,343,4802,4116,9261,343",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-232",
+     "finestBuilt": 0,
+     "selection": "7,21,49,28,98,98|49,147,343,196,686,686|343,1029,2401,1372,4802,4802",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-233",
+     "finestBuilt": 0,
+     "selection": "0,28,49,35,91,105,203,21|0,196,343,245,637,735,1421,147|0,1372,2401,1715,4459,5145,9947,1029",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-234",
+     "finestBuilt": 0,
+     "selection": "0,35,42,182|0,245,294,1274|0,1715,2058,8918",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-235",
+     "finestBuilt": 0,
+     "selection": "0,196,203,14,238,7,252,14,301,21|0,1372,1421,98,1666,49,1764,98,2107,147|0,9604,9947,686,11662,343,12348,686,14749,1029",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-236",
+     "finestBuilt": 0,
+     "selection": "49,21,91,28,140,7|343,147,637,196,980,49|2401,1029,4459,343",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "275_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "276_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "276_-231",
+     "finestBuilt": 0,
+     "selection": "0,84,98,203,308,21|0,588,686,1421,2156,147|1029,686,7203,4802,13034,686",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-232",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-233",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-234",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-235",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-236",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,5488,6174,1029,12005,4802",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-237",
+     "finestBuilt": 1,
+     "selection": "0,168,189,7,294,28,336,7|0,1176,1323,49,2058,196,2352,49|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "276_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "277_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "277_-231",
+     "finestBuilt": 1,
+     "selection": "0,7,14,28,98,154,259,28|0,49,98,196,686,1078,1813,196|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-232",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,2744,3087,1372,4802,343,5488,9261,15092,1372",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-233",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-234",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-235",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-236",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,343,1372,1715,3773,1029,9947,343,11319,5488",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-238",
+     "finestBuilt": 1,
+     "selection": "0,217,238,28,287,56|0,1519,1666,196,2009,392|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "277_-239",
+     "finestBuilt": 1,
+     "selection": "56,14,91,7,105,7|392,98,637,49,735,49|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "278_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "278_-231",
+     "finestBuilt": 1,
+     "selection": "0,35,98,147,259,14|0,245,686,1029,1813,98|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-232",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-233",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,343,1029,1029,8575,686,9604,5145,15435,1372",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-234",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,3087,3430,1372,6174,686,7203,343,8232,8575",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-235",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,4802,6517,343,8918,343,9604,7203",
+     "visibleLevels": [
+      0,
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-236",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|14749,343,16121,686",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "278_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "278_-240",
+     "finestBuilt": 1,
+     "selection": "49,28,91,35,140,7|343,196,637,245,980,49|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "278_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "279_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "279_-231",
+     "finestBuilt": 1,
+     "selection": "0,35,98,147,259,14|0,245,686,1029,1813,98|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "279_-232",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-233",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-234",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-235",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-236",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "279_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "279_-240",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "279_-241",
+     "finestBuilt": 1,
+     "selection": "0,35,42,133,189,7,294,21,336,7|343,98,588,98,2058,147,2352,49|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "280_-231",
+     "finestBuilt": 1,
+     "selection": "14,21,98,42,147,98,266,7|98,147,686,294,1029,686,1862,49|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-232",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-233",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "280_-234",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "280_-235",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "280_-236",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "280_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "280_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-240",
+     "finestBuilt": 1,
+     "selection": "0,343|0,784,882,147,1274,1127|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-241",
+     "finestBuilt": 1,
+     "selection": "0,343|2009,147,2254,147|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "280_-242",
+     "finestBuilt": 2,
+     "selection": "0,224,231,42,287,56||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3,
+      5
+     ]
+    },
+    {
+     "key": "281_-231",
+     "finestBuilt": 1,
+     "selection": "14,21,112,21,147,98|1372,49,1519,196|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-232",
+     "finestBuilt": 1,
+     "selection": "0,343|0,392,490,245,833,1568|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-233",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-234",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-235",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "281_-236",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      5
+     ]
+    },
+    {
+     "key": "281_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-240",
+     "finestBuilt": 1,
+     "selection": "0,343|0,147,196,490,735,49,931,98,1715,686|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-241",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-242",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "281_-243",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-231",
+     "finestBuilt": 2,
+     "selection": "21,7,98,42,147,91||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-232",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-233",
+     "finestBuilt": 1,
+     "selection": "0,343|196,98,1372,735,2205,147|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-234",
+     "finestBuilt": 1,
+     "selection": "0,343|0,392,490,245,833,1568|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-235",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-236",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,2401|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|0,1127,1225,1176|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-240",
+     "finestBuilt": 1,
+     "selection": "0,343|245,98,588,98,1715,686|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-241",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-242",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "282_-243",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-232",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-233",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-234",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-235",
+     "finestBuilt": 1,
+     "selection": "0,343|0,49,147,196,1225,98,1372,735,2156,245|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-236",
+     "finestBuilt": 1,
+     "selection": "0,343|0,343,539,98,1225,98,1372,1029|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-237",
+     "finestBuilt": 1,
+     "selection": "0,343|0,441,490,196,882,98,1029,49,1176,1225|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-238",
+     "finestBuilt": 1,
+     "selection": "0,343|0,686,931,49,1274,1127|",
+     "visibleLevels": [
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-239",
+     "finestBuilt": 1,
+     "selection": "0,343|245,49,588,98,1617,784|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-240",
+     "finestBuilt": 1,
+     "selection": "0,343|2303,98|",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-241",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-242",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-243",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "283_-244",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-232",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-233",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-234",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-235",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-236",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-237",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-238",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-239",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-240",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-241",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-242",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-243",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "284_-244",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-233",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-234",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-235",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-236",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-237",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-238",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-239",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-240",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-241",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-242",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-243",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-244",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "285_-245",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "286_-233",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "286_-234",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "286_-235",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "286_-236",
+     "finestBuilt": 2,
+     "selection": "0,343||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    },
+    {
+     "key": "286_-237",
+     "finestBuilt": 2,
+     "selection": "0,224,231,112||",
+     "visibleLevels": [
+      2,
+      5
+     ]
+    }
+   ]
+  },
+  "timedLod": {
+   "movingLevel": 3,
+   "isMoving": true,
+   "tiles": [
+    {
+     "key": "274_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "274_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "275_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-235",
+     "finestBuilt": 0,
+     "selection": "112,7|784,49|5488,343",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "276_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-232",
+     "finestBuilt": 0,
+     "selection": "147,7,161,28,203,21|1029,49,1127,196,1421,147|7203,343,7889,1372,9947,1029",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-233",
+     "finestBuilt": 0,
+     "selection": "0,224,308,7|0,1568,2156,49|0,10976,15092,343",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-234",
+     "finestBuilt": 0,
+     "selection": "0,245,259,7,301,21|0,1715,1813,49,2107,147|0,12005,12691,343,14749,1029",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-235",
+     "finestBuilt": 0,
+     "selection": "0,245,252,21,294,28,336,7|0,1715,1764,147,2058,196,2352,49|0,12005,12348,1029,14406,1372,16464,343",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-236",
+     "finestBuilt": 0,
+     "selection": "0,21,35,112,252,7,287,56|0,147,245,784,1764,49,2009,392|0,1029,1715,5488,12348,343,14063,2744",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "277_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-233",
+     "finestBuilt": 0,
+     "selection": "0,49,98,7,112,28,147,147,315,14|0,343,686,49,784,196,1029,1029,2205,98|0,2401,4802,343,5488,1372,7203,7203,15435,686",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-234",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-235",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-236",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-237",
+     "finestBuilt": 0,
+     "selection": "49,21,84,14,301,7,336,7|343,147,588,98,2107,49,2352,49|2401,1029,4116,686,14749,343,16464,343",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "278_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-233",
+     "finestBuilt": 0,
+     "selection": "217,14|1519,98|10633,686",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-234",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-235",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-236",
+     "finestBuilt": 0,
+     "selection": "0,343|0,2401|0,16807",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-237",
+     "finestBuilt": 0,
+     "selection": "0,168,182,14,203,7,238,105|0,1176,1274,98,1421,49,1666,735|0,8232,8918,686,9947,343,11662,5145",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "279_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-234",
+     "finestBuilt": 0,
+     "selection": "0,7,28,14,196,14,217,35,259,28|0,49,196,98,1372,98,1519,245,1813,196|0,343,1372,686,9604,686,10633,1715,12691,1372",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-235",
+     "finestBuilt": 0,
+     "selection": "35,7,196,7,224,119|245,49,1372,49,1568,833|1715,343,9604,343,10976,5831",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-236",
+     "finestBuilt": 0,
+     "selection": "231,7,245,63,315,28|1617,49,1715,441,2205,196|11319,343,12005,3087,15435,1372",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-237",
+     "finestBuilt": 0,
+     "selection": "245,14,266,28,322,21|1715,98,1862,196,2254,147|12005,686,13034,1372,15778,1029",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-238",
+     "finestBuilt": 0,
+     "selection": "329,7|2303,49|16121,343",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "280_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-230",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "281_-243",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-231",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "282_-243",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-243",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "283_-244",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-232",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-243",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "284_-244",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-238",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-239",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-240",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-241",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-242",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-243",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-244",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "285_-245",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "286_-233",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "286_-234",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "286_-235",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "286_-236",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    },
+    {
+     "key": "286_-237",
+     "finestBuilt": 3,
+     "selection": "||",
+     "visibleLevels": [
+      3
+     ]
+    }
+   ]
+  },
+  "pixels": {
+   "optimized": {
+    "width": 1440,
+    "height": 900,
+    "bytes": 5184000,
+    "fnv32": 3483336364,
+    "weighted32": 3086732840
+   },
+   "baselineReplay": {
+    "width": 1440,
+    "height": 900,
+    "bytes": 5184000,
+    "fnv32": 3483336364,
+    "weighted32": 3086732840
+   },
+   "identical": true,
+   "lodIdentical": true
+  },
+  "renderInfo": {
+   "calls": 635,
+   "triangles": 5722284,
+   "programs": 2
+  }
+ },
+ "bootstrapDiagnostics": {
+  "firstConsumer": {
+   "tileKey": "279_-235",
+   "t": 91,
+   "pageKeys": [
+    "57_201",
+    "58_201",
+    "57_202",
+    "58_202"
+   ],
+   "states": [
+    {
+     "key": "57_201",
+     "available": true,
+     "bootstrapResident": false,
+     "bootstrapQueued": false,
+     "bootstrapLoading": true
+    },
+    {
+     "key": "58_201",
+     "available": true,
+     "bootstrapResident": true,
+     "bootstrapQueued": false,
+     "bootstrapLoading": false
+    },
+    {
+     "key": "57_202",
+     "available": true,
+     "bootstrapResident": false,
+     "bootstrapQueued": true,
+     "bootstrapLoading": false
+    },
+    {
+     "key": "58_202",
+     "available": true,
+     "bootstrapResident": true,
+     "bootstrapQueued": false,
+     "bootstrapLoading": false
+    }
+   ]
+  },
+  "matchingInstalls": [
+   {
+    "key": "57_201",
+    "t": 110.60000002384186
+   },
+   {
+    "key": "57_202",
+    "t": 125
+   }
+  ]
+ },
+ "resourceTimings": [
+  {
+   "name": "http://localhost:8124/tile_manifest.json?v=v0.10.0-rc5",
+   "startTime": 211.10000002384186,
+   "responseEnd": 230.10000002384186,
+   "transferSize": 104279,
+   "encodedBodySize": 103979
+  },
+  {
+   "name": "http://localhost:8124/assets/basis_transcoder.5046f5772520.wasm",
+   "startTime": 211.20000004768372,
+   "responseEnd": 235.80000007152557,
+   "transferSize": 961952,
+   "encodedBodySize": 961652
+  },
+  {
+   "name": "http://localhost:8124/style.a2f9f8b711e1.css",
+   "startTime": 211.30000007152557,
+   "responseEnd": 230,
+   "transferSize": 13612,
+   "encodedBodySize": 13312
+  },
+  {
+   "name": "http://localhost:8124/main.2b4c267cb0f7.js",
+   "startTime": 211.30000007152557,
+   "responseEnd": 241.5,
+   "transferSize": 894169,
+   "encodedBodySize": 893869
+  },
+  {
+   "name": "http://localhost:8124/assets/fonts/outfit-latin-700-normal.5d5e3734089a.woff2",
+   "startTime": 232.5,
+   "responseEnd": 246,
+   "transferSize": 14360,
+   "encodedBodySize": 14060
+  },
+  {
+   "name": "http://localhost:8124/assets/fonts/outfit-latin-400-normal.71f028fd2349.woff2",
+   "startTime": 232.60000002384186,
+   "responseEnd": 249.60000002384186,
+   "transferSize": 14332,
+   "encodedBodySize": 14032
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 336.5,
+   "responseEnd": 323.7000000476837,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/assets/skigebiete.json",
+   "startTime": 346,
+   "responseEnd": 349,
+   "transferSize": 5342,
+   "encodedBodySize": 5042
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 347.89999997615814,
+   "responseEnd": 323.8000000715256,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 348.10000002384186,
+   "responseEnd": 323.8000000715256,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 348.39999997615814,
+   "responseEnd": 323.8000000715256,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 348.39999997615814,
+   "responseEnd": 327.10000002384186,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/tile_worker.2ef48ca9c89c.js",
+   "startTime": 348.7000000476837,
+   "responseEnd": 328.3000000715256,
+   "transferSize": 300,
+   "encodedBodySize": 0
+  },
+  {
+   "name": "http://localhost:8124/favicon.ico",
+   "startTime": 348.8000000715256,
+   "responseEnd": 351.89999997615814,
+   "transferSize": 760,
+   "encodedBodySize": 460
+  }
+ ],
+ "viewportAudit": {
+  "width": 1440,
+  "height": 900,
+  "horizontalOverflow": false,
+  "outOfViewport": [],
+  "overlaps": [],
+  "rects": [
+   {
+    "selector": "#main-panel",
+    "left": 20,
+    "top": 20,
+    "right": 282.640625,
+    "bottom": 113,
+    "width": 262.640625,
+    "height": 93
+   },
+   {
+    "selector": "#hex-search-container",
+    "left": 1120,
+    "top": 20,
+    "right": 1420,
+    "bottom": 62,
+    "width": 300,
+    "height": 42
+   }
+  ]
+ },
+ "navigationTiming": {
+  "type": "navigate",
+  "fetchStart": 11.899999976158142,
+  "requestStart": 168.39999997615814,
+  "responseStart": 169.39999997615814,
+  "responseEnd": 170.30000007152557,
+  "requestToResponseMs": 1,
+  "transferSize": 31087,
+  "encodedBodySize": 30787,
+  "decodedBodySize": 30787,
+  "connection": {
+   "effectiveType": "4g",
+   "downlink": 1.5,
+   "rtt": 100,
+   "saveData": false
+  }
+ },
+ "benchmarkTiming": {
+  "profilerStartFromNavigationMs": 337,
+  "visibleTexturedCoverageProfilerRelativeMs": 213.8,
+  "visibleTexturedCoverageFromNavigationMs": 550.8
+ }
+}

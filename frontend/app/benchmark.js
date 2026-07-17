@@ -276,6 +276,64 @@ function installTextureWarningTracker(viewer) {
     };
 }
 
+function canvasPixelFingerprint(viewer) {
+    try {
+        const gl = viewer.renderer?.getContext?.();
+        const canvas = viewer.renderer?.domElement;
+        if (!gl || !canvas) return null;
+        const width = canvas.width;
+        const height = canvas.height;
+        const pixels = new Uint8Array(width * height * 4);
+        gl.finish();
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        // Two independent 32-bit accumulators make accidental equality
+        // vanishingly unlikely while keeping the report compact.
+        let fnv = 2166136261;
+        let weighted = 0;
+        for (let i = 0; i < pixels.length; i++) {
+            fnv ^= pixels[i];
+            fnv = Math.imul(fnv, 16777619);
+            weighted = (weighted + Math.imul(pixels[i], (i % 65521) + 1)) >>> 0;
+        }
+        return { width, height, bytes: pixels.length, fnv32: fnv >>> 0, weighted32: weighted };
+    } catch (error) {
+        return { error: String(error) };
+    }
+}
+
+function captureMaterialPixelParity(viewer) {
+    const lodBefore = viewer.getLodSelectionFingerprint?.() || null;
+    const optimized = canvasPixelFingerprint(viewer);
+    for (const material of viewer.materialsToUpdate || []) {
+        const shader = material.userData?.shader;
+        if (!shader) continue;
+        shader.uniforms.uHeightFactor.value = viewer.heightFactor;
+        shader.uniforms.uFloorOffset.value = viewer.floorState.value;
+        shader.uniforms.uCameraPos.value.copy(viewer.camera.position);
+        if (material.userData.isHorizon) continue;
+        shader.uniforms.uGradientMode.value = viewer.gradientMode;
+        const k = material.userData.lodIdx;
+        if (k === undefined) continue;
+        if (material.userData.forceMovingMode && k === viewer.movingLevel) {
+            shader.uniforms.uLodRadii.value.set(0.0, 1e12);
+            shader.uniforms.uFinestBuilt.value = 1.0;
+        } else {
+            shader.uniforms.uLodRadii.value.set(k <= 0 ? 0.0 : viewer.lodRadii[k - 1], viewer.lodRadii[k]);
+            shader.uniforms.uFinestBuilt.value = material.userData.isFinest ? 1.0 : 0.0;
+        }
+    }
+    viewer.renderer.render(viewer.scene, viewer.camera);
+    const baselineReplay = canvasPixelFingerprint(viewer);
+    const lodAfter = viewer.getLodSelectionFingerprint?.() || null;
+    return {
+        optimized,
+        baselineReplay,
+        identical: optimized?.fnv32 === baselineReplay?.fnv32 &&
+            optimized?.weighted32 === baselineReplay?.weighted32,
+        lodIdentical: JSON.stringify(lodBefore) === JSON.stringify(lodAfter),
+    };
+}
+
 // ─── Runner ────────────────────────────────────────────────────────────
 
 function waitForReady(viewer, timeoutMs = 45000) {
@@ -298,8 +356,10 @@ function finishScenario(viewer, hud, name, duration, appVersion) {
     window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ = {
         scenario: name,
         duration,
-        counters: viewer.getMaterialChurnStats?.() || null,
+        counters: viewer._timedMaterialChurnSnapshot || viewer.getMaterialChurnStats?.() || null,
         lod: viewer.getLodSelectionFingerprint?.() || null,
+        timedLod: viewer._timedLodSnapshot || null,
+        pixels: captureMaterialPixelParity(viewer),
         renderInfo: viewer.renderer?.info ? {
             calls: viewer.renderer.info.render?.calls,
             triangles: viewer.renderer.info.render?.triangles,
@@ -309,6 +369,8 @@ function finishScenario(viewer, hud, name, duration, appVersion) {
     console.log('[MATERIAL_CHURN] ' + JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__));
     viewer._restoreMaterialWarningTracker?.();
     viewer._restoreMaterialWarningTracker = null;
+    viewer._timedMaterialChurnSnapshot = null;
+    viewer._timedLodSnapshot = null;
     // The runtime contract is KTX2-only. Missing telemetry means the
     // pipeline has not produced a sample yet; it is not a WebP fallback.
     const texturePipeline = 'ktx2';
@@ -380,9 +442,8 @@ function runScenario(viewer, name, scenario, appVersion) {
 
     const tick = () => {
         const elapsed = (performance.now() - t0) / 1000;
-        if (elapsed >= scenario.duration) { finish(); return; }
-
-        const { camPos, target } = scenario.fn(elapsed, ctx);
+        const complete = elapsed >= scenario.duration;
+        const { camPos, target } = scenario.fn(Math.min(elapsed, scenario.duration), ctx);
 
         // Terrain-clip guard: scenarios pick camPos.y from a fixed spherical
         // radius/phi around a target whose OWN y is always 0 (a horizontal
@@ -411,7 +472,35 @@ function runScenario(viewer, name, scenario, appVersion) {
         viewer.needsLODUpdate = true;
 
         updateHud(hud, name, elapsed, scenario.duration);
-        requestAnimationFrame(tick);
+        // Apply and render the exact terminal keyframe before sampling parity.
+        // Previously the final screenshot depended on whichever pre-terminal
+        // rAF happened to run last, making identical builds compare unequal.
+        if (complete) {
+            // Freeze the timed sample before returning to a deterministic
+            // settled representation for pixel/LOD parity capture. Camera
+            // movement mode intentionally uses coarse transient geometry and
+            // is sensitive to which rAF runs first at the terminal boundary.
+            viewer._timedMaterialChurnSnapshot = viewer.getMaterialChurnStats?.() || null;
+            viewer._timedLodSnapshot = viewer.getLodSelectionFingerprint?.() || null;
+            viewer.cameraMotion.lastMotionTime = -Infinity;
+            viewer.isMovingView = false;
+            viewer._beginGeometryMode?.(false);
+            viewer.needsLODUpdate = true;
+            viewer.needsRender = true;
+            const settleDeadline = performance.now() + 10000;
+            const waitForSettledCapture = () => {
+                const pending = viewer.activeWorkerCount > 0 || viewer.activeTextureJobs > 0 ||
+                    viewer.loadQueue.length > 0 || viewer.geometryRebuildQueue.length > 0 ||
+                    viewer.instantiateQueue.length > 0 || viewer.textureQueue.length > 0 ||
+                    viewer.textureResultQueue.length > 0;
+                if (pending && performance.now() < settleDeadline) {
+                    requestAnimationFrame(waitForSettledCapture);
+                } else {
+                    requestAnimationFrame(() => requestAnimationFrame(finish));
+                }
+            };
+            requestAnimationFrame(waitForSettledCapture);
+        } else requestAnimationFrame(tick);
     };
 
     console.log(`[BENCHMARK] Starting scenario "${name}" (${scenario.duration}s)...`);

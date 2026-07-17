@@ -386,6 +386,19 @@ class PistonViewer {
         this.appStartTime = performance.now();
         this.materialsToUpdate = new Set(); // Changed to Set
         this.materialChurn = createMaterialChurnStats();
+        // These values are frame-global. Every shader references the same
+        // uniform objects, so a camera move is one Vector3 copy rather than a
+        // traversal and copy for every material in every resident tile.
+        this.sharedMaterialUniforms = {
+            heightFactor: { value: 0.0 },
+            floorOffset: { value: 0.0 },
+            cameraPos: { value: new THREE.Vector3() },
+            gradientMode: { value: 1.0 },
+            movingLodRadii: { value: new THREE.Vector2(0.0, 1e12) },
+            lodRadii: Array.from({ length: TILE_LEVEL + 1 }, () => ({
+                value: new THREE.Vector2(0.0, 1e9),
+            })),
+        };
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
         const faultParams = new URLSearchParams(window.location.search);
         this.faultGateEnabled = faultParams.get('bench') === '1' && faultParams.get('fault-gate') === '1';
@@ -1595,7 +1608,10 @@ class PistonViewer {
             if (k === undefined) continue;
             for (const child of g.children) {
                 if (child.material?.userData) {
-                    child.material.userData.forceMovingMode = forceCoarse;
+                    if (child.material.userData.forceMovingMode !== forceCoarse) {
+                        child.material.userData.forceMovingMode = forceCoarse;
+                        this._syncMaterialLodUniforms(child.material);
+                    }
                 }
             }
             if (k >= 1 && g.children[1]) g.children[1].visible = !forceCoarse;
@@ -2100,9 +2116,9 @@ class PistonViewer {
         material.customProgramCacheKey = () => 'piston_horizon_v1';
         material.onBeforeCompile = (shader) => {
             material.userData.shader = shader;
-            shader.uniforms.uHeightFactor = { value: 0.0 };
-            shader.uniforms.uFloorOffset = { value: 0.0 };
-            shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
+            shader.uniforms.uHeightFactor = this.sharedMaterialUniforms.heightFactor;
+            shader.uniforms.uFloorOffset = this.sharedMaterialUniforms.floorOffset;
+            shader.uniforms.uCameraPos = this.sharedMaterialUniforms.cameraPos;
             shader.uniforms.uHazeColor = { value: new THREE.Color(0x0a0a0a) };
             shader.uniforms.uHazeRange = { value: new THREE.Vector2(DEFAULT_HAZE_DISTANCE * 0.8, HORIZON_DISTANCE) };
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
@@ -2349,6 +2365,8 @@ class PistonViewer {
         const pageSize = this.texturePageGrid.pageSize;
         const sourceOrigin = this.worldOrigin;
         const missingPageTexture = this.missingPageTexture;
+        const sharedUniforms = this.sharedMaterialUniforms;
+        const movingLevel = this.movingLevel;
         const vertexMapUvPatch = `
                 #ifdef USE_MAP
                     // The fragment shader computes absolute source-grid UVs.
@@ -2400,12 +2418,22 @@ class PistonViewer {
 
         material.onBeforeCompile = function (shader) {
             this.userData.shader = shader;
-            shader.uniforms.uHeightFactor = { value: 0.0 };
-            shader.uniforms.uGradientMode = { value: 1.0 };
-            shader.uniforms.uFloorOffset = { value: 0.0 }; // Initial fallback
-            shader.uniforms.uCameraPos = { value: new THREE.Vector3() };
-            shader.uniforms.uLodRadii = { value: new THREE.Vector2(0.0, 1e9) }; // (bandMin for self, bandMax for parent)
-            shader.uniforms.uFinestBuilt = { value: 0.0 }; // 1 = finest level built so far: ignore bandMin
+            shader.uniforms.uHeightFactor = sharedUniforms.heightFactor;
+            shader.uniforms.uGradientMode = sharedUniforms.gradientMode;
+            shader.uniforms.uFloorOffset = sharedUniforms.floorOffset;
+            shader.uniforms.uCameraPos = sharedUniforms.cameraPos;
+            const lodIdx = this.userData.lodIdx ?? 0;
+            const lodRadiiSource = this.userData.forceMovingMode && lodIdx === movingLevel
+                ? sharedUniforms.movingLodRadii
+                : sharedUniforms.lodRadii[lodIdx];
+            // Keep Three's compiled uniform wrapper stable; only redirect its
+            // Vector2 value when the material changes moving/settled mode.
+            shader.uniforms.uLodRadii = { value: lodRadiiSource.value };
+            shader.uniforms.uFinestBuilt = {
+                value: this.userData.forceMovingMode && lodIdx === movingLevel
+                    ? 1.0
+                    : (this.userData.isFinest ? 1.0 : 0.0),
+            };
             const bindings = this.userData.texturePageBindings || [];
             shader.uniforms.uPageSize = { value: pageSize };
             shader.uniforms.uSourceOrigin = {
@@ -4401,8 +4429,26 @@ class PistonViewer {
             if (obj.isMesh && obj.material?.userData) {
                 const ud = obj.material.userData;
                 ud.isFinest = (ud.lodIdx === tile.finestBuilt);
+                this._syncMaterialLodUniforms(obj.material);
             }
         });
+    }
+
+    _syncMaterialLodUniforms(material) {
+        const shader = material?.userData?.shader;
+        const lodIdx = material?.userData?.lodIdx;
+        if (!shader || lodIdx === undefined) return;
+        const lodRadiiSource = material.userData.forceMovingMode && lodIdx === this.movingLevel
+            ? this.sharedMaterialUniforms.movingLodRadii
+            : this.sharedMaterialUniforms.lodRadii[lodIdx];
+        shader.uniforms.uLodRadii.value = lodRadiiSource.value;
+        writeUniformIfChanged(
+            shader.uniforms.uFinestBuilt,
+            material.userData.forceMovingMode && lodIdx === this.movingLevel
+                ? 1.0
+                : (material.userData.isFinest ? 1.0 : 0.0),
+            this.materialChurn,
+        );
     }
 
     // parseBinaryV3 removed (handled by worker)
@@ -4648,9 +4694,11 @@ class PistonViewer {
     }
 
     updateFloorUniforms() {
-        for (const m of this.materialsToUpdate) {
-            if (m.userData.shader) writeUniformIfChanged(m.userData.shader.uniforms.uFloorOffset, this.floorState.value, this.materialChurn);
-        }
+        writeUniformIfChanged(
+            this.sharedMaterialUniforms.floorOffset,
+            this.floorState.value,
+            this.materialChurn,
+        );
     }
 
     getMaterialChurnStats() { return snapshotMaterialChurnStats(this.materialChurn); }
@@ -5034,38 +5082,17 @@ class PistonViewer {
         this.updateLevelVisibility(h);
         this._updateTexBadge();
         this.materialChurn.uniformPasses++;
-        let needsUpdateCount = 0;
-        for (const m of this.materialsToUpdate) {
-            if (m.needsUpdate) needsUpdateCount++;
-            if (m.userData.shader) {
-                writeUniformIfChanged(m.userData.shader.uniforms.uHeightFactor, h, this.materialChurn);
-                writeUniformIfChanged(m.userData.shader.uniforms.uFloorOffset, this.floorState.value, this.materialChurn);
-                const uCam = m.userData.shader.uniforms.uCameraPos;
-                writeUniformIfChanged(uCam, this.camera.position, this.materialChurn);
-
-                if (m.userData.isHorizon) continue; // horizon has no LOD/gradient uniforms
-
-                writeUniformIfChanged(m.userData.shader.uniforms.uGradientMode, this.gradientMode, this.materialChurn);
-
-                if (m.userData.lodIdx !== undefined) {
-                    const k = m.userData.lodIdx;
-                    if (m.userData.forceMovingMode && k === this.movingLevel) {
-                        // Uniform panning level: force the cut fully open so
-                        // every instance of this level draws at all distances.
-                        writeUniformIfChanged(m.userData.shader.uniforms.uLodRadii, { x: 0.0, y: 1e12 }, this.materialChurn);
-                        writeUniformIfChanged(m.userData.shader.uniforms.uFinestBuilt, 1.0, this.materialChurn);
-                    } else {
-                        // Gosper level k: band = (R(k-1), R(k)], parent checked
-                        // against R(k). The finest BUILT level ignores the near
-                        // edge so coverage holds while an exact frontier builds.
-                        const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
-                        const maxD = this.lodRadii[k];
-                        writeUniformIfChanged(m.userData.shader.uniforms.uLodRadii, { x: minD, y: maxD }, this.materialChurn);
-                        writeUniformIfChanged(m.userData.shader.uniforms.uFinestBuilt, m.userData.isFinest ? 1.0 : 0.0, this.materialChurn);
-                    }
-                }
-            }
+        writeUniformIfChanged(this.sharedMaterialUniforms.heightFactor, h, this.materialChurn);
+        writeUniformIfChanged(this.sharedMaterialUniforms.floorOffset, this.floorState.value, this.materialChurn);
+        writeUniformIfChanged(this.sharedMaterialUniforms.cameraPos, this.camera.position, this.materialChurn);
+        writeUniformIfChanged(this.sharedMaterialUniforms.gradientMode, this.gradientMode, this.materialChurn);
+        for (let k = 0; k <= TILE_LEVEL; k++) {
+            writeUniformIfChanged(this.sharedMaterialUniforms.lodRadii[k], {
+                x: k <= 0 ? 0.0 : this.lodRadii[k - 1],
+                y: this.lodRadii[k],
+            }, this.materialChurn);
         }
+        const needsUpdateCount = 0;
 
         // --- RENDER ---
         this.renderer.render(this.scene, this.camera);
