@@ -536,6 +536,12 @@ input[type="range"]::-moz-range-thumb {
     transform: translateY(1px);
 }
 
+.console-btn.copied {
+    background: rgba(46, 204, 113, 0.2);
+    border-color: rgba(46, 204, 113, 0.5);
+    color: #2ecc71;
+}
+
 .console-box {
     background: rgba(0, 0, 0, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.1);

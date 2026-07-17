@@ -588,6 +588,61 @@ class PistonViewer {
 
     initDebugConsole() {
         this.log("PistonViewer Initialized.", "success");
+        this.initCopyLogButton();
+    }
+
+    initCopyLogButton() {
+        const btn = document.getElementById('copy-log-btn');
+        const output = document.getElementById('console-output');
+        if (!btn || !output) return;
+
+        const idleText = btn.textContent || 'COPY';
+        let resetHandle = null;
+        btn.addEventListener('click', async () => {
+            const lines = Array.from(output.querySelectorAll('.log-line'))
+                .map(line => line.textContent.trim())
+                .filter(Boolean);
+            const text = lines.length ? lines.join('\n') : output.textContent.trim();
+            try {
+                await this.writeClipboardText(text);
+                btn.textContent = 'COPIED';
+                btn.classList.add('copied');
+            } catch (e) {
+                btn.textContent = 'FAILED';
+                btn.classList.remove('copied');
+                console.warn('[HUD] Failed to copy status log:', e);
+            }
+
+            if (resetHandle) clearTimeout(resetHandle);
+            resetHandle = setTimeout(() => {
+                btn.textContent = idleText;
+                btn.classList.remove('copied');
+            }, 1200);
+        });
+    }
+
+    async writeClipboardText(text) {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        this.execCommandCopyText(text);
+    }
+
+    execCommandCopyText(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            if (!document.execCommand('copy')) throw new Error('execCommand copy returned false');
+        } finally {
+            document.body.removeChild(textarea);
+        }
     }
 
     initMinimizeButton() {
