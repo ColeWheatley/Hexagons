@@ -58,6 +58,7 @@ POLL = f"""(() => {{
 }})()"""
 
 FETCH_REPORT = f"localStorage.getItem('{LS_KEY}')"
+STATIC_BUFFER_STATS = "JSON.stringify(window.pistonViewer?.getStaticBufferInstrumentation?.() || null)"
 
 
 class CDP:
@@ -125,6 +126,10 @@ async def run(url, out_json, screenshot=None, timeout=300):
                 if st.get("state") == "done":
                     report = json.loads(await cdp.js(FETCH_REPORT))
                     report["headlessGL"] = ext
+                    raw_buffer_stats = await cdp.js(STATIC_BUFFER_STATS)
+                    report["staticBufferInstrumentation"] = (
+                        json.loads(raw_buffer_stats) if raw_buffer_stats else None
+                    )
                     with open(out_json, "w") as f:
                         json.dump(report, f, indent=1)
                     if screenshot:
@@ -138,7 +143,8 @@ async def run(url, out_json, screenshot=None, timeout=300):
                           f"dur={m.get('duration_s')}s fps={fr.get('fps_avg_active')} "
                           f"p95={fr.get('p95_ms')}ms over33={fr.get('over33')} "
                           f"ttftf={milestones.get('visibleTexturedCoverage')} "
-                          f"ready={milestones.get('loaderHidden')} -> {out_json}", flush=True)
+                          f"ready={milestones.get('loaderHidden')} "
+                          f"staticBuffers={report['staticBufferInstrumentation']} -> {out_json}", flush=True)
                     return 0
                 if time.time() - last_note > 15:
                     print(f"  ... {st}", flush=True)
