@@ -7,9 +7,11 @@ The global page contract has no geometry ownership. Runtime storage policy
 deliberately does not belong here.
 """
 
-TEXTURE_PAGE_RECIPE_VERSION = "4.0.2"  # rotated-cap validated aggregate-boundary padding
+TEXTURE_PAGE_RECIPE_VERSION = "4.1.0"  # demand-driven WebP bootstrap + KTX2 tiers
 TEXTURE_CONTAINER = "ktx2"
 TEXTURE_PAGE_URL_TEMPLATE = "aerial_pages/{tier}/texture_{page_x}_{page_y}.ktx2"
+TEXTURE_BOOTSTRAP_SIZE = 32
+TEXTURE_BOOTSTRAP_URL_TEMPLATE = "aerial_pages/bootstrap/texture_{page_x}_{page_y}.webp"
 
 # Ordered from cheapest/farthest to most detailed.  Each KTX2 contains a full
 # mip chain. High fits the WebGL2 4096 minimum maximum texture size directly;
@@ -163,6 +165,13 @@ def manifest_texture_page_contract(
         "mip_chain": "full",
         "diagnostic_tattoos": bool(diagnostic_tattoos),
         "url_template": TEXTURE_PAGE_URL_TEMPLATE,
+        "bootstrap": {
+            "container": "webp",
+            "role": "transient-first-paint",
+            "size_px": TEXTURE_BOOTSTRAP_SIZE,
+            "gpu_bytes": TEXTURE_BOOTSTRAP_SIZE * TEXTURE_BOOTSTRAP_SIZE * 4,
+            "url_template": TEXTURE_BOOTSTRAP_URL_TEMPLATE,
+        },
         "grid": {
             "crs": CRS,
             "origin_x": ORIGIN_X_M,

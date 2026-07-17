@@ -276,7 +276,9 @@ self.onmessage = async function (e) {
 
         } else if (type === 'LOAD_TEXTURE') {
             const result = await loadTextureOnly(data);
-            const transferables = result.mipmaps.map(m => m.data.buffer);
+            const transferables = result.imageBitmap
+                ? [result.imageBitmap]
+                : result.mipmaps.map(m => m.data.buffer);
             self.postMessage({ id, status: 'success', result }, transferables);
         }
     } catch (err) {
@@ -371,11 +373,23 @@ function buildGeometryFromSource({
     };
 }
 
-async function loadTextureOnly({ url, urls }) {
+async function loadTextureOnly({ url, urls, bootstrap = false }) {
     const fetched = await fetchFirst(urls || url);
     const res = fetched.response;
     if (!res?.ok) throw new Error(`Failed to load tex: ${fetched.url}`);
     const buf = await res.arrayBuffer();
+    if (bootstrap) {
+        const imageBitmap = await createImageBitmap(new Blob([buf], { type: 'image/webp' }));
+        return {
+            imageBitmap,
+            width: imageBitmap.width,
+            height: imageBitmap.height,
+            gpuBytes: imageBitmap.width * imageBitmap.height * 4,
+            networkBytes: buf.byteLength,
+            sourceUrl: fetched.url,
+            bootstrap: true,
+        };
+    }
     // Let transcode failures propagate — main.js's upgradeTexture catch
     // already dedups these warnings, no need to swallow here.
     const texture = await transcodeKTX2(buf);

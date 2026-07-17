@@ -471,10 +471,12 @@ def upload_to_s3(local_path):
     cmd = ["aws", "s3", "cp", local_path, s3_url, "--quiet"]
     
     # Set Cache-Control for immutable assets
-    if local_path.endswith(('.ktx2', '.bin')):
+    if local_path.endswith(('.ktx2', '.bin', '.webp')):
         cmd += ["--cache-control", "max-age=31536000"]
     if local_path.endswith('.ktx2'):
         cmd += ["--content-type", "image/ktx2"]
+    elif local_path.endswith('.webp'):
+        cmd += ["--content-type", "image/webp"]
 
     try:
         # Launch in background, do not wait
@@ -926,23 +928,30 @@ def encode_texture_tiers(
 ):
     """Encode/publish all tiers as one restart-safe transaction."""
     tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
+    bootstrap_dir = os.path.join(output_dir, "bootstrap")
     res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
     for directory in res_dirs.values():
         os.makedirs(directory, exist_ok=True)
+    os.makedirs(bootstrap_dir, exist_ok=True)
     final_paths = {
         tier: os.path.join(res_dirs[tier], f"{asset_stem}.ktx2")
         for tier in tier_names
     }
+    final_paths["bootstrap"] = os.path.join(bootstrap_dir, f"{asset_stem}.webp")
     variants = prepare_texture_variants(canvas, bounds, texture_tattoos)
 
-    # Temporary files live beside the destination. All three final names are
+    # Temporary files live beside the destination. All four final names are
     # replaced only after every encode succeeds, so a killed bake can resume
     # without ever advertising a mixed-generation page.
     with tempfile.TemporaryDirectory(prefix=".waffle_ktx2_", dir=output_dir) as tmp_dir:
         input_paths = {tier: os.path.join(tmp_dir, f"{tier}.png") for tier in tier_names}
         encoded_paths = {tier: os.path.join(tmp_dir, f"{tier}.ktx2") for tier in tier_names}
+        bootstrap_path = os.path.join(tmp_dir, "bootstrap.webp")
         for tier in tier_names:
             variants[tier].save(input_paths[tier], "PNG")
+        variants["low"].resize((32, 32), Image.Resampling.LANCZOS).save(
+            bootstrap_path, "WEBP", quality=45, method=4
+        )
 
         for image in variants.values():
             image.close()
@@ -960,16 +969,20 @@ def encode_texture_tiers(
             )
         for tier in tier_names:
             os.replace(encoded_paths[tier], final_paths[tier])
+        os.replace(bootstrap_path, final_paths["bootstrap"])
 
     return final_paths
 
 
 def texture_page_asset_paths(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
     return {
-        tier["name"]: os.path.join(
-            output_dir, tier["name"], f"{page.asset_stem}.ktx2"
-        )
-        for tier in TEXTURE_TIERS
+        "bootstrap": os.path.join(output_dir, "bootstrap", f"{page.asset_stem}.webp"),
+        **{
+            tier["name"]: os.path.join(
+                output_dir, tier["name"], f"{page.asset_stem}.ktx2"
+            )
+            for tier in TEXTURE_TIERS
+        },
     }
 
 

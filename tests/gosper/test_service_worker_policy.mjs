@@ -62,6 +62,11 @@ await dispatch(terrain);
 await dispatch(terrain);
 assert.equal(calls.filter(url => url === terrain).length, 1, 'versioned geometry is cache-first');
 
+const bootstrap = 'https://viewer.example/aerial_pages/bootstrap/texture_1_2.webp?v=tex-a';
+await dispatch(bootstrap);
+await dispatch(bootstrap);
+assert.equal(calls.filter(url => url === bootstrap).length, 1, 'versioned bootstrap imagery is cache-first');
+
 const unversioned = 'https://viewer.example/tiles_bin/gosper_1_2.bin';
 assert.equal(await dispatch(unversioned), null, 'unversioned terrain is never intercepted');
 

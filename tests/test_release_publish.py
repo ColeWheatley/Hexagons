@@ -19,12 +19,16 @@ class AtomicReleasePublishTest(unittest.TestCase):
         app = root / "app"
         (app / "tiles_bin").mkdir(parents=True)
         (app / "aerial_pages" / "low").mkdir(parents=True)
+        (app / "aerial_pages" / "bootstrap").mkdir(parents=True)
         (app / "tiles_bin" / "gosper_1_2.bin").write_bytes(b"GSP3" + b"geometry")
         (app / "aerial_pages" / "low" / "texture_4_5.ktx2").write_bytes(b"\xabKTX 20\xbb\r\n\x1a\n" + b"texture")
+        (app / "aerial_pages" / "bootstrap" / "texture_4_5.webp").write_bytes(
+            b"RIFF\x04\x00\x00\x00WEBP"
+        )
         manifest = {
             "tiles": [{"yq": 1, "yr": 2}],
             "binary": {},
-            "texture_pages": {"diagnostic_tattoos": False, "tiers": [{"name": "low"}], "pages": [{"page_x": 4, "page_y": 5}]},
+            "texture_pages": {"diagnostic_tattoos": False, "bootstrap": {"container": "webp"}, "tiers": [{"name": "low"}], "pages": [{"page_x": 4, "page_y": 5}]},
         }
         path = app / "tile_manifest.json"; path.write_text(json.dumps(manifest))
         return app, path
@@ -43,6 +47,7 @@ class AtomicReleasePublishTest(unittest.TestCase):
             self.assertTrue(store.get(f"releases/{first}/tiles_bin/gosper_1_2.bin").startswith(b"GSP3"))
             self.assertEqual(store.head(f"releases/{first}/tiles_bin/gosper_1_2.bin")["CacheControl"], release_publish.IMMUTABLE)
             self.assertEqual(store.head(f"releases/{first}/aerial_pages/low/texture_4_5.ktx2")["ContentType"], "image/ktx2")
+            self.assertEqual(store.head(f"releases/{first}/aerial_pages/bootstrap/texture_4_5.webp")["ContentType"], "image/webp")
             self.assertEqual(store.head("tile_manifest.json")["CacheControl"], release_publish.NO_CACHE)
             self.assertIn(f"releases/{first}/", active["binary"]["url_template"])
             self.assertIn(f"releases/{first}/", active["texture_pages"]["pages"][0]["urls"]["low"])

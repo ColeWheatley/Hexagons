@@ -32,7 +32,7 @@ def sha256(path: Path) -> str:
 
 
 def content_type(path: Path) -> str:
-    return {".ktx2": "image/ktx2", ".bin": "application/octet-stream", ".json": "application/json"}.get(
+    return {".ktx2": "image/ktx2", ".webp": "image/webp", ".bin": "application/octet-stream", ".json": "application/json"}.get(
         path.suffix, mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
 
@@ -82,6 +82,10 @@ def referenced_assets(manifest: dict[str, Any], root: Path) -> list[Asset]:
     assets = [Asset(root / "tiles_bin" / f"gosper_{tile['yq']}_{tile['yr']}.bin", f"tiles_bin/gosper_{tile['yq']}_{tile['yr']}.bin") for tile in manifest.get("tiles", [])]
     contract = manifest.get("texture_pages", {})
     for page in contract.get("pages", []):
+        if contract.get("bootstrap"):
+            name = f"texture_{page['page_x']}_{page['page_y']}.webp"
+            assets.append(Asset(root / "aerial_pages" / "bootstrap" / name,
+                                f"aerial_pages/bootstrap/{name}"))
         for tier in contract.get("tiers", []):
             name = f"texture_{page['page_x']}_{page['page_y']}.ktx2"
             assets.append(Asset(root / "aerial_pages" / tier["name"] / name, f"aerial_pages/{tier['name']}/{name}"))
@@ -98,6 +102,10 @@ def decode_sample(asset: Asset, payload: bytes) -> None:
         raise ValueError(f"{asset.logical}: not a KTX2 payload")
     if asset.logical.endswith(".bin") and payload[:4] not in {b"GSP1", b"GSP2", b"GSP3"}:
         raise ValueError(f"{asset.logical}: not a GSP payload")
+    if asset.logical.endswith(".webp") and not (
+        payload[:4] == b"RIFF" and payload[8:12] == b"WEBP"
+    ):
+        raise ValueError(f"{asset.logical}: not a WebP payload")
 
 
 def release_id(manifest_path: Path, assets: list[Asset], digests: dict[str, str]) -> str:
@@ -113,12 +121,20 @@ def version_manifest(manifest: dict[str, Any], release: str) -> dict[str, Any]:
     result.setdefault("binary", {})["url_template"] = f"releases/{release}/tiles_bin/gosper_{{yq}}_{{yr}}.bin"
     texture_contract = result.setdefault("texture_pages", {})
     texture_contract["url_template"] = f"releases/{release}/aerial_pages/{{tier}}/texture_{{page_x}}_{{page_y}}.ktx2"
+    if texture_contract.get("bootstrap"):
+        texture_contract["bootstrap"]["url_template"] = (
+            f"releases/{release}/aerial_pages/bootstrap/texture_{{page_x}}_{{page_y}}.webp"
+        )
     tier_names = [tier["name"] for tier in texture_contract.get("tiers", [])]
     for page in texture_contract.get("pages", []):
         page["urls"] = {
             tier: f"releases/{release}/aerial_pages/{tier}/texture_{page['page_x']}_{page['page_y']}.ktx2"
             for tier in tier_names
         }
+        if texture_contract.get("bootstrap"):
+            page["urls"]["bootstrap"] = (
+                f"releases/{release}/aerial_pages/bootstrap/texture_{page['page_x']}_{page['page_y']}.webp"
+            )
     return result
 
 
@@ -159,7 +175,7 @@ def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_afte
                       content_type=content_type(asset.local), sha256_hex=digest)
             suffix = asset.local.suffix.lower()
             verify(store, key, asset, IMMUTABLE, digest,
-                   decode=suffix in {".bin", ".ktx2"} and suffix not in decoded_types)
+                   decode=suffix in {".bin", ".ktx2", ".webp"} and suffix not in decoded_types)
             decoded_types.add(suffix)
             if interrupt_after == index: raise RuntimeError("simulated interrupted upload")
         staged_key = f"releases/{release}/tile_manifest.json"

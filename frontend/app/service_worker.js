@@ -22,7 +22,7 @@ function isHashedShellAsset(url) {
 
 function isVersionedTerrainAsset(url) {
     return url.searchParams.has('v')
-        && /\.(?:bin|gsp|ktx2)$/.test(url.pathname);
+        && /\.(?:bin|gsp|ktx2|webp)$/.test(url.pathname);
 }
 
 async function cacheFirst(request, cacheName) {

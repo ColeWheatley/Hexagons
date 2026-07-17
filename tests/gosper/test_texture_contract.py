@@ -23,7 +23,13 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(contract["container"], "ktx2")
         self.assertEqual(contract["codec"], "xuastc-ldr-8x6")
         self.assertEqual(contract["mip_chain"], "full")
-        self.assertNotIn("webp", str(contract).lower())
+        self.assertEqual(contract["bootstrap"], {
+            "container": "webp",
+            "role": "transient-first-paint",
+            "size_px": 32,
+            "gpu_bytes": 4096,
+            "url_template": "aerial_pages/bootstrap/texture_{page_x}_{page_y}.webp",
+        })
         self.assertEqual(contract["url_template"], "aerial_pages/{tier}/texture_{page_x}_{page_y}.ktx2")
         self.assertEqual(contract["tiers"], [
             {"name": "low", "role": "postage", "size_px": 128},
@@ -50,7 +56,7 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(tuple(sizes), ("low", "medium", "high"))
 
     def test_legacy_island_contract_is_not_exposed(self):
-        self.assertEqual(texture_contract.TEXTURE_PAGE_RECIPE_VERSION, "4.0.2")
+        self.assertEqual(texture_contract.TEXTURE_PAGE_RECIPE_VERSION, "4.1.0")
         self.assertFalse(hasattr(texture_contract, "TEXTURE_RECIPE_VERSION"))
         self.assertFalse(hasattr(texture_contract, "TEXTURE_URL_TEMPLATE"))
         self.assertFalse(hasattr(texture_contract, "manifest_texture_contract"))
@@ -111,7 +117,7 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(command[command.index("-effort") + 1], "1")
         self.assertEqual(
             waffle.texture_page_cache_version(False, "balanced", 1),
-            "4.0.2+codec-balanced+effort-1",
+            "4.1.0+codec-balanced+effort-1",
         )
 
     def test_frontend_accepts_every_profile_astc_block_size(self):

@@ -3,12 +3,14 @@
 // tier transitions, and the many-geometry-to-one-page consumer graph.
 
 export const PAGE_TEXTURE_TIER = Object.freeze({
+    BOOTSTRAP: 'bootstrap32',
     LOW: 'low128',
     MEDIUM: 'medium256',
     HIGH: 'high4096',
 });
 
 export const PAGE_TEXTURE_RANK = Object.freeze({
+    [PAGE_TEXTURE_TIER.BOOTSTRAP]: -1,
     [PAGE_TEXTURE_TIER.LOW]: 0,
     [PAGE_TEXTURE_TIER.MEDIUM]: 1,
     [PAGE_TEXTURE_TIER.HIGH]: 2,
@@ -29,9 +31,17 @@ export function textureStateHasDemand(state, { includeOutside = false } = {}) {
 
 export function lowTextureCoveragePending(states, { includeOutside = true } = {}) {
     const values = states instanceof Map ? states.values() : (states || []);
-    for (const state of values) {
+    const snapshot = Array.from(values);
+    const hasBootstrapWork = snapshot.some(state => (
+        state?.assets?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        || state?.loading?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        || state?.queued?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        || state?.failed?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+    ));
+    const floorTier = hasBootstrapWork ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW;
+    for (const state of snapshot) {
         if (!textureStateHasDemand(state, { includeOutside })) continue;
-        if (!tierIsTerminal(state, PAGE_TEXTURE_TIER.LOW)) return true;
+        if (!tierIsTerminal(state, floorTier)) return true;
     }
     return false;
 }
@@ -73,13 +83,16 @@ export function selectTextureDispatchTaskIndex(queue, states, {
     const lowBarrier = lowCoverageFirst && lowTextureCoveragePending(states, {
         includeOutside: lowCoverageIncludesOutside,
     });
+    const bootstrapQueued = (queue || []).some(task => task?.tier === PAGE_TEXTURE_TIER.BOOTSTRAP);
     let selectedIndex = -1;
     let selectedPriority = -Infinity;
     for (let index = 0; index < (queue || []).length; index++) {
         const task = queue[index];
         if (!task) continue;
         if (isMoving && task.tier === PAGE_TEXTURE_TIER.HIGH) continue;
-        if (lowBarrier && task.tier !== PAGE_TEXTURE_TIER.LOW) continue;
+        if (lowBarrier && task.tier !== (
+            bootstrapQueued ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW
+        )) continue;
         const age = Number.isFinite(dispatchSequence)
             ? Math.max(0, dispatchSequence - (task.enqueuedSequence || 0))
             : 0;
@@ -242,18 +255,22 @@ export class TexturePageResidency {
         return previous;
     }
 
-    dropAsset(pageOrKey, tier, replacement, { rebind = () => {}, dispose = () => {} } = {}) {
+    dropAsset(pageOrKey, tier, replacement, {
+        rebind = () => {},
+        dispose = () => {},
+        allowEmpty = false,
+    } = {}) {
         const state = this.state(pageOrKey);
         if (!state) return false;
         const asset = state.assets.get(tier);
         if (!asset) return true;
         if (state.activeTier === tier) {
-            if (!replacement) return false;
+            if (!replacement && !allowEmpty) return false;
             // The retiring asset must stop being a selection candidate before
             // consumers are synchronously rebound. Disposal happens last and
             // exactly once, even when many materials share the page.
             state.assets.delete(tier);
-            state.activeTier = replacement[0];
+            state.activeTier = replacement?.[0] || null;
             rebind(state);
         } else {
             state.assets.delete(tier);
