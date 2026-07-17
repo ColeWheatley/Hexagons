@@ -1,8 +1,9 @@
 // @atlas: 'PerfProfiler' — standalone frame-time / memory / VRAM instrumentation for PistonViewer.
 // Fed one call per rAF tick from main.js's animate() (before its idle early-return), plus a
 // 1Hz sampler that reads renderer.info, performance.memory, getDetailedStats(), and (if present)
-// the other branch's texStats. Designed to survive a tab-crashing OOM: every ~2s it serializes
-// the run-so-far to localStorage so a partial/crashed run can be recovered on next page load.
+// the other branch's texStats. Full benchmark mode keeps the historical complete report. The
+// Stubai-beta recovery mode keeps fixed-size rings and less-frequent snapshots so telemetry
+// cannot grow with an exploratory session.
 //
 // This file is intentionally self-contained — it does not import from main.js, and main.js only
 // needs to (a) import PerfProfiler, (b) construct `this.profiler = new PerfProfiler(this)`, and
@@ -12,6 +13,40 @@ const LS_KEY = 'hexagons:perfProfiler:lastRun';
 const PERSIST_INTERVAL_MS = 2000;
 const SAMPLE_INTERVAL_MS = 1000;
 const ACTIVE_STATES = ['MOVING_2D', 'MOVING_3D', 'SINTERING', 'STATIC'];
+export const BOUNDED_ACTIVE_FRAME_CAPACITY = 2048;
+export const BOUNDED_SAMPLE_CAPACITY = 180;
+export const BOUNDED_PERSIST_INTERVAL_MS = 30000;
+
+class RingBuffer {
+    constructor(capacity = Infinity) {
+        this.capacity = capacity;
+        this.values = capacity === Infinity ? [] : new Array(capacity);
+        this.start = 0;
+        this.length = 0;
+    }
+
+    push(value) {
+        if (this.capacity === Infinity) {
+            this.values.push(value);
+            this.length = this.values.length;
+            return;
+        }
+        const index = (this.start + this.length) % this.capacity;
+        this.values[index] = value;
+        if (this.length < this.capacity) {
+            this.length++;
+        } else {
+            this.start = (this.start + 1) % this.capacity;
+        }
+    }
+
+    toArray() {
+        if (this.capacity === Infinity || this.length === 0) return this.values.slice();
+        const out = new Array(this.length);
+        for (let i = 0; i < this.length; i++) out[i] = this.values[(this.start + i) % this.capacity];
+        return out;
+    }
+}
 
 function percentile(sortedAsc, p) {
     const n = sortedAsc.length;
@@ -27,8 +62,13 @@ function round(n, dp = 2) {
 
 export class PerfProfiler {
     /** @param {*} viewer - the PistonViewer instance (window.pistonViewer) */
-    constructor(viewer) {
+    constructor(viewer, { mode = 'full' } = {}) {
+        if (mode !== 'full' && mode !== 'bounded-recovery') {
+            throw new Error(`Unsupported profiler mode ${mode}`);
+        }
         this.viewer = viewer;
+        this.mode = mode;
+        this.isBounded = mode === 'bounded-recovery';
         this.startTime = performance.now();
         this.runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -38,12 +78,13 @@ export class PerfProfiler {
         // (See main.js's idle early-return quirk: rAF fires every vsync even when idle, so idle
         // frame deltas are ~16ms heartbeats, not real render cost — they must be excluded from
         // percentiles/stutter counts or they drown out the signal.)
-        this._active = [];
+        this._active = new RingBuffer(this.isBounded ? BOUNDED_ACTIVE_FRAME_CAPACITY : Infinity);
         this._lastFrameTime = null;
         this._lastPersist = performance.now();
+        this._persistIntervalMs = this.isBounded ? BOUNDED_PERSIST_INTERVAL_MS : PERSIST_INTERVAL_MS;
 
         // --- 1Hz sampler output ---
-        this.samples = [];
+        this.samples = new RingBuffer(this.isBounded ? BOUNDED_SAMPLE_CAPACITY : Infinity);
         this.milestones = {};
 
         // --- Cumulative counters (also mirrored into samples for time-series) ---
@@ -62,6 +103,7 @@ export class PerfProfiler {
             crashed: false,
             finished: false,
             runId: this.runId,
+            profilerMode: this.mode,
         };
 
         // Check for a leftover unfinalized run from a previous (possibly crashed) session
@@ -154,10 +196,7 @@ export class PerfProfiler {
         }
         this._lastFrameTime = now;
 
-        if (now - this._lastPersist > PERSIST_INTERVAL_MS) {
-            this._lastPersist = now;
-            this._persist();
-        }
+        this._persistIfDue(now);
     }
 
     // ─── 1Hz sampler ───────────────────────────────────────────────────
@@ -241,7 +280,7 @@ export class PerfProfiler {
         sample.glOutOfMemoryCount = this.memory.glOutOfMemoryCount;
 
         this.samples.push(sample);
-        this._persist();
+        this._persistIfDue(performance.now());
     }
 
     // ─── Stats computation ─────────────────────────────────────────────
@@ -282,10 +321,11 @@ export class PerfProfiler {
     getReport() {
         this.meta.duration_s = round((performance.now() - this.startTime) / 1000, 1);
 
-        const cumulative = this._computeFrameStats(this._active);
+        const activeEntries = this._active.toArray();
+        const cumulative = this._computeFrameStats(activeEntries);
         const perState = {};
         for (const state of ACTIVE_STATES) {
-            const entries = this._active.filter((e) => e.state === state);
+            const entries = activeEntries.filter((e) => e.state === state);
             if (entries.length) perState[state] = this._computeFrameStats(entries);
         }
 
@@ -310,7 +350,7 @@ export class PerfProfiler {
             cache: { ...this.cache },
             textures: { ...this.textures },
             milestones: { ...this.milestones },
-            samples: this.samples,
+            samples: this.samples.toArray(),
         };
     }
 
@@ -348,6 +388,12 @@ export class PerfProfiler {
 
     _persist() {
         this._persistReport(this.getReport());
+    }
+
+    _persistIfDue(now) {
+        if (now - this._lastPersist <= this._persistIntervalMs) return;
+        this._lastPersist = now;
+        this._persist();
     }
 
     _persistReport(report) {
