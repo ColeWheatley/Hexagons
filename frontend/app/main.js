@@ -304,7 +304,7 @@ class PistonViewer {
         this.atmosphereSettings = { hazeDistance: DEFAULT_HAZE_DISTANCE };
 
         // Debug/Stats
-        this.fpsState = { lastSample: performance.now(), frames: 0 };
+        this.fpsState = { frames: 0, activeElapsed: 0, lastActiveFrame: null };
         this.fpsEl = document.getElementById('fps-counter');
         this.hexCountEl = document.getElementById('hex-count');
         this.tileHeightEl = document.getElementById('tile-height');
@@ -1676,17 +1676,32 @@ class PistonViewer {
         }
     }
 
-    updateFps() {
+    updateFps(now, willRender) {
         if (!this.fpsEl) return;
-        const now = performance.now();
-        this.fpsState.frames += 1;
-        const elapsed = now - this.fpsState.lastSample;
-        if (elapsed < 500) return;
-        const fps = (this.fpsState.frames * 1000) / elapsed;
         const dist = this.camera.position.distanceTo(this.controls.target);
+
+        if (!willRender && this.engineState === ENGINE_STATES.STATIC) {
+            this.fpsEl.textContent = `FPS: IDLE | Zoom: ${dist.toFixed(0)}`;
+            this.fpsState.frames = 0;
+            this.fpsState.activeElapsed = 0;
+            this.fpsState.lastActiveFrame = null;
+            return;
+        }
+
+        if (!willRender) return;
+
+        if (this.fpsState.lastActiveFrame !== null) {
+            this.fpsState.activeElapsed += Math.max(0, now - this.fpsState.lastActiveFrame);
+        }
+        this.fpsState.lastActiveFrame = now;
+        this.fpsState.frames += 1;
+        if (this.fpsState.activeElapsed < 500 || this.fpsState.frames < 2) return;
+
+        const fps = ((this.fpsState.frames - 1) * 1000) / this.fpsState.activeElapsed;
         this.fpsEl.textContent = `FPS: ${fps.toFixed(0)} | Zoom: ${dist.toFixed(0)}`;
-        this.fpsState.frames = 0;
-        this.fpsState.lastSample = now;
+        this.fpsState.frames = 1;
+        this.fpsState.activeElapsed = 0;
+        this.fpsState.lastActiveFrame = now;
     }
 
     updateFrametimeGraph() {
@@ -3597,14 +3612,15 @@ class PistonViewer {
 
         // --- RENDER CHECK ---
         // STATIC state: must NOT render. Early-out if nothing moved and no flags set.
-        this.profiler?.frame(now, this.engineState, moved || this.needsRender);
-        if (!moved && !this.needsRender) return;
+        const willRender = moved || this.needsRender;
+        this.profiler?.frame(now, this.engineState, willRender);
+        this.updateFps(now, willRender);
+        if (!willRender) return;
 
         // ===== BEGIN TIMED RENDER CYCLE =====
         const cycleStart = performance.now();
 
         this.updateRenderStats(now);
-        this.updateFps();
         this.updateFrametimeGraph();
 
         // --- VISIBILITY PASS ---
