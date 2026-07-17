@@ -2,7 +2,15 @@
 # Opt-in AA-20 release gate: needs Chromium and a complete local baked corpus.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PORT="${PORT:-8124}"
+PORT="${PORT:-}"
+BASE_URL="${BASE_URL:-}"
+if [[ -z "$PORT" ]]; then
+  if [[ -n "$BASE_URL" ]]; then
+    PORT="$(python3 -c 'import sys; from urllib.parse import urlsplit; print(urlsplit(sys.argv[1]).port or 80)' "$BASE_URL")"
+  else
+    PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  fi
+fi
 BASE_URL="${BASE_URL:-http://localhost:${PORT}}"
 OUT="${OUT:-artifacts/release-browser}"
 BENCH_DURATION="${BENCH_DURATION:-20}"
@@ -25,7 +33,14 @@ ln -sfn ../aerial_pages frontend/app/dist/aerial_pages
 python3 -m http.server "$PORT" --directory frontend/app/dist >"$OUT/server.log" 2>&1 &
 server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
-sleep 1
+sleep 0.25
+if ! kill -0 "$server" 2>/dev/null; then
+  wait "$server" || true
+  echo "release server failed to bind port $PORT" >&2
+  exit 2
+fi
+python3 scripts/verify_local_release_server.py "$BASE_URL" frontend/app/dist
+kill -0 "$server" 2>/dev/null || { echo 'release server exited after verification' >&2; exit 2; }
 for trial in 1 2 3; do
   # A fresh Chrome profile makes each orbit startup a cold trial. The same
   # three reports therefore gate cold ready/TTFTF and active p95/p99 without a

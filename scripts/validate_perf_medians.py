@@ -59,7 +59,7 @@ def value(report, dotted):
 
 def median(reports, dotted):
     values = [value(report, dotted) for report in reports]
-    if any(not isinstance(item, (int, float)) for item in values):
+    if any(not numeric(item) for item in values):
         raise ValueError(f"missing numeric metric {dotted}: {values}")
     return statistics.median(values)
 

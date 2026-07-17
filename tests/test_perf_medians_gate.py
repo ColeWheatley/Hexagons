@@ -42,6 +42,12 @@ class PerfMedianGateTests(unittest.TestCase):
         failed = {check["name"] for check in evaluate(orbit_rows, cold_rows, baseline=BASELINE) if not check["passed"]}
         self.assertEqual(failed, {"cold ready", "cold TTFTF", "orbit frame p99"})
 
+    def test_rejects_boolean_negative_and_nonfinite_metrics(self):
+        for bad in (True, False, -1, float("nan"), float("inf")):
+            rows = [report(p95=bad), report(p95=bad), report(p95=bad)]
+            failed = {check["name"] for check in evaluate(rows, baseline=BASELINE) if not check["passed"]}
+            self.assertIn("orbit frame p95", failed)
+
     def test_uses_stationary_cold_reports_instead_of_orbit_milestones(self):
         orbit_rows = [report(), report(), report()]
         for row in orbit_rows:

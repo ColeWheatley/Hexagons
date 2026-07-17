@@ -51,6 +51,15 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+      - name: Attach persistent release assets
+        env:
+          AA20_ASSET_ROOT: ${{ vars.AA20_ASSET_ROOT }}
+        run: |
+          test -n "$AA20_ASSET_ROOT"
+          test -d "$AA20_ASSET_ROOT/tiles_bin"
+          test -d "$AA20_ASSET_ROOT/aerial_pages"
+          ln -s "$AA20_ASSET_ROOT/tiles_bin" frontend/app/tiles_bin
+          ln -s "$AA20_ASSET_ROOT/aerial_pages" frontend/app/aerial_pages
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - uses: prefix-dev/setup-pixi@v0.9.1

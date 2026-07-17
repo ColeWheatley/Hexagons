@@ -42,6 +42,20 @@ def verify_assets(manifest_path: Path, app_root: Path, *, allow_beta_diagnostics
     }
     try:
         manifest = json.loads(manifest_path.read_text())
+        tiles = manifest.get("tiles")
+        contract = manifest.get("texture_pages")
+        if not isinstance(tiles, list) or not tiles:
+            raise ValueError("manifest must contain at least one terrain tile")
+        if not isinstance(contract, dict):
+            raise ValueError("manifest must contain a texture_pages contract")
+        bootstrap = contract.get("bootstrap")
+        if not isinstance(bootstrap, dict) or bootstrap.get("container") != "webp":
+            raise ValueError("texture_pages must declare the WebP bootstrap tier")
+        tier_names = [tier.get("name") for tier in contract.get("tiers", []) if isinstance(tier, dict)]
+        if tier_names != ["low", "medium", "high"]:
+            raise ValueError("texture_pages tiers must be exactly low, medium, high")
+        if not isinstance(contract.get("pages"), list) or not contract["pages"]:
+            raise ValueError("texture_pages must contain at least one page")
         # Intentionally use the exact publication policy.  A caller must make
         # the beta escape hatch explicit; the manifest must still be exactly
         # beta-stubai / stubai-small-square.
