@@ -47,6 +47,14 @@ test('context loss emits recovered before resuming every resource state', () => 
     ]);
 });
 
+test('context recovery resumes an in-flight retry without violating the state machine', () => {
+    const registry = new ResourceLifecycleRegistry();
+    registry.retrying('texture', '59_202/high4096', { cause: 'request-retry' });
+    registry.contextLost({ cause: 'test' });
+    registry.recovered({ cause: 'test' });
+    assert.equal(registry.get('texture', '59_202/high4096').state, S.RETRYING);
+});
+
 test('leaving a resource state cancels its owned scope', () => {
     const resource = new ResourceLifecycle('manifest', 'tile_manifest.json');
     const boot = resource.current();
