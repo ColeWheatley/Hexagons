@@ -54,6 +54,10 @@ import {
 } from './texture_hud_telemetry.js?v=pageonly1';
 import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=pageonly1';
 import {
+    applyTwoFingerGesture,
+    createTouchGestureScratch,
+} from './touch_gesture.js?v=touchalloc1';
+import {
     buildTexturePageShaderSwitch,
     MAX_TEXTURE_PAGE_BINDINGS,
 } from './texture_page_shader.js?v=pageonly1';
@@ -380,13 +384,25 @@ class PistonViewer {
         }
 
         this.activeTouches = new Map();
+        this.activeTouchIds = [];
+        this.touchGestureScratch = createTouchGestureScratch(THREE);
         this.lastTouchDistance = null;
         this.lastTouchAngle = null;
         this.lastTouchMidpointY = null;
 
         const noteTouch = (event) => {
             if (event.pointerType !== 'touch') return;
-            this.activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+            let touch = this.activeTouches.get(event.pointerId);
+            if (!touch) {
+                // Pointer-down is outside the move hot path. The mutable point
+                // is subsequently updated in place for allocation-free moves.
+                touch = { x: event.clientX, y: event.clientY };
+                this.activeTouches.set(event.pointerId, touch);
+                this.activeTouchIds.push(event.pointerId);
+            } else {
+                touch.x = event.clientX;
+                touch.y = event.clientY;
+            }
             if (this.activeTouches.size === 2) {
                 // Reset stored values for start of two-finger gesture
                 this.lastTouchDistance = null;
@@ -397,8 +413,10 @@ class PistonViewer {
 
         const handlePointerMove = (event) => {
             if (event.pointerType !== 'touch') return;
-            if (this.activeTouches.has(event.pointerId)) {
-                this.activeTouches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+            const touch = this.activeTouches.get(event.pointerId);
+            if (touch) {
+                touch.x = event.clientX;
+                touch.y = event.clientY;
                 if (this.activeTouches.size === 2) {
                     if (event.cancelable) event.preventDefault();
                     this.handleTwoFingerGesture(event);
@@ -409,6 +427,8 @@ class PistonViewer {
         const clearTouch = (event) => {
             if (event.pointerType !== 'touch') return;
             this.activeTouches.delete(event.pointerId);
+            const touchIndex = this.activeTouchIds.indexOf(event.pointerId);
+            if (touchIndex !== -1) this.activeTouchIds.splice(touchIndex, 1);
             if (this.activeTouches.size < 2) {
                 this.lastTouchDistance = null;
                 this.lastTouchAngle = null;
@@ -424,11 +444,10 @@ class PistonViewer {
     }
 
     handleTwoFingerGesture(event) {
-        const touchIds = Array.from(this.activeTouches.keys());
-        if (touchIds.length !== 2) return;
+        if (this.activeTouchIds.length !== 2) return;
 
-        const id1 = touchIds[0];
-        const id2 = touchIds[1];
+        const id1 = this.activeTouchIds[0];
+        const id2 = this.activeTouchIds[1];
         const t1 = this.activeTouches.get(id1);
         const t2 = this.activeTouches.get(id2);
 
@@ -454,56 +473,18 @@ class PistonViewer {
         const camera = this.camera;
         const target = this.controls.target;
         
-        let cameraMoved = false;
-
-        // Find pivot for Yaw and Zoom using the centerpoint of the two fingers
-        const ndcX = (midpointX / this.renderer.domElement.clientWidth) * 2 - 1;
-        const ndcY = -(midpointY / this.renderer.domElement.clientHeight) * 2 + 1;
-        const raycaster = new THREE.Raycaster();
-        raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -target.y);
-        const pivot = new THREE.Vector3();
-        if (!raycaster.ray.intersectPlane(plane, pivot)) {
-            pivot.copy(target); // Fallback if no intersection
-        }
-
-        // 1. Zoom (dolly) towards the pivot
-        if (distRatio !== 1 && isFinite(distRatio) && Math.abs(distRatio - 1) > 0.001) {
-            const currentDist = camera.position.distanceTo(target);
-            let newDist = currentDist / distRatio;
-            newDist = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newDist));
-            const effectiveDistRatio = currentDist / newDist;
-            
-            camera.position.sub(pivot).divideScalar(effectiveDistRatio).add(pivot);
-            target.sub(pivot).divideScalar(effectiveDistRatio).add(pivot);
-            cameraMoved = true;
-        }
-
-        // 2. Rotate (yaw) around the pivot
-        if (angleDelta !== 0 && isFinite(angleDelta) && Math.abs(angleDelta) > 0.001) {
-            const up = this.controls.up || new THREE.Vector3(0, 1, 0);
-            // Reversed direction (swapped CW/CCW)
-            const q = new THREE.Quaternion().setFromAxisAngle(up, angleDelta);
-            camera.position.sub(pivot).applyQuaternion(q).add(pivot);
-            target.sub(pivot).applyQuaternion(q).add(pivot);
-            cameraMoved = true;
-        }
-
-        // 3. Tilt (pitch / polar angle) via vertical drag
-        if (midpointDeltaY !== 0 && isFinite(midpointDeltaY) && Math.abs(midpointDeltaY) > 0.1) {
-            const factor = Math.PI / this.renderer.domElement.clientHeight;
-            const tiltDelta = midpointDeltaY * factor;
-            
-            const spherical = new THREE.Spherical().setFromVector3(camera.position.clone().sub(target));
-            spherical.phi -= tiltDelta;
-            const minPolar = this.controls.minPolarAngle !== undefined ? this.controls.minPolarAngle : 0;
-            const maxPolar = this.controls.maxPolarAngle !== undefined ? this.controls.maxPolarAngle : Math.PI;
-            spherical.phi = Math.max(minPolar, Math.min(maxPolar, spherical.phi));
-            spherical.makeSafe();
-            
-            camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(spherical));
-            cameraMoved = true;
-        }
+        const cameraMoved = applyTwoFingerGesture(
+            this.touchGestureScratch,
+            camera,
+            target,
+            this.controls,
+            this.renderer,
+            midpointX,
+            midpointY,
+            distRatio,
+            angleDelta,
+            midpointDeltaY,
+        );
 
         if (cameraMoved) {
             camera.lookAt(target);
