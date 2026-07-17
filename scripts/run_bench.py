@@ -60,6 +60,7 @@ POLL = f"""(() => {{
 
 FETCH_REPORT = f"localStorage.getItem('{LS_KEY}')"
 STATIC_BUFFER_STATS = "JSON.stringify(window.pistonViewer?.getStaticBufferInstrumentation?.() || null)"
+MATERIAL_CHURN_STATS = "JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ || null)"
 VIEWPORT_AUDIT = """(() => {
   const selectors = ['#main-panel', '#hex-search-container'];
   const visible = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none'
@@ -152,6 +153,10 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900"):
                     raw_buffer_stats = await cdp.js(STATIC_BUFFER_STATS)
                     report["staticBufferInstrumentation"] = (
                         json.loads(raw_buffer_stats) if raw_buffer_stats else None
+                    )
+                    raw_material_churn = await cdp.js(MATERIAL_CHURN_STATS)
+                    report["materialChurn"] = (
+                        json.loads(raw_material_churn) if raw_material_churn else None
                     )
                     raw_viewport_audit = await cdp.js(VIEWPORT_AUDIT)
                     report["viewportAudit"] = (

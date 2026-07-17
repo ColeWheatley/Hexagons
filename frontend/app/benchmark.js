@@ -224,6 +224,27 @@ function updateHud(el, name, elapsed, total, done = false) {
         : `[BENCHMARK] ${name} — ${elapsed.toFixed(1)}s / ${total.toFixed(0)}s (${pct}%)`;
 }
 
+function resetMaterialChurn(viewer) {
+    if (viewer.materialChurn) {
+        for (const key of Object.keys(viewer.materialChurn)) viewer.materialChurn[key] = 0;
+    }
+}
+
+function installTextureWarningTracker(viewer) {
+    const original = console.warn;
+    const wrapped = (...args) => {
+        const message = args.map(value => String(value)).join(' ');
+        if (/texture/i.test(message) && /(serializ|upload|incomplete)/i.test(message)) {
+            if (viewer.materialChurn) viewer.materialChurn.textureSerializationWarnings++;
+        }
+        original.apply(console, args);
+    };
+    console.warn = wrapped;
+    return () => {
+        if (console.warn === wrapped) console.warn = original;
+    };
+}
+
 // ─── Runner ────────────────────────────────────────────────────────────
 
 function waitForReady(viewer, timeoutMs = 45000) {
@@ -245,6 +266,8 @@ function finishScenario(viewer, hud, name, duration, appVersion) {
     console.log(`[BENCHMARK] Scenario "${name}" complete.`);
     window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ = { scenario: name, duration, counters: viewer.getMaterialChurnStats?.() || null };
     console.log('[MATERIAL_CHURN] ' + JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__));
+    viewer._restoreMaterialWarningTracker?.();
+    viewer._restoreMaterialWarningTracker = null;
     // The runtime contract is KTX2-only. Missing telemetry means the
     // pipeline has not produced a sample yet; it is not a WebP fallback.
     const texturePipeline = 'ktx2';
@@ -266,6 +289,7 @@ function finishScenario(viewer, hud, name, duration, appVersion) {
 function runColdloadScenario(viewer, name, scenario, appVersion) {
     const hud = createHud();
     const t0 = performance.now();
+    resetMaterialChurn(viewer);
 
     const poll = () => {
         const elapsed = (performance.now() - t0) / 1000;
@@ -301,7 +325,7 @@ function runScenario(viewer, name, scenario, appVersion) {
     if (name === 'stress') ctx.locations = pickStressLocations(viewer);
 
     const t0 = performance.now();
-    if (viewer.materialChurn) for (const key of Object.keys(viewer.materialChurn)) viewer.materialChurn[key] = 0;
+    resetMaterialChurn(viewer);
 
     const finish = () => finishScenario(viewer, hud, name, scenario.duration, appVersion);
 
@@ -364,6 +388,7 @@ export function initBenchmark(viewer, appVersion) {
     }
 
     console.log(`[BENCHMARK] Scenario "${scenarioName}" queued — waiting for the viewer's initial tile load...`);
+    viewer._restoreMaterialWarningTracker = installTextureWarningTracker(viewer);
     waitForReady(viewer)
         .then(() => {
             if (scenario.holdStill) {
@@ -372,5 +397,9 @@ export function initBenchmark(viewer, appVersion) {
                 runScenario(viewer, scenarioName, scenario, appVersion);
             }
         })
-        .catch((e) => console.error('[BENCHMARK] ' + e.message));
+        .catch((e) => {
+            viewer._restoreMaterialWarningTracker?.();
+            viewer._restoreMaterialWarningTracker = null;
+            console.error('[BENCHMARK] ' + e.message);
+        });
 }
