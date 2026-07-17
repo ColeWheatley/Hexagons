@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js?v=pageonly1';
+import { setDisclosure, setPanelMinimized, setPressedButton, toggleDisclosure } from './ui_accessibility.js?v=aa16';
 import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
 import { CacheManager } from './cache_manager.js?v=pageonly1';
 import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
@@ -590,19 +591,24 @@ class PistonViewer {
     initMinimizeButton() {
         const btn = document.getElementById('minimize-btn');
         const panel = document.getElementById('main-panel');
-        if (btn && panel) {
+        const body = document.getElementById('main-panel-body');
+        if (btn && panel && body) {
+            setPanelMinimized(panel, btn, body, panel.classList.contains('minimized'));
             btn.addEventListener('click', () => {
-                panel.classList.toggle('minimized');
-                btn.textContent = panel.classList.contains('minimized') ? '+' : '−';
+                setPanelMinimized(panel, btn, body, !panel.classList.contains('minimized'));
             });
         }
     }
 
     initCollapsibleSections() {
         document.querySelectorAll('.collapsible-header').forEach(header => {
+            const content = document.getElementById(header.getAttribute('aria-controls'));
+            if (!content) return;
+            setDisclosure(header, content, !header.parentElement.classList.contains('collapsed'));
             header.addEventListener('click', () => {
                 const section = header.parentElement;
-                section.classList.toggle('collapsed');
+                const expanded = toggleDisclosure(header, content);
+                section.classList.toggle('collapsed', !expanded);
             });
         });
     }
@@ -648,6 +654,8 @@ class PistonViewer {
                 this.gradientMode = 0.0;
                 terrainBtn.classList.add('active');
                 gradientBtn.classList.remove('active');
+                setPressedButton(terrainBtn, true);
+                setPressedButton(gradientBtn, false);
                 // Standard color updates handled by CSS class now preferably, 
                 // but let's maintain consistency with existing code
                 terrainBtn.style.background = '#74b9ff';
@@ -659,6 +667,8 @@ class PistonViewer {
                 this.gradientMode = 1.0;
                 gradientBtn.classList.add('active');
                 terrainBtn.classList.remove('active');
+                setPressedButton(gradientBtn, true);
+                setPressedButton(terrainBtn, false);
                 gradientBtn.style.background = '#74b9ff';
                 gradientBtn.style.color = '#fff';
                 terrainBtn.style.background = 'transparent';
