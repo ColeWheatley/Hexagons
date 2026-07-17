@@ -62,6 +62,10 @@ import {
     gosperIslandSourceBounds,
     sourceFootprintFromGeometryContract,
 } from './gosper_page_binding_adapter.js?v=pageonly1';
+import {
+    ResourceRetryScheduler,
+    ResweepScheduler,
+} from './fetch_retry.js?v=resilience1';
 import './gosper_core.js?v=pageonly1';
 
 const G = window.GosperCore;
@@ -69,6 +73,9 @@ const G = window.GosperCore;
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
 const APP_VERSION = 'v0.10.0-rc5';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
+const MANIFEST_RETRY_KEY = 'manifest:tile_manifest.json';
+const RECOVERABLE_SWEEP_TILES = 'tiles';
+const RECOVERABLE_SWEEP_TEXTURES = 'textures';
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
 const STATE_BUDGETS_MS = { MOVING_2D: 16, MOVING_3D: 16, SINTERING: 1200, STATIC: 0 };
@@ -260,12 +267,14 @@ class PistonViewer {
         this.tiles = new Map(); // Key: "yq_yr" (island lattice) -> Tile Object
         this.manifest = null;
         this.loadingTiles = new Set();
+        this.failedTiles = new Set();
         this.loadQueue = [];
         this.geometryRebuildQueue = [];
         this.geometryPlanEpoch = 0;
         this.textureQueue = [];
         this.textureResultQueue = [];
         this.textureStates = new Map();
+        this.failedTextures = new Set();
         this.texturePageGrid = null;
         this.texturePageResidency = null;
         this.texturePageVisibilityAdapter = null;
@@ -319,6 +328,19 @@ class PistonViewer {
         this._perfStats = {};  // Per-state rolling stats: { STATE: { min, max, sum, count } }
         this._texErrorCount = 0; // Dedup repeated texture decode failures
         this._frameCounter = 0;
+        this.failureStats = {
+            manifestFailures: 0,
+            tileFailures: 0,
+            textureFailures: 0,
+            recoverableSweepsScheduled: 0,
+            recoverableSweepsRun: 0,
+            globalErrors: 0,
+            unhandledRejections: 0,
+        };
+        this.resourceRetries = new ResourceRetryScheduler();
+        this.recoverableResweeps = new ResweepScheduler({
+            onSchedule: () => { this.failureStats.recoverableSweepsScheduled++; },
+        });
 
         // Frametime Graph
         this.frametimeCanvas = document.getElementById('frametime-graph');
@@ -910,8 +932,50 @@ class PistonViewer {
         }
     }
 
-    async initWorld() {
-        try {
+    _logRetry(kind, key, event) {
+        const seconds = (event.delayMs / 1000).toFixed(1);
+        this.log(`${kind} retry ${event.attempt}/${event.maxAttempts} in ${seconds}s: ${key}`, 'error');
+        console.warn(`[${kind.toUpperCase()}_RETRY] ${key}: ${event.error.message}`);
+    }
+
+    _validateManifestContract(manifest) {
+        if (manifest.type !== 'gosper_l5') {
+            throw new Error(`Manifest type '${manifest.type}' is not gosper_l5 — re-run the baker`);
+        }
+        const textureContract = manifest.texture_pages;
+        const supportedTextureCodecs = new Set([
+            'xuastc-ldr-4x4',
+            'xuastc-ldr-6x6',
+            'xuastc-ldr-8x6',
+        ]);
+        if (!textureContract || textureContract.container !== 'ktx2' ||
+            !supportedTextureCodecs.has(textureContract.codec)) {
+            throw new Error('Manifest needs the global XUASTC KTX2 texture-page contract');
+        }
+        const profileTiers = textureContract.encoding_profile?.tiers || {};
+        if (textureContract.encoding_profile) {
+            for (const tierName of ['low', 'medium', 'high']) {
+                if (profileTiers[tierName]?.codec !== textureContract.codec) {
+                    throw new Error(`Manifest texture encoding profile is missing ${tierName} settings`);
+                }
+            }
+        } else if (textureContract.codec !== 'xuastc-ldr-6x6') {
+            throw new Error('Only the migration-era 6x6 manifest may omit encoding-profile settings');
+        } else {
+            console.warn('[HEXAGONS] Legacy 6x6 texture manifest; rebake to record an encoding profile.');
+        }
+        const expectedTextureSizes = { low: 128, medium: 256, high: 4096 };
+        const manifestTierSizes = Object.fromEntries(
+            (textureContract.tiers || []).map(tier => [tier.name, tier.size_px]));
+        for (const [name, size] of Object.entries(expectedTextureSizes)) {
+            if (manifestTierSizes[name] !== size) {
+                throw new Error(`Manifest texture tier ${name} must be ${size}px`);
+            }
+        }
+    }
+
+    async _loadManifestWithRetry() {
+        return this.resourceRetries.run(MANIFEST_RETRY_KEY, async () => {
             // This small file is the cache-identity authority for every large
             // asset, so rebakes must revalidate it even when app code did not
             // change. Binaries and textures remain explicitly recipe-keyed.
@@ -919,40 +983,20 @@ class PistonViewer {
                 appendCacheKey('tile_manifest.json', APP_VERSION),
                 { cache: 'no-store' },
             );
-            this.manifest = await res.json();
-            if (this.manifest.type !== 'gosper_l5') {
-                throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
-            }
+            if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
+            const manifest = await res.json();
+            this._validateManifestContract(manifest);
+            return manifest;
+        }, {
+            onRetry: event => this._logRetry('manifest', 'tile_manifest.json', event),
+            onExhausted: () => { this.failureStats.manifestFailures++; },
+        });
+    }
+
+    async initWorld() {
+        try {
+            this.manifest = await this._loadManifestWithRetry();
             const textureContract = this.manifest.texture_pages;
-            const supportedTextureCodecs = new Set([
-                'xuastc-ldr-4x4',
-                'xuastc-ldr-6x6',
-                'xuastc-ldr-8x6',
-            ]);
-            if (!textureContract || textureContract.container !== 'ktx2' ||
-                !supportedTextureCodecs.has(textureContract.codec)) {
-                throw new Error('Manifest needs the global XUASTC KTX2 texture-page contract');
-            }
-            const profileTiers = textureContract.encoding_profile?.tiers || {};
-            if (textureContract.encoding_profile) {
-                for (const tierName of ['low', 'medium', 'high']) {
-                    if (profileTiers[tierName]?.codec !== textureContract.codec) {
-                        throw new Error(`Manifest texture encoding profile is missing ${tierName} settings`);
-                    }
-                }
-            } else if (textureContract.codec !== 'xuastc-ldr-6x6') {
-                throw new Error('Only the migration-era 6x6 manifest may omit encoding-profile settings');
-            } else {
-                console.warn('[HEXAGONS] Legacy 6x6 texture manifest; rebake to record an encoding profile.');
-            }
-            const expectedTextureSizes = { low: 128, medium: 256, high: 4096 };
-            const manifestTierSizes = Object.fromEntries(
-                (textureContract.tiers || []).map(tier => [tier.name, tier.size_px]));
-            for (const [name, size] of Object.entries(expectedTextureSizes)) {
-                if (manifestTierSizes[name] !== size) {
-                    throw new Error(`Manifest texture tier ${name} must be ${size}px`);
-                }
-            }
             this.profiler?.milestone('manifestLoaded');
             this.textureContract = textureContract;
             this.binaryContract = this.manifest.binary || {};
@@ -1767,6 +1811,55 @@ class PistonViewer {
         return [appendCacheKey(url, this.textureContract.cache_key)];
     }
 
+    _textureFailureKey(key, tier) {
+        return `${key}|${tier}`;
+    }
+
+    _markTileFailed(tileKey, error) {
+        if (!this.failedTiles.has(tileKey)) this.failureStats.tileFailures++;
+        this.failedTiles.add(tileKey);
+        this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TILES);
+        this.log(`Terrain tile failed: ${tileKey} (${error.message})`, 'error');
+    }
+
+    _markTextureFailed(key, tier, error) {
+        const failureKey = this._textureFailureKey(key, tier);
+        if (!this.failedTextures.has(failureKey)) this.failureStats.textureFailures++;
+        this.failedTextures.add(failureKey);
+        this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TEXTURES);
+        this.log(`Texture page failed: ${key}/${tier} (${error.message})`, 'error');
+    }
+
+    _runRecoverableResweep() {
+        const kinds = this.recoverableResweeps.consumeAll();
+        if (kinds.length === 0) return;
+
+        let tileCount = 0;
+        let textureCount = 0;
+        if (kinds.includes(RECOVERABLE_SWEEP_TILES)) {
+            for (const key of this.failedTiles) {
+                this.resourceRetries.reset(`tile:${key}`);
+                tileCount++;
+            }
+            this.failedTiles.clear();
+        }
+        if (kinds.includes(RECOVERABLE_SWEEP_TEXTURES)) {
+            for (const failureKey of this.failedTextures) {
+                const [key, tier] = failureKey.split('|');
+                const state = this.textureStates.get(key);
+                if (state) state.failed.delete(tier);
+                this.resourceRetries.reset(`texture:${failureKey}`);
+                textureCount++;
+            }
+            this.failedTextures.clear();
+        }
+
+        this.failureStats.recoverableSweepsRun++;
+        this.needsLODUpdate = true;
+        this.needsRender = true;
+        this.log(`Retrying failed resources after camera settled (${tileCount} tiles, ${textureCount} textures).`, 'info');
+    }
+
     _desiredTextureTier(state, projectedDiameterPx, classification) {
         if (classification === 'outside') return TEXTURE_TIER.LOW;
 
@@ -2005,6 +2098,7 @@ class PistonViewer {
         state.loading.delete(task.tier);
         state.queued.delete(task.tier);
         state.failed.delete(task.tier);
+        this.failedTextures.delete(this._textureFailureKey(state.key, task.tier));
 
         const texture = this.buildCompressedTexture(result);
         if (task.tier === TEXTURE_TIER.HIGH) {
@@ -2103,7 +2197,12 @@ class PistonViewer {
             state.loading.add(task.tier);
             this.activeWorkerCount++;
             this.activeTextureJobs++;
-            this.postWorkerJob('LOAD_TEXTURE', { urls: task.urls }).then(result => {
+            const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
+            this.resourceRetries.run(retryKey, () => (
+                this.postWorkerJob('LOAD_TEXTURE', { urls: task.urls })
+            ), {
+                onRetry: event => this._logRetry('texture', `${task.key}/${task.tier}`, event),
+            }).then(result => {
                 if (result.networkBytes) {
                     this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
                 }
@@ -2112,6 +2211,7 @@ class PistonViewer {
             }).catch(error => {
                 state.loading.delete(task.tier);
                 state.failed.add(task.tier);
+                this._markTextureFailed(task.key, task.tier, error);
                 this._texErrorCount++;
                 this._updateTexBadge();
                 if (this._texErrorCount <= 3) {
@@ -2413,7 +2513,7 @@ class PistonViewer {
             }
 
             if (classification !== 'outside') {
-                if (!this.tiles.has(key) && !this.loadingTiles.has(key)) {
+                if (!this.tiles.has(key) && !this.loadingTiles.has(key) && !this.failedTiles.has(key)) {
                     this.loadingTiles.add(key);
                     this.loadQueue.push({ t: manifestTile, priority });
                 }
@@ -2718,16 +2818,21 @@ class PistonViewer {
                 `${binaryBaseKey}-gsp${expectedGspVersion}`,
             );
 
-            const workerData = await this.postWorkerJob('LOAD_TILE', {
-                yq: t.yq, yr: t.yr,
-                binUrl,
-                expectedGspVersion,
+            const workerData = await this.resourceRetries.run(`tile:${tileKey}`, async () => {
+                const result = await this.postWorkerJob('LOAD_TILE', {
+                    yq: t.yq, yr: t.yr,
+                    binUrl,
+                    expectedGspVersion,
+                });
+                if (result.binaryVersion !== expectedGspVersion) {
+                    throw new Error(
+                        `Binary cache mismatch for ${tileKey}: manifest GSP${expectedGspVersion}, parsed GSP${result.binaryVersion}`,
+                    );
+                }
+                return result;
+            }, {
+                onRetry: event => this._logRetry('tile', tileKey, event),
             });
-            if (workerData.binaryVersion !== expectedGspVersion) {
-                throw new Error(
-                    `Binary cache mismatch for ${tileKey}: manifest GSP${expectedGspVersion}, parsed GSP${workerData.binaryVersion}`,
-                );
-            }
 
             if (workerData.binaryVersion >= 2) {
                 if (!(workerData.geometrySource instanceof ArrayBuffer) || !workerData.visibilityData) {
@@ -2769,6 +2874,7 @@ class PistonViewer {
             console.error("Tile Fetch Error", e);
             this.visibilityAdapter?.detachDecodedIsland(tileKey);
             this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
+            this._markTileFailed(tileKey, e);
             return null;
         }
     }
@@ -3391,6 +3497,7 @@ class PistonViewer {
             else activeTiers.none++;
             desiredTiers[state.desiredTier]++;
         }
+        const manifestRetry = this.resourceRetries.snapshot(MANIFEST_RETRY_KEY);
 
         return {
             phase,
@@ -3478,6 +3585,29 @@ class PistonViewer {
                 highUploadSize: this.texStats.highUploadSize,
                 highSkippedTopMips: this.texStats.highSkippedTopMips,
             },
+            failures: {
+                manifest: {
+                    finalFailures: this.failureStats.manifestFailures,
+                    attemptsUsed: manifestRetry.attempts,
+                    exhausted: manifestRetry.exhausted,
+                },
+                tiles: {
+                    failed: this.failedTiles.size,
+                    finalFailures: this.failureStats.tileFailures,
+                },
+                textures: {
+                    failed: this.failedTextures.size,
+                    finalFailures: this.failureStats.textureFailures,
+                    errorCount: this._texErrorCount,
+                },
+                recoverableSweeps: {
+                    pending: Array.from(this.recoverableResweeps.pending),
+                    scheduled: this.failureStats.recoverableSweepsScheduled,
+                    run: this.failureStats.recoverableSweepsRun,
+                },
+                globalErrors: this.failureStats.globalErrors,
+                unhandledRejections: this.failureStats.unhandledRejections,
+            },
             visibilityPlanner: this.visibilityPlanStats || null,
             texturePagePlanner: this.texturePagePlanStats || null,
             geometryFrontier: this.geometryFrontierStats || null,
@@ -3558,6 +3688,7 @@ class PistonViewer {
             this.needsRender = true;
             this.needsLODUpdate = true;
             this._beginGeometryMode(false);
+            this._runRecoverableResweep();
         }
 
         // Camera state, terrain floor, and clearance all affect the adapter's
