@@ -563,6 +563,20 @@ input[type="range"]::-moz-range-thumb {
     }
 }
 
+@media (max-width: 768px) {
+    #ui {
+        top: 70px;
+        left: 10px;
+        right: 10px;
+    }
+
+    .glass-panel {
+        box-sizing: border-box;
+        max-width: calc(100vw - 20px);
+        padding: 14px;
+    }
+}
+
 
 /* Debug Console */
 .console-panel {

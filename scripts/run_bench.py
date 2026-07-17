@@ -16,6 +16,7 @@ Requires: pip install websockets (python3.14 user site on this machine).
 """
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import urllib.request
 
 import websockets
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME = os.environ.get("CHROME_BIN") or shutil.which("google-chrome") or shutil.which("chromium") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PORT = 9333
 LS_KEY = "hexagons:perfProfiler:lastRun"
 
@@ -59,6 +60,28 @@ POLL = f"""(() => {{
 
 FETCH_REPORT = f"localStorage.getItem('{LS_KEY}')"
 STATIC_BUFFER_STATS = "JSON.stringify(window.pistonViewer?.getStaticBufferInstrumentation?.() || null)"
+VIEWPORT_AUDIT = """(() => {
+  const selectors = ['#main-panel', '#hex-search-container'];
+  const visible = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none'
+    && getComputedStyle(el).visibility !== 'hidden';
+  const rects = selectors.map(selector => {
+    const el = document.querySelector(selector);
+    if (!visible(el)) return null;
+    const r = el.getBoundingClientRect();
+    return {selector, left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:r.width, height:r.height};
+  }).filter(Boolean);
+  const outOfViewport = rects.filter(r => r.left < -1 || r.top < -1
+    || r.right > innerWidth + 1 || r.bottom > innerHeight + 1).map(r => r.selector);
+  const overlaps = [];
+  for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+    const a = rects[i], b = rects[j];
+    if (Math.min(a.right,b.right) - Math.max(a.left,b.left) > 1
+      && Math.min(a.bottom,b.bottom) - Math.max(a.top,b.top) > 1) overlaps.push([a.selector,b.selector]);
+  }
+  return JSON.stringify({width:innerWidth, height:innerHeight,
+    horizontalOverflow:document.documentElement.scrollWidth > innerWidth + 1,
+    outOfViewport, overlaps, rects});
+})()"""
 
 
 class CDP:
@@ -82,11 +105,11 @@ class CDP:
         return res.get("result", {}).get("value")
 
 
-async def run(url, out_json, screenshot=None, timeout=300):
+async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900"):
     profile = tempfile.mkdtemp(prefix="chrome-bench-")
     proc = subprocess.Popen(
         [CHROME, "--headless=new", f"--remote-debugging-port={PORT}",
-         f"--user-data-dir={profile}", "--no-first-run", "--window-size=1440,900",
+         f"--user-data-dir={profile}", "--no-first-run", f"--window-size={viewport}",
          "--hide-crash-restore-bubble", url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -130,6 +153,10 @@ async def run(url, out_json, screenshot=None, timeout=300):
                     report["staticBufferInstrumentation"] = (
                         json.loads(raw_buffer_stats) if raw_buffer_stats else None
                     )
+                    raw_viewport_audit = await cdp.js(VIEWPORT_AUDIT)
+                    report["viewportAudit"] = (
+                        json.loads(raw_viewport_audit) if raw_viewport_audit else None
+                    )
                     with open(out_json, "w") as f:
                         json.dump(report, f, indent=1)
                     if screenshot:
@@ -168,8 +195,9 @@ def main():
     url, out_json = args[0], args[1]
     screenshot = args[args.index("--screenshot") + 1] if "--screenshot" in args else None
     timeout = int(args[args.index("--timeout") + 1]) if "--timeout" in args else 300
+    viewport = args[args.index("--viewport") + 1] if "--viewport" in args else "1440,900"
     print(f"[bench] {url}", flush=True)
-    return asyncio.run(run(url, out_json, screenshot, timeout))
+    return asyncio.run(run(url, out_json, screenshot, timeout, viewport))
 
 
 if __name__ == "__main__":
