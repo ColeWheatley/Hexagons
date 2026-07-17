@@ -2198,12 +2198,14 @@ def main():
     if args.texture_pages_only:
         mode = args.release_profile
         print(f"🗺️  RUNNING GLOBAL TEXTURE PAGES ONLY ({mode})")
-        S3_ENABLED = is_production
+        S3_ENABLED = False
     elif is_production:
         print("🚀 RUNNING SELECTED-TIROL PRODUCTION BAKE (S3 Enabled)")
         print(f"📐 Approved bounds: {args.coverage_bounds}")
         print("🎨 Texture tattoos: OFF (production bake)")
-        S3_ENABLED = True
+        # Publication is a single verified transaction after the complete bake;
+        # never let individual asset writes expose a partial release.
+        S3_ENABLED = False
     else:
         print(f"🧪 RUNNING MINI-BAKE ({grid_size}×{grid_size} grid, S3 Disabled)")
         if texture_tattoos:
@@ -2392,9 +2394,17 @@ def main():
     )
 
     generate_manifest.generate_manifest()
-    # Upload manifest last
+    # Production publication happens only after every local asset and this
+    # manifest exist. release_publish uploads immutable release keys, verifies
+    # them, then atomically flips the live manifest.
     manifest_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app/tile_manifest.json"))
-    upload_to_s3(manifest_path)
+    if is_production:
+        publisher = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/release_publish.py"))
+        subprocess.run([
+            sys.executable, publisher, "--manifest", manifest_path,
+            "--app-root", os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app")),
+            "--bucket", S3_BUCKET, "--prefix", S3_PREFIX,
+        ], check=True)
     print("Done.")
 
 if __name__ == "__main__": main()

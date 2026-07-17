@@ -1623,6 +1623,10 @@ class PistonViewer {
             !supportedTextureCodecs.has(textureContract.codec)) {
             throw new Error('Manifest needs the global XUASTC KTX2 texture-page contract');
         }
+        if (manifest.binary?.url_template &&
+            (!manifest.binary.url_template.includes('{yq}') || !manifest.binary.url_template.includes('{yr}'))) {
+            throw new Error('Manifest binary url_template must contain {yq}/{yr}');
+        }
         const profileTiers = textureContract.encoding_profile?.tiers || {};
         if (textureContract.encoding_profile) {
             for (const tierName of ['low', 'medium', 'high']) {
@@ -3531,8 +3535,10 @@ class PistonViewer {
             const expectedGspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
             const binaryBaseKey = this.binaryContract.cache_key
                 ?? `${this.binaryContract.default_format || 'GSP'}${this.binaryContract.default_version || expectedGspVersion}`;
+            const binaryTemplate = this.binaryContract.url_template
+                || 'tiles_bin/gosper_{yq}_{yr}.bin';
             const binUrl = appendCacheKey(
-                `tiles_bin/gosper_${t.yq}_${t.yr}.bin`,
+                binaryTemplate.replace('{yq}', String(t.yq)).replace('{yr}', String(t.yr)),
                 `${binaryBaseKey}-gsp${expectedGspVersion}`,
             );
 
