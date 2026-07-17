@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
+import { LoadingScreen } from './loading_screen.mjs';
 import { setDisclosure, setPanelMinimized, setPressedButton, toggleDisclosure } from './ui_accessibility.js';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
@@ -384,6 +385,18 @@ class PistonViewer {
         this.loaderHidden = false;
         this.fatalState = null;
         this.appStartTime = performance.now();
+        this.loadingScreen = new LoadingScreen({ heroHoldMs: 900 });
+        // Boot-time plan accounting for the honest progress phase. Only fed
+        // while the loader is visible; cleared on every init retry.
+        this._bootPlannedTerrain = new Set();
+        this._bootPlannedTextures = new Set();
+        this.loadingScreen.setOffline(navigator.onLine === false);
+        window.addEventListener('offline', () => {
+            if (!this.loaderHidden) this.loadingScreen.setOffline(true);
+        });
+        window.addEventListener('online', () => {
+            if (!this.loaderHidden) this.loadingScreen.setOffline(false);
+        });
         this.materialsToUpdate = new Set(); // Changed to Set
         this.materialChurn = createMaterialChurnStats();
         // These values are frame-global. Every shader references the same
@@ -1149,11 +1162,7 @@ class PistonViewer {
             }
             this.appLifecycle.transition(resumeState, { cause: 'context-restored' });
             if (this.contextRecovery.wasLoaderHidden) {
-                const loader = document.getElementById('loader');
-                if (loader) {
-                    loader.classList.add('hide');
-                    setTimeout(() => { loader.style.display = 'none'; }, 600);
-                }
+                this.loadingScreen.hide();
                 this.loaderHidden = true;
             } else {
                 this._showLoadingState();
@@ -1225,80 +1234,46 @@ class PistonViewer {
         this.needsRender = true;
     }
 
-    _setLoaderText(main, sub, detail = '') {
-        const loader = document.getElementById('loader');
-        const mainEl = loader?.querySelector('.main-message');
-        const subEl = loader?.querySelector('.fetching-message');
-        const detailEl = document.getElementById('fatal-detail');
-        if (mainEl) mainEl.textContent = main;
-        if (subEl) subEl.textContent = sub;
-        if (detailEl) {
-            detailEl.textContent = detail;
-            detailEl.hidden = !detail;
-        }
-    }
-
-    _showLoader() {
-        const loader = document.getElementById('loader');
-        if (!loader) return;
-        loader.style.display = 'flex';
-        loader.classList.remove('hide');
-        this.loaderHidden = false;
-    }
-
     _showLoadingState(main = 'Good code loads fast.', sub = 'Fetching high-res bestagons...') {
-        this._showLoader();
-        const loader = document.getElementById('loader');
-        const retry = document.getElementById('fatal-retry-btn');
-        loader?.classList.remove('fatal');
-        if (retry) retry.hidden = true;
-        this._setLoaderText(main, sub);
+        this.loadingScreen.showLoading({ main, sub });
+        this.loaderHidden = false;
     }
 
     _showFatalState(kind, error) {
         this.fatalState = { kind, message: error?.message || String(error) };
         if (kind !== 'context') {
-            const failureState = kind === 'manifest' && navigator.onLine === false
+            const failureState = (kind === 'manifest' || kind === 'terrain') && navigator.onLine === false
                 ? APP_LIFECYCLE.OFFLINE
                 : APP_LIFECYCLE.DEGRADED;
             if (this.appLifecycle.canTransition(failureState)) {
                 this.appLifecycle.transition(failureState, { cause: `fatal-${kind}` });
             }
         }
-        this._showLoader();
-        const loader = document.getElementById('loader');
-        const retry = document.getElementById('fatal-retry-btn');
-        loader?.classList.add('fatal');
-        if (retry) {
-            retry.hidden = false;
-            retry.onclick = () => this.retryInitWorld();
-        }
 
+        let title;
+        let message;
         if (kind === 'unsupported-device') {
-            this._setLoaderText(
-                "This device can't run the viewer.",
-                'The graphics hardware is missing a required capability.',
-                this.fatalState.message,
-            );
+            title = "This device can't run the viewer.";
+            message = 'The graphics hardware is missing a required capability.';
         } else if (kind === 'manifest') {
-            this._setLoaderText(
-                'Could not load the terrain manifest.',
-                'Check the asset build or network path, then retry.',
-                this.fatalState.message,
-            );
+            title = 'Could not load the terrain manifest.';
+            message = 'Check the asset build or network path, then retry.';
+        } else if (kind === 'terrain') {
+            title = 'The mountains refused to arrive.';
+            message = 'Every terrain request failed. Check the connection, then retry.';
         } else if (kind === 'context') {
-            this._setLoaderText(
-                'Graphics context could not be restored.',
-                'Retry after the browser recovers WebGL.',
-                this.fatalState.message,
-            );
+            title = 'Graphics context could not be restored.';
+            message = 'Retry after the browser recovers WebGL.';
         } else {
-            this._setLoaderText(
-                'The viewer failed to initialize.',
-                'Retry after fixing the reported startup problem.',
-                this.fatalState.message,
-            );
+            title = 'The viewer failed to initialize.';
+            message = 'Retry after fixing the reported startup problem.';
         }
+        this.loadingScreen.showFatal({
+            title,
+            message,
+            detail: this.fatalState.message,
+            onRetry: () => this.retryInitWorld(),
+        });
     }
 
     _disposeObjectTree(root) {
@@ -1388,6 +1363,9 @@ class PistonViewer {
         this.cacheManager = new CacheManager(this.capabilityProfile.textureBudgetBytes);
         this.appStartTime = performance.now();
         this.fatalState = null;
+        this._bootPlannedTerrain.clear();
+        this._bootPlannedTextures.clear();
+        this.loadingScreen.reset();
         this.needsLODUpdate = true;
         this.needsRender = true;
     }
@@ -1810,6 +1788,14 @@ class PistonViewer {
         const seconds = (event.delayMs / 1000).toFixed(1);
         this.log(`${kind} retry ${event.attempt}/${event.maxAttempts} in ${seconds}s: ${key}`, 'error');
         console.warn(`[${kind.toUpperCase()}_RETRY] ${key}: ${event.error.message}`);
+        if (!this.loaderHidden) {
+            this.loadingScreen.retryScheduled({
+                kind,
+                attempt: event.attempt,
+                maxAttempts: event.maxAttempts,
+                delayMs: event.delayMs,
+            });
+        }
     }
 
     _resourceKind(kind) {
@@ -1889,7 +1875,9 @@ class PistonViewer {
                 { cache: 'no-store', signal: scope.signal },
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
-            const manifest = await res.json();
+            const text = await res.text();
+            const manifest = JSON.parse(text);
+            this.loadingScreen.manifestLoaded(text.length);
             this._validateManifestContract(manifest);
             this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
             return manifest;
@@ -1906,6 +1894,7 @@ class PistonViewer {
     async initWorld(scope = this.appLifecycle.current()) {
         if (scope.state !== APP_LIFECYCLE.BOOTING || !this.appLifecycle.isCurrent(scope)) return;
         try {
+            this.loadingScreen.manifestStarted();
             const manifest = await this._loadManifestWithRetry(scope);
             if (!this.appLifecycle.isCurrent(scope)) return;
             this.manifest = manifest;
@@ -2798,6 +2787,24 @@ class PistonViewer {
         this._resourceFailed('tile', tileKey, error);
         this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TILES);
         this.log(`Terrain tile failed: ${tileKey} (${error.message})`, 'error');
+        this._maybeShowBootTerrainFailure();
+    }
+
+    // AA-2 closed the "failed manifest spins forever" hole; this closes the
+    // boot-time terrain twin: every request exhausted its retries with zero
+    // operational tiles and nothing left in flight — without a designed state
+    // the loader would spin forever.
+    _maybeShowBootTerrainFailure() {
+        if (this.loaderHidden || this.contextRecovery.active) return;
+        if (this.appLifecycle.state !== APP_LIFECYCLE.BOOTING) return;
+        for (const t of this.tiles.values()) {
+            if (t.mesh) return;
+        }
+        const pending = this.loadQueue.length + this.activeWorkerCount + this.instantiateQueue.length;
+        if (pending > 0) return;
+        const anyFailed = Array.from(this.tileStates.values()).some(state => state === 'failed');
+        if (!anyFailed) return;
+        this._showFatalState('terrain', new Error('All terrain requests failed after bounded retries.'));
     }
 
     _markTextureFailed(key, tier, error) {
@@ -2911,6 +2918,10 @@ class PistonViewer {
             epoch: this.viewEpoch,
             enqueuedSequence: this.textureDispatchSequence,
         });
+        if (!this.loaderHidden) {
+            this._bootPlannedTextures.add(`${state.key}|${tier}`);
+            this.loadingScreen.texturePlanned(this._bootPlannedTextures.size, tier);
+        }
     }
 
     _scheduleTextureQuality(
@@ -3189,6 +3200,9 @@ class PistonViewer {
         }
         if (task.tier === TEXTURE_TIER.BOOTSTRAP) this._enforceBootstrapBudget(state.key);
         this.updateTexStats(result);
+        if (!this.loaderHidden) {
+            this.loadingScreen.textureDone(result.networkBytes || 0, task.tier);
+        }
         this.resourceLifecycles.settled('texture', `${state.key}/${task.tier}`, {
             cause: 'gpu-resident', tier: task.tier,
         });
@@ -3602,6 +3616,10 @@ class PistonViewer {
                         epoch: this.viewEpoch,
                         enqueuedSequence: this.workerDispatchSequence++,
                     });
+                    if (!this.loaderHidden) {
+                        this._bootPlannedTerrain.add(key);
+                        this.loadingScreen.terrainPlanned(this._bootPlannedTerrain.size);
+                    }
                 }
             } else if (this.tiles.has(key)) {
                 this.unloadTile(key);
@@ -4411,6 +4429,9 @@ class PistonViewer {
             this._updateTexBadge();
 
             this.tileStates.delete(key);
+            if (!this.loaderHidden) {
+                this.loadingScreen.terrainDone(workerData.networkBytes?.bin || 0);
+            }
 
         } catch (e) {
             console.error("Instantiation Error", key, e);
@@ -4543,15 +4564,10 @@ class PistonViewer {
         this.loaderHidden = true;
         this.profiler?.milestone('loaderHidden');
         console.log(`[HEXAGONS] ${APP_VERSION} — ready in ${(elapsed / 1000).toFixed(1)}s (${this.tiles.size} tiles)`);
-        const loader = document.getElementById('loader');
-        if (loader) {
-            loader.classList.add('hide');
-            // Clean up DOM after fade
-            setTimeout(() => { loader.style.display = 'none'; }, 600);
+        this.loadingScreen.hide();
 
-            // Init Search Bar now that we are live
-            this.searchBar = new HexSearch();
-        }
+        // Init Search Bar now that we are live
+        this.searchBar = new HexSearch();
     }
 
     // HUD readouts: cache element refs once and only touch the DOM when the

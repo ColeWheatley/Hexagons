@@ -46,6 +46,15 @@
         <div class="loading-text">
             <h1 class="main-message">Good code loads fast.</h1>
             <h2 class="fetching-message">Fetching high-res bestagons...</h2>
+            <div class="load-progress" hidden>
+                <div class="load-phase" id="load-phase">Reading the map index…</div>
+                <div class="load-bar" id="load-bar" role="progressbar" aria-label="Loading progress"
+                    aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="load-bar-fill" id="load-bar-fill"></div>
+                </div>
+                <div class="load-counters" id="load-counters"></div>
+                <div class="load-quip" id="load-quip" aria-hidden="true"></div>
+            </div>
             <p id="fatal-detail" class="fatal-detail" hidden></p>
             <button id="fatal-retry-btn" class="fatal-retry-btn" type="button" hidden>Retry</button>
         </div>
