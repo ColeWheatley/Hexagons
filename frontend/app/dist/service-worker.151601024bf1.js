@@ -20,6 +20,10 @@ function isHashedShellAsset(url) {
         || /\/assets\/fonts\/[^/]+\.[a-f0-9]{12}\.woff2$/.test(url.pathname);
 }
 
+function isStaticShellAsset(url) {
+    return /\/assets\/(?:skigebiete|search_index)\.json$/.test(url.pathname);
+}
+
 function isVersionedTerrainAsset(url) {
     return url.searchParams.has('v')
         && /\.(?:bin|gsp|ktx2|webp)$/.test(url.pathname);
@@ -88,7 +92,7 @@ self.addEventListener('fetch', event => {
 
     if (isManifest(url)) {
         event.respondWith(networkManifest(request));
-    } else if (isHashedShellAsset(url)) {
+    } else if (isHashedShellAsset(url) || isStaticShellAsset(url)) {
         event.respondWith(cacheFirst(request, SHELL_CACHE));
     } else if (isVersionedTerrainAsset(url)) {
         event.respondWith(cacheFirst(request, RUNTIME_CACHE));

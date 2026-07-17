@@ -13,9 +13,9 @@
     <title>PowFinder | Bestagon Viewer</title>
     <link rel="preload" href="tile_manifest.json?v=v0.10.0-rc5" as="fetch" crossorigin="anonymous">
     <link rel="preload" href="assets/basis_transcoder.5046f5772520.wasm" as="fetch" type="application/wasm" crossorigin="anonymous">
-    <link rel="modulepreload" href="main.47ef5bb200cd.js">
-    <link rel="stylesheet" href="style.a2f9f8b711e1.css">
-    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.177d5496abfa.js', { updateViaCache: 'none' }).catch(error => console.warn('[HEXAGONS] service worker unavailable', error));</script>
+    <link rel="modulepreload" href="main.108c608a4c9f.js">
+    <link rel="stylesheet" href="style.8b21157a9f1a.css">
+    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.151601024bf1.js', { updateViaCache: 'none' }).catch(error => console.warn('[HEXAGONS] service worker unavailable', error));</script>
 </head>
 
 <body>
@@ -205,24 +205,28 @@
         </div>
     </div>
 
-    <div class="legend glass-panel">
+    <aside class="navigation-overlay" aria-label="Map orientation and distance scale">
+        <div class="distance-scale" aria-live="polite"><span id="distance-scale-bar" class="distance-scale-bar"></span><span id="distance-scale-label">—</span></div>
+        <div class="compass" aria-label="North orientation"><span id="compass-needle" class="compass-needle" aria-hidden="true">▲</span><span>N</span></div>
+    </aside>
+    <div class="legend glass-panel" aria-label="Slope legend">
         <div class="legend-item">
-            <div class="swatch" style="background:#555;"></div>
-            &lt; 10° PLAIN
+            <div class="swatch" style="background:#000;"></div>
+            &lt; 30° TEXTURE
         </div>
         <div class="legend-item">
-            <div class="swatch" style="background:#2ecc71;"></div> 10-25° EASY
+            <div class="swatch" style="background:#33cc33;"></div> 30–35° GREEN
         </div>
         <div class="legend-item">
-            <div class="swatch" style="background:#3498db;"></div> 25-30° MODERATE
+            <div class="swatch" style="background:#e6e633;"></div> 35–40° YELLOW
         </div>
         <div class="legend-item">
-            <div class="swatch" style="background:#e74c3c;"></div> > 30° DANGER
+            <div class="swatch" style="background:#ff9900;"></div> 40–45° ORANGE · 45°+ RED/VIOLET
         </div>
     </div>
     <div id="canvas-container"></div>
 
-    <script type="module" src="main.47ef5bb200cd.js"></script>
+    <script type="module" src="main.108c608a4c9f.js"></script>
 </body>
 
 </html>
