@@ -46,17 +46,27 @@ async def main(url, output):
             # Observe the actual first input, rather than merely timing a helper.
             search = json.loads(await cdp.js("""(async()=>{const q=document.querySelector('#hex-search-input');q.focus();await new Promise(r=>setTimeout(r,500));const tasks=[];const o=new PerformanceObserver(l=>tasks.push(...l.getEntries().map(e=>e.duration)));o.observe({type:'longtask'});q.value='zuckerhutl';q.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,350));o.disconnect();return JSON.stringify({results:document.querySelectorAll('[role=option]').length,maxLongTaskMs:Math.max(0,...tasks),status:document.querySelector('#hex-search-status').textContent});})()"""))
             controls = json.loads(await cdp.js("""(()=>{const v=window.pistonViewer,b=document.querySelector('#gradient-terrain');const before=v.gradientMode;b.click();return new Promise(r=>requestAnimationFrame(()=>r(JSON.stringify({before,after:v.gradientMode,renderScheduled:!!v.needsRender}))));})()"""))
+            navigation = json.loads(await cdp.js("""(()=>{const v=window.pistonViewer,q=document.querySelector('#hex-search-input');
+                const before={x:v.camera.position.x,z:v.camera.position.z,url:location.href};
+                window.dispatchEvent(new KeyboardEvent('keydown',{key:'w',bubbles:true,cancelable:true}));
+                const afterKey={x:v.camera.position.x,z:v.camera.position.z,url:location.href};
+                q.focus();q.dispatchEvent(new KeyboardEvent('keydown',{key:'w',bubbles:true,cancelable:true}));
+                const afterInput={x:v.camera.position.x,z:v.camera.position.z};
+                return JSON.stringify({before,afterKey,afterInput,
+                    moved:afterKey.x!==before.x||afterKey.z!==before.z,
+                    urlUpdated:afterKey.url!==before.url,
+                    inputIsolated:afterInput.x===afterKey.x&&afterInput.z===afterKey.z});})()"""))
             persistence = json.loads(await cdp.js("""(()=>{const v=window.pistonViewer;v.camera.position.x+=17;v.viewState.commitViewChange();return JSON.stringify({stored:!!localStorage.getItem('hexagons.public-view.v1'),url:location.href});})()"""))
             await cdp.call('Page.reload', {'ignoreCache': True})
             for _ in range(240):
                 state = await cdp.js("JSON.stringify({ready:!!window.pistonViewer?.loaderHidden,stored:!!localStorage.getItem('hexagons.public-view.v1'),url:location.href})")
                 if state and json.loads(state)['ready']: break
                 await asyncio.sleep(.25)
-            report = {'reducedMotion':reduced, 'search':search, 'controls':controls, 'persistence':persistence, 'reload':json.loads(state)}
+            report = {'reducedMotion':reduced, 'search':search, 'controls':controls, 'navigation':navigation, 'persistence':persistence, 'reload':json.loads(state)}
             axe = Path('frontend/app/node_modules/axe-core/axe.min.js').read_text()
             await cdp.js(axe, False)
             report['axe'] = json.loads(await cdp.js("axe.run(document).then(r=>JSON.stringify({seriousCritical:r.violations.filter(v=>['serious','critical'].includes(v.impact)).map(v=>v.id),violations:r.violations.length}))"))
-            if search['results'] < 1 or search['maxLongTaskMs'] > 50 or controls['after'] != 0 or not persistence['stored'] or not report['reload']['stored'] or not reduced['matches'] or report['axe']['seriousCritical']:
+            if search['results'] < 1 or search['maxLongTaskMs'] > 50 or controls['after'] != 0 or not navigation['moved'] or not navigation['urlUpdated'] or not navigation['inputIsolated'] or not persistence['stored'] or not report['reload']['stored'] or not reduced['matches'] or report['axe']['seriousCritical']:
                 raise RuntimeError('UX acceptance failure: '+json.dumps(report))
             Path(output).write_text(json.dumps(report, indent=2)); print(json.dumps(report, indent=2))
     finally:
