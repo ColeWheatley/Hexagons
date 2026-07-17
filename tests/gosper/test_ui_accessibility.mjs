@@ -13,6 +13,18 @@ async function loadModule(filename, { stubCoordinateUtility = false } = {}) {
     const source = await fs.readFile(filename, 'utf8');
     const module = new vm.SourceTextModule(source, { context, identifier: filename });
     await module.link(async (specifier) => {
+        if (specifier === './search_index.js') {
+            const dependency = path.join(path.dirname(filename), specifier);
+            const dependencySource = await fs.readFile(dependency, 'utf8');
+            const dependencyModule = new vm.SourceTextModule(dependencySource, {
+                context,
+                identifier: dependency,
+            });
+            await dependencyModule.link(() => {
+                throw new Error('search_index.js unexpectedly imported another module');
+            });
+            return dependencyModule;
+        }
         if (stubCoordinateUtility && specifier.startsWith('./coordinate_utility.js')) {
             const stub = new vm.SyntheticModule(
                 ['initProjection', 'latLonToWorld', 'worldToGosperTile'],
