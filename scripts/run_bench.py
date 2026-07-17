@@ -130,8 +130,12 @@ VIEWPORT_AUDIT = """(() => {
   // Keep this a real hit-test audit: controls that are merely drawn but sit
   // behind a canvas/overlay are just as unusable as controls off-screen.
   const selectors = ['#main-panel', '#hex-search-container'];
-  const visible = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none'
-    && getComputedStyle(el).visibility !== 'hidden';
+  const visible = el => {
+    if (!el || el.hidden) return false;
+    const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && el.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
+  };
   const rects = selectors.map(selector => {
     const el = document.querySelector(selector);
     if (!visible(el)) return null;
