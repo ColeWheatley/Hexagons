@@ -204,7 +204,7 @@ class GSP3BoundsTests(unittest.TestCase):
             output = temp / "manifest.json"
             metadata = temp / "metadata.json"
             metadata.write_text(
-                '{"baker_version":"6.0.1",'
+                '{"release_profile":"beta-stubai","baker_version":"6.0.1",'
                 '"texture_page_version":"4.0.2+codec-balanced",'
                 '"texture_encoding_profile":"balanced",'
                 '"texture_encoding_effort":4,"texture_page_tattoos":false}'
@@ -268,6 +268,7 @@ class GSP3BoundsTests(unittest.TestCase):
                 "conservative_render_coverage",
             )
             self.assertEqual(manifest["binary"]["supported_versions"], [1, 2, 3])
+            self.assertEqual(manifest["release"]["profile"], "beta-stubai")
             self.assertEqual(
                 manifest["binary"]["aggregate_record_bytes"],
                 {"1": 8, "2": 12, "3": 16},
