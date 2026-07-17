@@ -58,6 +58,7 @@ from pyproj import Transformer
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 import generate_manifest
+from release_profiles import RELEASE_PROFILES
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_ENCODING_PROFILES,
@@ -2058,10 +2059,33 @@ def _bounds_union(bounds_iter):
     max_y = max(b[3] for b in bounds)
     return (min_x, min_y, max_x, max_y)
 
+
+def parse_coverage_bounds(value):
+    """Parse an explicitly approved production rectangle, never a TIF extent."""
+    try:
+        bounds = tuple(float(part.strip()) for part in value.split(","))
+    except (AttributeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "coverage bounds must be min_x,min_y,max_x,max_y"
+        ) from exc
+    if len(bounds) != 4 or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+        raise argparse.ArgumentTypeError(
+            "coverage bounds must have min_x < max_x and min_y < max_y"
+        )
+    return bounds
+
 def main():
     global S3_ENABLED, BASISU_BINARY
     parser = argparse.ArgumentParser(description="🧇 Waffle Iron v6.0 — Gosper Island Incremental Bake")
-    parser.add_argument("--full", action="store_true", help="Run full global bake (defaults to Mini-Bake)")
+    parser.add_argument("--full", action="store_true", help="Removed: full Tirol has no approved release profile")
+    parser.add_argument(
+        "--release-profile", choices=tuple(RELEASE_PROFILES), default="beta-stubai",
+        help="Explicit manifest/release profile (default: beta-stubai)",
+    )
+    parser.add_argument(
+        "--coverage-bounds", type=parse_coverage_bounds,
+        help="Approved production bounds: min_x,min_y,max_x,max_y (required for production)",
+    )
     parser.add_argument("--center", type=str, help="Center island lattice coords as 'yq,yr' (e.g. 0,0)")
     parser.add_argument("--grid", type=int, default=DEFAULT_GRID_SIZE,
                         help=f"Region side in sector units, N*819.2 meters (1-16, default {DEFAULT_GRID_SIZE})")
@@ -2094,13 +2118,23 @@ def main():
         ),
     )
     args = parser.parse_args()
+    if args.full:
+        parser.error(
+            "--full is no longer a release mode; select production-selected-tirol "
+            "with explicitly approved --coverage-bounds"
+        )
+    if args.release_profile == "production-selected-tirol" and not args.coverage_bounds:
+        parser.error("production-selected-tirol requires approved --coverage-bounds")
+    if args.release_profile == "beta-stubai" and args.coverage_bounds:
+        parser.error("beta-stubai has fixed Stubai coverage; do not pass --coverage-bounds")
 
     # Validate grid size
     grid_size = max(1, min(16, args.grid))
     encoding_profile_name = args.texture_profile
     encoding_profile = texture_encoding_profile(encoding_profile_name)
     encoding_effort = 1 if args.fast_texture_encode else None
-    texture_tattoos = texture_tattoos_enabled(args.full, args.no_texture_tattoos)
+    is_production = args.release_profile == "production-selected-tirol"
+    texture_tattoos = texture_tattoos_enabled(is_production, args.no_texture_tattoos)
     effective_texture_page_version = texture_page_cache_version(
         texture_tattoos, encoding_profile_name, encoding_effort
     )
@@ -2162,12 +2196,12 @@ def main():
             return
 
     if args.texture_pages_only:
-        mode = "production" if args.full else "mini-bake diagnostics"
+        mode = args.release_profile
         print(f"🗺️  RUNNING GLOBAL TEXTURE PAGES ONLY ({mode})")
-        S3_ENABLED = bool(args.full)
-    elif args.full:
-        print("🚀 RUNNING FULL GLOBAL BAKE (S3 Enabled)")
-        print("⚠️  This will process ~3,486 TIFs and may take several hours.")
+        S3_ENABLED = is_production
+    elif is_production:
+        print("🚀 RUNNING SELECTED-TIROL PRODUCTION BAKE (S3 Enabled)")
+        print(f"📐 Approved bounds: {args.coverage_bounds}")
         print("🎨 Texture tattoos: OFF (production bake)")
         S3_ENABLED = True
     else:
@@ -2195,6 +2229,7 @@ def main():
             encoding_profile_name, "high", effort_override=encoding_effort
         )["effort"]
         metadata.update({
+            "release_profile": args.release_profile,
             "texture_page_version": effective_texture_page_version,
             "texture_encoding_profile": encoding_profile_name,
             "texture_encoding_effort": effective_effort,
@@ -2224,18 +2259,11 @@ def main():
 
     aerial_index = []
 
-    # Calculate Bounds
-    if args.full:
-        print("Scanning ALL TIFs (cached bounds)...")
+    # Calculate Bounds from the selected profile, never all available imagery.
+    if is_production:
+        print("Indexing aerial coverage for approved production bounds...")
         aerial_index = load_tif_bounds(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
-
-        all_min_x, all_min_y = 1e12, 1e12
-        all_max_x, all_max_y = -1e12, -1e12
-        for t in aerial_index:
-            b = t["poly"].bounds
-            all_min_x, all_min_y = min(all_min_x, b[0]), min(all_min_y, b[1])
-            all_max_x, all_max_y = max(all_max_x, b[2]), max(all_max_y, b[3])
-        region_bounds = (all_min_x, all_min_y, all_max_x, all_max_y)
+        region_bounds = args.coverage_bounds
     else:
         # Mini-Bake Range
         if args.center:
@@ -2258,7 +2286,7 @@ def main():
     islands = enumerate_gosper_islands_for_bbox(region_bounds)
     print(f"Island candidates intersecting region: {len(islands)}")
 
-    if not args.full:
+    if not is_production:
         # Geometry candidates still need a cheap imagery-existence check. The
         # page baker performs its own exact global-page source selection later;
         # this index never defines texture ownership or output bounds.
@@ -2273,7 +2301,7 @@ def main():
         gradient_bounds = _bounds_union(info["bounds"] for info in islands) or region_bounds
         grad_ds = generate_regional_gradient(dem, gradient_bounds, upsample_factor=upsample)
 
-    # For full bake, use the pre-computed full gradient cache
+    # Production uses the pre-computed gradient cache for its approved bounds.
     if grad_ds is None:
         grad_ds = get_or_create_gradient_map(DEM_PATH, GRADIENT_PATH, upsample_factor=upsample)
 
@@ -2347,7 +2375,8 @@ def main():
     # Update metadata
     generate_manifest.write_json_atomic(
         METADATA_PATH,
-        {"baker_version": BAKER_VERSION,
+        {"release_profile": args.release_profile,
+                   "baker_version": BAKER_VERSION,
                    "texture_page_version": effective_texture_page_version,
                    "texture_encoding_profile": encoding_profile_name,
                    "texture_encoding_effort": texture_encoding_for_tier(

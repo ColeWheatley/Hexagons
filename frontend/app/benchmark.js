@@ -346,10 +346,13 @@ function runScenario(viewer, name, scenario, appVersion) {
  * Entry point — call once after the viewer is constructed:
  *   initBenchmark(window.pistonViewer, APP_VERSION)
  * No-ops unless the page URL has ?bench=<coldload|orbit|traverse|stress>.
+ * ?bench=1 is a profiling-only opt-in: it enables a full profiler without
+ * starting a scripted camera scenario.
  */
 export function initBenchmark(viewer, appVersion) {
     const scenarioName = new URLSearchParams(window.location.search).get('bench');
     if (!scenarioName) return;
+    if (scenarioName === '1') return;
 
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) {

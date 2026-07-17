@@ -79,10 +79,10 @@ try {
     assert.equal(defaultProfiler._exactActiveFrames, null);
     assert.equal(defaultProfiler._runningFrameStats.count, frameCount);
     assert.equal(defaultProfiler._runningFrameStats.buckets.length, 201);
-    assert.ok(defaultProfiler.samples.length <= 660);
+    assert.ok(defaultProfiler.samples.length <= 180);
     assert.equal(defaultProfiler.samples[0].t, 0);
     assert.equal(defaultProfiler.samples[59].t, 59);
-    assert.equal(defaultProfiler.samples[60].t, 400);
+    assert.equal(defaultProfiler.samples[60].t, 880);
     assert.equal(defaultProfiler.samples.at(-1).t, 999);
     assert.equal(persistedDefault.samples.length, defaultProfiler.samples.length);
     assert.equal(persistedDefault.samples.at(-1).t, 999);

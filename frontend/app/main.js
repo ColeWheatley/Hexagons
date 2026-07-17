@@ -5,6 +5,7 @@ import { HexSearch } from './search.js';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
 import { PerfProfiler } from './perf_profiler.js';
+import { createProfilerForReleaseMode, resolveReleaseMode } from './release_mode.js';
 import { initBenchmark } from './benchmark.js';
 import { ShareableViewState } from './view_state.js';
 import {
@@ -421,7 +422,6 @@ class PistonViewer {
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
         this.cacheManager = new CacheManager();
-        this.profiler = new PerfProfiler(this);
 
         this.initTouchMomentumTracking();
         this.initWorld();
@@ -1496,16 +1496,19 @@ class PistonViewer {
     async initWorld() {
         try {
             this.manifest = await this._loadManifestWithRetry();
+            this.releaseMode = resolveReleaseMode(this.manifest.release, window.location.search);
+            this.profiler = createProfilerForReleaseMode(this, this.releaseMode, PerfProfiler);
+            this.profiler?.setMeta({
+                releaseProfile: this.releaseMode.profile,
+                releaseMode: this.releaseMode.mode,
+            });
             const textureContract = this.manifest.texture_pages;
             this.profiler?.milestone('manifestLoaded');
             this.textureContract = textureContract;
             this.binaryContract = this.manifest.binary || {};
             const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
-            const mapSpan = Math.max(
-                this.manifest.bounds.max_x - this.manifest.bounds.min_x,
-                this.manifest.bounds.max_y - this.manifest.bounds.min_y,
-            );
-            this.isMiniBake = mapSpan <= 30000;
+            // This is release configuration, not a geographic heuristic.
+            this.isMiniBake = this.releaseMode.profile === 'beta-stubai';
             const hazeControl = document.getElementById('haze-distance-control');
             if (hazeControl) hazeControl.hidden = this.isMiniBake;
             this.updateFogAndClip();
