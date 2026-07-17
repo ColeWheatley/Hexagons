@@ -54,6 +54,7 @@ import struct
 import subprocess
 import tempfile
 from pyproj import Transformer
+from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
