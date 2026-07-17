@@ -21,6 +21,10 @@ def main() -> int:
             problems.append(f"out of viewport: {audit['outOfViewport']}")
         if audit.get("overlaps"):
             problems.append(f"overlaps: {audit['overlaps']}")
+        if audit.get("controlOutOfViewport"):
+            problems.append(f"controls out of viewport: {audit['controlOutOfViewport']}")
+        if audit.get("missedHitTargets"):
+            problems.append(f"controls fail center hit-test: {audit['missedHitTargets']}")
         if problems:
             print(f"FAIL {path}: {'; '.join(problems)}", file=sys.stderr)
             failed = True

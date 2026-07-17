@@ -120,6 +120,8 @@ BENCHMARK_TIMING = """(() => {
   });
 })()"""
 VIEWPORT_AUDIT = """(() => {
+  // Keep this a real hit-test audit: controls that are merely drawn but sit
+  // behind a canvas/overlay are just as unusable as controls off-screen.
   const selectors = ['#main-panel', '#hex-search-container'];
   const visible = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none'
     && getComputedStyle(el).visibility !== 'hidden';
@@ -137,9 +139,17 @@ VIEWPORT_AUDIT = """(() => {
     if (Math.min(a.right,b.right) - Math.max(a.left,b.left) > 1
       && Math.min(a.bottom,b.bottom) - Math.max(a.top,b.top) > 1) overlaps.push([a.selector,b.selector]);
   }
+  const controls = Array.from(document.querySelectorAll('button,input,select,textarea')).filter(visible).map(el => {
+    const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return {id:el.id || null, tag:el.tagName, left:r.left, top:r.top, right:r.right, bottom:r.bottom,
+      width:r.width, height:r.height, hit:hit === el || el.contains(hit)};
+  });
+  const missedHitTargets = controls.filter(control => !control.hit).map(control => control.id || control.tag);
+  const controlOutOfViewport = controls.filter(control => control.left < -1 || control.top < -1 || control.right > innerWidth + 1 || control.bottom > innerHeight + 1).map(control => control.id || control.tag);
   return JSON.stringify({width:innerWidth, height:innerHeight,
     horizontalOverflow:document.documentElement.scrollWidth > innerWidth + 1,
-    outOfViewport, overlaps, rects});
+    outOfViewport, overlaps, rects, controls, missedHitTargets, controlOutOfViewport});
 })()"""
 
 

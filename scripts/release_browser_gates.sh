@@ -50,3 +50,6 @@ for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150
 done
 python3 scripts/validate_viewport_audits.py "$OUT"/viewport-*.json
+# AA-12/13/15/16: real search long-task, truthful control, persistence,
+# keyboard shell/reduced-motion and axe serious/critical acceptance.
+python3 scripts/run_ux_browser_gate.py "${BASE_URL}/" "$OUT/ux-browser.json"
