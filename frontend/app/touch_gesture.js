@@ -62,7 +62,6 @@ export function applyTwoFingerGesture(
     // 2. Rotate (yaw) around the pivot
     if (angleDelta !== 0 && isFinite(angleDelta) && Math.abs(angleDelta) > 0.001) {
         const up = controls.up || scratch.defaultUp;
-        // Reversed direction (swapped CW/CCW)
         scratch.quaternion.setFromAxisAngle(up, angleDelta);
         camera.position.sub(scratch.pivot).applyQuaternion(scratch.quaternion).add(scratch.pivot);
         target.sub(scratch.pivot).applyQuaternion(scratch.quaternion).add(scratch.pivot);

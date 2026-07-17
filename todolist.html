@@ -81,7 +81,9 @@
 <main>
 
 <h1>Hexagons — Consolidated Upgrade Todolist</h1>
-<p class="sub">The single consolidated Fable + Codex frontend upgrade board, 2026-07-17. The two source audits were removed after consolidation. Checkboxes persist in your browser (localStorage). Each item says what it is in plain language, why it matters, when it's done, and what kind of solver to send it to.</p>
+<p class="sub">The single consolidated Fable + Codex frontend upgrade board, begun 2026-07-17. The two source audits were removed after consolidation. This is a <b>living document</b>, not a frozen audit: every agent working on the project must update task state, measured evidence, product decisions, deferrals, and newly discovered blockers here as the underlying work changes. Source-controlled checkbox state is authoritative; browser localStorage may preserve temporary personal checks. Each item says what it is in plain language, why it matters, when it's done, and what kind of solver to send it to.</p>
+
+<div class="callout"><b>Maintenance rule:</b> write material progress back into this file in the same change set. Check an item only when its stated gate is evidenced or Cole explicitly resolves its human decision; label partial implementations and deferred choices honestly instead of letting the board drift.</div>
 
 <div class="legend-grid">
   <div><b><span class="badge p">P · Prerequisite</span></b>Unblockers. The measurable items below can't be verified until these are done.</div>
@@ -244,8 +246,8 @@
 
 <div class="item" data-id="aa14">
   <div class="title-line"><input type="checkbox" id="aa14"><label for="aa14">AA-14 — Keyboard and macOS trackpad controls</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-std">Keyboard + macOS pinch/twist integrated</span><span>Human Mac feel check remains; iOS excluded</span></div>
-  <p>Add keyboard pan (WASD/arrows), zoom (+/−), and home/reset, with input arbitration so keys are ignored while typing. On Mac desktop browsers, add canvas-scoped trackpad pinch with normalized wheel input. Add twist-to-yaw only when WebKit's non-standard <code>GestureEvent</code> is available (Safari); feature-detect it and preserve pinch/keyboard fallbacks in Chrome and Firefox, where general trackpad twist is not exposed as a portable web API. This does not change iOS gestures. The exact yaw direction/pivot still gets the short H-1 feel check.</p>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-std">Keyboard + macOS pinch/twist integrated</span><span>Rotation model approved; objective notebook-browser gate remains; iOS excluded</span></div>
+  <p>Add keyboard pan (WASD/arrows), zoom (+/−), and home/reset, with input arbitration so keys are ignored while typing. On notebook computers, use canvas-scoped trackpad pinch with normalized wheel input wherever the browser exposes it. Add twist-to-yaw when a desktop browser exposes rotation data: currently WebKit's non-standard <code>GestureEvent</code> in Safari. Feature-detect it and preserve pinch/keyboard fallbacks in Chrome and Firefox, where general trackpad twist is not exposed as a portable web API. This does not change iOS gestures. Cole approved the current yaw direction and pivot as correct and intuitive.</p>
   <div class="done-when"><b>Done when:</b> scripted keys produce deterministic motion; text inputs keep their keys; the shareable URL updates; Safari on macOS passes pinch + twist; Chrome and Firefox on macOS pass pinch with a clean no-twist fallback; iOS behavior is unchanged.</div>
 </div>
 
@@ -376,30 +378,30 @@
 
 <div class="item" data-id="av9">
   <div class="title-line"><input type="checkbox" id="av9"><label for="av9">AV-9 — Legend repair + mobile ergonomics sweep</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">🟢 Cheap build + palette/wording sign-off (pairs with H-2)</span></div>
-  <p>The slope legend has broken markup (an unclosed div), sits behind the canvas on mobile, and its color bins should provably match what the terrain shader actually draws. Same sweep: enforce ≥44 px touch targets everywhere (some are 16–28 px), respect phone notch safe-areas, keep 200% browser zoom operable, and honor reduced-motion. All verifiable; final palette/wording belongs with the slope-semantics decision (H-2).</p>
-  <div class="done-when"><b>Done when:</b> legend visible above canvas at every viewport; sampled shader output maps to displayed bins; target-size and zoom checks pass.</div>
+  <div class="meta"><span>Frontend</span><span class="gain-m">Gain: medium</span><span class="solver-cheap">🟢 Product direction resolved; mechanical build + visual check</span></div>
+  <p>Keep the current slope colors and thresholds. Repair the broken/obscured legend and make it a <b>subtle, dynamic</b> terrain-angle readout, paired with a subtle dynamic distance scale and compass rose. The compass must follow camera yaw and the scale must reflect the current camera/view scale rather than displaying decorative constants. Same sweep: enforce ≥44 px touch targets everywhere, respect phone notch safe-areas, keep 200% browser zoom operable, and honor reduced-motion.</p>
+  <div class="done-when"><b>Done when:</b> legend, dynamic scale, and dynamic compass remain visible but unobtrusive at every viewport; sampled shader output maps to displayed slope bins; compass/scale fixtures track view changes; target-size and zoom checks pass.</div>
 </div>
 
 <!-- ==================== H ==================== -->
 <h2><span class="badge h">H</span> Human first — decide before delegating</h2>
 
-<div class="item" data-id="h1">
-  <div class="title-line"><input type="checkbox" id="h1"><label for="h1">H-1 — Choose the rotation model</label></div>
-  <div class="meta"><span>Interaction design</span><span class="gain-vh">Gain: very high (known pain)</span><span class="solver-frontier">Decision: Cole. Then prototype pair via 🟣 frontier + 👁 visual</span></div>
-  <p>Already flagged in KNOWN_BUGS as "non-intuitive, pending UX discussion" — and the current two-finger rotation is custom code with a comment admitting the direction was reversed. Decide: does rotation orbit the point you're looking at, or spin the world? Is north-up sticky with a snap-back? What do trackpad twist vs. touch twist vs. keyboard do? Cheapest path to a good decision: have an agent build two instrumented variants and A/B them on-device.</p>
+<div class="item checked" data-id="h1">
+  <div class="title-line"><input type="checkbox" id="h1" checked><label for="h1">H-1 — Choose the rotation model</label></div>
+  <div class="meta"><span>Interaction design</span><span class="gain-vh">Gain: very high</span><span class="solver-frontier">✓ Current direction and pivot approved by Cole</span></div>
+  <p>Decision: the current rotation implementation is intuitive and correct. Preserve its direction and pivot. Extend the same behavior to notebook touchpads wherever browser APIs expose rotation; feature-detect and degrade cleanly where they do not.</p>
 </div>
 
-<div class="item" data-id="h2">
-  <div class="title-line"><input type="checkbox" id="h2"><label for="h2">H-2 — Decide what the slope colors actually claim</label></div>
-  <div class="meta"><span>Product / safety</span><span class="gain-h">Gain: high (this is safety language)</span><span class="solver-frontier">Decision: Cole (domain). Execution then 🟢 cheap</span></div>
-  <p>The legend currently says "DANGER" for steep slopes. For a ski-terrain product that word is a claim — is this a neutral terrain-angle readout, difficulty guidance, or avalanche-adjacent hazard communication? Those carry very different obligations (thresholds, disclaimers, data-resolution caveats). Decide the semantics, thresholds, palette, and wording; after that, the shader/legend alignment work in AV-9 is mechanical.</p>
+<div class="item checked" data-id="h2">
+  <div class="title-line"><input type="checkbox" id="h2" checked><label for="h2">H-2 — Decide what the slope colors actually claim</label></div>
+  <div class="meta"><span>Product / safety</span><span class="gain-h">Gain: high</span><span class="solver-frontier">✓ Keep current palette and thresholds; subtle dynamic legend approved</span></div>
+  <p>Decision: keep the current slope colors and thresholds. Present them through a subtle dynamic terrain-angle legend rather than redesigning the palette. AV-9 owns the mechanical shader/legend alignment plus the dynamic scale and compass.</p>
 </div>
 
-<div class="item" data-id="h3">
-  <div class="title-line"><input type="checkbox" id="h3"><label for="h3">H-3 — Is offline-in-the-mountains a product feature?</label></div>
-  <div class="meta"><span>Product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">Decision: Cole. Then an 🟣 A*-grade project</span></div>
-  <p>Distinct from AA-7's plain browser caching: a real "download this region for the hut trip" feature means region selection UI, storage budgets and eviction, update/consent flows, and stale-data behavior. Plausibly the killer feature for actual mountain use — and a real commitment. Decide scope before anyone builds PWA machinery.</p>
+<div class="item checked" data-id="h3">
+  <div class="title-line"><input type="checkbox" id="h3" checked><label for="h3">H-3 — Is offline-in-the-mountains a product feature?</label></div>
+  <div class="meta"><span>Product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">✓ Explicitly deferred; do not build offline/app packaging now</span></div>
+  <p>Decision: offline region downloads, installable-app packaging, storage consent, eviction, and stale-data product work are explicitly deferred. AA-7's ordinary browser caching remains in scope; do not expand it into an offline product without a new decision.</p>
 </div>
 
 <div class="item" data-id="h4">
@@ -408,10 +410,10 @@
   <p>How much "Bestagons" personality and engineering showmanship belongs in a first-time visitor's experience versus an optional deep-dive? This gates AV-2 (what stays on the public surface), AV-4 (does the skier + 900 ms "hero moment" stay?), AV-5 (toolbar contents), and the landing page's framing. One decision, four unblocked items.</p>
 </div>
 
-<div class="item" data-id="h5">
-  <div class="title-line"><input type="checkbox" id="h5"><label for="h5">H-5 — Decide the map's geographic context: labels, peaks, resorts</label></div>
-  <div class="meta"><span>Cartography / product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">Decision: Cole. Then 🟣 frontier (label placement is genuinely hard)</span></div>
-  <p>The terrain is gorgeous but anonymous — no persistent peak names, resort markers, valley labels, or boundaries; all the data sits unused in the search files. Which labels appear at which zoom, and how dense, is a cartographic taste decision that shapes the product's identity. After the decision, implementation (collision-avoiding label placement in 3D) is legitimately hard — frontier work, not cheap work.</p>
+<div class="item checked" data-id="h5">
+  <div class="title-line"><input type="checkbox" id="h5" checked><label for="h5">H-5 — Decide the map's geographic context: labels, peaks, resorts</label></div>
+  <div class="meta"><span>Cartography / product</span><span class="gain-vh">Gain: potentially very high</span><span class="solver-frontier">✓ Labels and geographic-context overlays deferred</span></div>
+  <p>Decision: persistent labels, peak/resort markers, boundaries, and collision-avoiding 3D label placement are deferred. Search remains in scope; do not start a label system until this decision is reopened.</p>
 </div>
 
 <div class="item" data-id="h6">
@@ -420,16 +422,16 @@
   <p>Decide how the app communicates what it's showing: aerial capture year (the photos are dated), terrain-model resolution, where coverage ends and why some search results are unavailable, and any freshness warnings. Mostly manifest schema + small UI; the policy is the work.</p>
 </div>
 
-<div class="item" data-id="h7">
-  <div class="title-line"><input type="checkbox" id="h7"><label for="h7">H-7 — Verify the settled-blur fix on a real device</label></div>
-  <div class="meta"><span>QA</span><span class="gain-l">Gain: closes a known bug</span><span class="solver-visual">Cole's eyes (or 👁 visual agent screenshot sweep as pre-check)</span></div>
-  <p>KNOWN_BUGS: after panning stops, textures sometimes stayed blurry. The suspected cause (settled-mode materials missing upgrade registration) is already patched — it just needs visual confirmation on-device. AV-7's instrumentation makes this systematic; until then it's a two-minute look.</p>
+<div class="item checked" data-id="h7">
+  <div class="title-line"><input type="checkbox" id="h7" checked><label for="h7">H-7 — Verify the settled-blur fix on a real device</label></div>
+  <div class="meta"><span>QA</span><span class="gain-l">Gain: closes a known bug</span><span class="solver-visual">✓ Accepted by Cole</span></div>
+  <p>Verified by Cole: the settled-blur behavior is acceptable after the material upgrade-registration fix.</p>
 </div>
 
-<div class="item" data-id="h8">
-  <div class="title-line"><input type="checkbox" id="h8"><label for="h8">H-8 — Pick the production texture-quality point</label></div>
-  <div class="meta"><span>Product</span><span class="gain-m">Gain: medium</span><span class="solver-visual">Decision: Cole via blind comparison (👁 agent prepares it)</span></div>
-  <p>The codec sweep already measured the trade: 8×6-block encoding = best memory residency (SSIM 0.947), 6×6 = the balanced knee (0.959), 4×4 = maximum fidelity at ~3× the memory. Numbers are settled; which point <em>ships</em> is a judgment best made blind on real terrain, on a phone and a retina desktop. Note the current data was baked 6×6 while the code's default is now 8×6 — today that choice is being made by accident.</p>
+<div class="item checked" data-id="h8">
+  <div class="title-line"><input type="checkbox" id="h8" checked><label for="h8">H-8 — Pick the production texture-quality point</label></div>
+  <div class="meta"><span>Product</span><span class="gain-m">Gain: medium</span><span class="solver-visual">✓ Tentative default: 8×6 residency profile</span></div>
+  <p>Decision: tentatively ship the 8×6 residency-oriented profile (measured SSIM 0.947) because its modest quality loss buys materially lower texture memory and broader device support. Keep this reversible if beta evidence contradicts the trade; do not silently switch to the 6×6 or 4×4 profiles.</p>
 </div>
 
 <!-- ==================== waves ==================== -->
@@ -439,10 +441,10 @@
 <p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–6 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, direct texture ladder/residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, material churn, adaptive capability budgets, and the first A*-2 lifecycle milestone. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
 <p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The WebP three-run median is <b>237 ms (57% faster)</b>; the final integrated cold trace is 208 ms profiler-relative, with first high installed at 541 ms and zero serialization warnings. Warm good-LTE TTFTF improves 87.1%. The 60-second orbit is 119.9 FPS with 9.5 ms p95. Fault recovery repaints in 161 ms; Save-Data/3g transfer 98.5% fewer texture bytes than high. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
 <p><b>Still objectively open:</b> AA-22's yellow/half-thickness tattoos are approved for beta; it now needs the rebake/deploy and an apples-to-apples old-vs-new high-arrival comparison. AA-1/3/10/12/13/15/16/20 and A*-3 have integrated implementations but retain the live, soak, human-visual, or before/after gates written on their cards. A*-2 has only milestone 1. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source.</p>
-<p><b>Meanwhile, Cole:</b> the five decisions that unblock the AV queue — H-1 (rotation), H-2 (slope wording), H-4 (voice/hierarchy), H-8 (texture point), and a yes/no on H-3 (offline). Each is a coffee-length decision, and together they unblock the eight remaining AV items.</p>
+<p><b>Resolved by Cole:</b> current rotation is approved and should reach notebook touchpads where APIs permit; slope palette/thresholds stay with a subtle dynamic legend/scale/compass; offline/app packaging and persistent labels are deferred; settled blur is accepted; and 8×6 residency is the tentative production texture profile. H-4 (public voice/hierarchy) and H-6 (data-provenance policy) remain human decisions.</p>
 </div>
 
-<p class="foot">This file is the surviving consolidated Fable + Codex board; the two source audit files were intentionally removed after their recommendations were merged. Product decisions recorded 2026-07-17: bounded profiling only in Stubai beta (production off unless benching), retina/screenshot optimization approved, AA-13 requires frontier review, macOS trackpad controls exclude iOS, AA-18 is low-priority/Cole-owned, AA-19 is complete, production coverage is selected Tirol rather than all Tirol, and A*-1 is conditional on a real sub-2 m terrain + higher-resolution imagery path. Checked defaults reflect verified gates; your browser can persist additional local checkbox choices.</p>
+<p class="foot">This living document is the surviving consolidated Fable + Codex board; the two source audit files were intentionally removed after their recommendations were merged. Agents must write material implementation progress, evidence, decisions, deferrals, and blockers back into this file. Product decisions recorded 2026-07-17 include: bounded profiling only in Stubai beta (production off unless benching); retina/screenshot optimization approved; AA-13 requires frontier review; current rotation approved with notebook touchpad support where APIs permit and iOS excluded; current slope colors retained with subtle dynamic legend/scale/compass; offline/app packaging and labels deferred; settled blur accepted; 8×6 residency tentatively selected; AA-18 low-priority/Cole-owned; AA-19 complete; production coverage selected Tirol rather than all Tirol; and A*-1 conditional on a real sub-2 m terrain plus higher-resolution imagery. Source-controlled checked state reflects verified gates or explicit human decisions; browser localStorage may preserve temporary personal choices.</p>
 
 <script>
 (function(){
