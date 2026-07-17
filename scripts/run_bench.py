@@ -288,6 +288,16 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
             await cdp.call("Runtime.enable")
             await cdp.call("Page.enable")
             await cdp.call("Network.enable")
+            # Headless Chrome clamps --window-size below roughly 500 CSS px.
+            # CDP emulation is authoritative, so the 320/390 release audits
+            # actually exercise their named responsive breakpoints.
+            viewport_width, viewport_height = (int(value) for value in viewport.split(",", 1))
+            await cdp.call("Emulation.setDeviceMetricsOverride", {
+                "width": viewport_width,
+                "height": viewport_height,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+            })
 
             cold = await wait_for_report(cdp, timeout, label="cold")
             if not warm_reload:
