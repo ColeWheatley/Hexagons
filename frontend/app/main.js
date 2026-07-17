@@ -116,6 +116,7 @@ import { IdleRenderScheduler } from './idle_render_scheduler.js';
 import { createMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
 import { APP_LIFECYCLE, AppLifecycle } from './app_lifecycle.mjs';
 import './gosper_core.js';
+import { navigationOverlayState } from './navigation_overlay.mjs';
 
 const G = window.GosperCore;
 const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
@@ -413,6 +414,9 @@ class PistonViewer {
         this.debugSectionEl = document.querySelector('[data-section="debug"]');
         this.tileHeightEl = document.getElementById('tile-height');
         this.cameraHeightEl = document.getElementById('camera-height');
+        this.distanceScaleBarEl = document.getElementById('distance-scale-bar');
+        this.distanceScaleLabelEl = document.getElementById('distance-scale-label');
+        this.compassNeedleEl = document.getElementById('compass-needle');
         this.statsUpdateState = { lastUpdate: 0, interval: 500 };
 
         this.wasMovingView = false;
@@ -4528,6 +4532,14 @@ class PistonViewer {
         }
         this._setHudText('camera-height', `${this.camera.position.y.toFixed(0)}m`);
     }
+    updateNavigationOverlay() {
+        if (!this.distanceScaleBarEl || !this.distanceScaleLabelEl || !this.compassNeedleEl) return;
+        const state = navigationOverlayState({ camera: this.camera, target: this.controls.target,
+            viewportWidth: this.renderer.domElement.clientWidth, viewportHeight: this.renderer.domElement.clientHeight });
+        this.distanceScaleBarEl.style.width = `${state.pixels.toFixed(1)}px`;
+        this.distanceScaleLabelEl.textContent = state.label;
+        this.compassNeedleEl.style.transform = `rotate(${state.compassRotation.toFixed(2)}deg)`;
+    }
 
     updateFloorState(h) {
         const currentMin = this.pickFloorValue();
@@ -4891,6 +4903,7 @@ class PistonViewer {
         const cameraYBeforeVisibility = this.camera.position.y;
         this.updateFloorState(h);
         this.maintainCameraAltitudeDuringAnimation(h);
+        this.updateNavigationOverlay();
         writeCameraPose(this.camera, this.controls.target, this.lastObservedCameraPose);
         if (this.floorState.value !== floorBeforeVisibility ||
             this.camera.position.y !== cameraYBeforeVisibility) {

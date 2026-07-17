@@ -316,26 +316,44 @@ input[type="range"]::-moz-range-thumb {
 
 .legend {
     position: absolute;
-    bottom: 20px;
-    right: 20px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    right: max(12px, env(safe-area-inset-right));
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
+    padding: 8px 10px;
+    background: rgba(10, 14, 18, .50);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 7px;
+    pointer-events: none;
+    z-index: 4;
 }
 
 .legend-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 0.75rem;
-    color: #999;
+    gap: 7px;
+    font-size: .68rem;
+    color: rgba(235,240,244,.72);
 }
 
 .swatch {
-    width: 12px;
-    height: 12px;
+    width: 9px;
+    height: 9px;
     border-radius: 2px;
 }
+
+.navigation-overlay { position:absolute; left:max(12px, env(safe-area-inset-left)); bottom:max(12px, env(safe-area-inset-bottom)); display:flex; align-items:end; gap:12px; color:rgba(245,248,250,.78); font:600 11px/1 Outfit,system-ui,sans-serif; letter-spacing:.04em; text-shadow:0 1px 2px #000; pointer-events:none; z-index:4; }
+.distance-scale { display:grid; gap:4px; }.distance-scale-bar { width:80px; height:6px; border:1px solid currentColor; border-top:0; box-sizing:border-box; }.compass { display:grid; justify-items:center; gap:2px; }.compass-needle { display:block; color:#d9e6ed; font-size:18px; line-height:18px; transform-origin:50% 55%; }
+@media (max-width:390px) {
+    .legend { bottom:max(8px, env(safe-area-inset-bottom)); right:max(8px, env(safe-area-inset-right)); gap:2px; padding:6px 7px; }
+    .legend-item { gap:5px; font-size:.58rem; line-height:1.15; white-space:nowrap; }
+    .swatch { width:7px; height:7px; }
+    .navigation-overlay { bottom:max(8px, env(safe-area-inset-bottom)); left:max(8px, env(safe-area-inset-left)); gap:8px; font-size:10px; }
+    .distance-scale-bar { height:5px; }
+    .compass-needle { font-size:16px; line-height:16px; }
+}
+@media (prefers-reduced-motion:reduce) { .compass-needle { transition:none !important; } }
 
 /* Loading Screen */
 #loader {
