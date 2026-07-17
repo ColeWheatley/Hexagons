@@ -7,9 +7,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(here, '../../frontend/app/index.html'), 'utf8');
 
 const start = html.indexOf('<div class="legend glass-panel">');
-const end = html.indexOf('<div id="css-map-layer">', start);
+const end = html.indexOf('<div id="canvas-container">', start);
 assert.notEqual(start, -1, 'legend block must exist');
-assert.notEqual(end, -1, 'css map layer must follow legend block');
+assert.notEqual(end, -1, 'canvas container must follow legend block');
 
 const legend = html.slice(start, end);
 const divTokens = legend.match(/<\/?div\b[^>]*>/g) || [];

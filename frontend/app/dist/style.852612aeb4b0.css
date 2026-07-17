@@ -4,7 +4,7 @@
     font-style: normal;
     font-weight: 300;
     font-display: swap;
-    src: url('assets/fonts/outfit-latin-300-normal.woff2') format('woff2');
+    src: url('assets/fonts/outfit-latin-300-normal.ef88e74f63ce.woff2') format('woff2');
 }
 
 @font-face {
@@ -12,7 +12,7 @@
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('assets/fonts/outfit-latin-400-normal.woff2') format('woff2');
+    src: url('assets/fonts/outfit-latin-400-normal.71f028fd2349.woff2') format('woff2');
 }
 
 @font-face {
@@ -20,7 +20,7 @@
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('assets/fonts/outfit-latin-700-normal.woff2') format('woff2');
+    src: url('assets/fonts/outfit-latin-700-normal.5d5e3734089a.woff2') format('woff2');
 }
 
 * {

@@ -1,27 +1,27 @@
 // @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=pageonly1';
-import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
-import { CacheManager } from './cache_manager.js?v=pageonly1';
-import { PerfProfiler } from './perf_profiler.js?v=bounded1';
-import { initBenchmark } from './benchmark.js?v=pageonly1';
-import { ShareableViewState } from './view_state.js?v=pageonly1';
+import { HexSearch } from './search.js';
+import { VRAMLedger } from './vram_ledger.js';
+import { CacheManager } from './cache_manager.js';
+import { PerfProfiler } from './perf_profiler.js';
+import { initBenchmark } from './benchmark.js';
+import { ShareableViewState } from './view_state.js';
 import {
     VisibilityClass,
     createProjectionContext,
     expandFrustumPlanes,
     extractFrustumPlanes,
     planHierarchicalVisibility,
-} from './visibility_planner.js?v=pageonly1';
+} from './visibility_planner.js';
 import {
     GOSPER_CAP_OVERSCAN,
     GosperVisibilityAdapter,
-} from './gosper_visibility_adapter.js?v=pageonly1';
+} from './gosper_visibility_adapter.js';
 import {
     gosperGeometrySelectionNeedsRebuild,
     planGosperGeometrySelection,
-} from './gosper_geometry_selection.js?v=pageonly1';
+} from './gosper_geometry_selection.js';
 import {
     applyLodPauseTransition,
     CameraMotionLatch,
@@ -31,13 +31,13 @@ import {
     shouldForceCoarseGeometry,
     shouldRefreshMotionFromControlsChange,
     writeCameraPose,
-} from './geometry_transition_state.js?v=pageonly1';
+} from './geometry_transition_state.js';
 import {
     computeCameraClearance,
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
-} from './vertical_bootstrap.js?v=camerafloor1';
-import { TexturePageGrid } from './texture_page_grid.js?v=pageonly1';
+} from './vertical_bootstrap.js';
+import { TexturePageGrid } from './texture_page_grid.js';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
@@ -45,34 +45,37 @@ import {
     pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
-} from './texture_page_residency.js?v=frustumfloor1';
+} from './texture_page_residency.js';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
     collectTextureTierResidency,
     countUnpaintedVisibleTiles,
-} from './texture_hud_telemetry.js?v=pageonly1';
-import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=pageonly1';
+} from './texture_hud_telemetry.js';
+import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js';
 import {
     buildTexturePageShaderSwitch,
     MAX_TEXTURE_PAGE_BINDINGS,
-} from './texture_page_shader.js?v=pageonly1';
+} from './texture_page_shader.js';
 import {
     computeGosperSourceFootprint,
     gosperIslandSourceBounds,
     sourceFootprintFromGeometryContract,
-} from './gosper_page_binding_adapter.js?v=pageonly1';
+} from './gosper_page_binding_adapter.js';
 import {
     ResourceRetryScheduler,
     ResweepScheduler,
-} from './fetch_retry.js?v=resilience1';
+} from './fetch_retry.js';
 import {
     WORKER_JOB_TIMEOUT_MS,
     WorkerWatchdogBookkeeper,
-} from './worker_watchdog.js?v=resilience1';
-import './gosper_core.js?v=pageonly1';
+} from './worker_watchdog.js';
+import './gosper_core.js';
 
 const G = window.GosperCore;
+const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
+    ? __TILE_WORKER_URL__
+    : './tile_worker.js';
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
 const APP_VERSION = 'v0.10.0-rc5';
@@ -393,7 +396,7 @@ class PistonViewer {
         this.nextWorkerIdx = 0;
         this.pendingJobs = new Map(); // ID -> {resolve, reject}
         this.jobIdCounter = 0;
-        this.workerScriptUrl = './tile_worker.js?v=codecprofiles1';
+        this.workerScriptUrl = TILE_WORKER_URL;
         this.workerWatchdog = new WorkerWatchdogBookkeeper();
         this.workerWatchdogTimer = null;
         this.textureSupport = null; // set by initWorkers() from renderer.extensions

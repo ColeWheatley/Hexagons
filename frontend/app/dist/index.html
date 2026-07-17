@@ -11,15 +11,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PowFinder | Bestagon Viewer</title>
-    <link rel="stylesheet" href="style.css">
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "./node_modules/three/build/three.module.js",
-                "three/addons/": "./node_modules/three/examples/jsm/"
-            }
-        }
-    </script>
+    <link rel="preload" href="tile_manifest.json?v=v0.10.0-rc5" as="fetch" crossorigin="anonymous">
+    <link rel="preload" href="assets/basis_transcoder.5046f5772520.wasm" as="fetch" type="application/wasm" crossorigin="anonymous">
+    <link rel="modulepreload" href="main.0c62750566f4.js">
+    <link rel="stylesheet" href="style.852612aeb4b0.css">
 </head>
 
 <body>
@@ -223,7 +218,7 @@
     </div>
     <div id="canvas-container"></div>
 
-    <script type="module" src="main.js"></script>
+    <script type="module" src="main.0c62750566f4.js"></script>
 </body>
 
 </html>
