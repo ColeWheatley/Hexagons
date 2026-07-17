@@ -28,6 +28,10 @@ for trial in 1 2 3; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/warm-reload-${trial}.json" --warm-reload --timeout 150
 done
 python3 scripts/validate_warm_reload.py "$OUT"/warm-reload-{1,2,3}.json --min-improvement-percent 60
+# AA-8: prove the real viewer sleeps once settled and resumes after a CDP
+# hidden/visible transition. This is intentionally separate from scripted
+# benchmarks, whose camera driver keeps rAF active by design.
+python3 scripts/run_idle_browser_gate.py "${BASE_URL}/?idle-gate=1" "$OUT/idle-browser.json" --timeout 150
 # Inspection artifacts, not pixel-goldens: GPU rasterization and terrain data vary by runner.
 for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150
