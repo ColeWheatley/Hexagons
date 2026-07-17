@@ -387,9 +387,11 @@ class PistonViewer {
         this.appStartTime = performance.now();
         this.loadingScreen = new LoadingScreen({ heroHoldMs: 900 });
         // Boot-time plan accounting for the honest progress phase. Only fed
-        // while the loader is visible; cleared on every init retry.
+        // while the loader is visible; cleared on every init retry. Texture
+        // classes stay separate so per-class byte weighting stays honest.
         this._bootPlannedTerrain = new Set();
-        this._bootPlannedTextures = new Set();
+        this._bootPlannedBootstrap = new Set();
+        this._bootPlannedKtx2 = new Set();
         this.loadingScreen.setOffline(navigator.onLine === false);
         window.addEventListener('offline', () => {
             if (!this.loaderHidden) this.loadingScreen.setOffline(true);
@@ -1364,7 +1366,8 @@ class PistonViewer {
         this.appStartTime = performance.now();
         this.fatalState = null;
         this._bootPlannedTerrain.clear();
-        this._bootPlannedTextures.clear();
+        this._bootPlannedBootstrap.clear();
+        this._bootPlannedKtx2.clear();
         this.loadingScreen.reset();
         this.needsLODUpdate = true;
         this.needsRender = true;
@@ -2919,8 +2922,11 @@ class PistonViewer {
             enqueuedSequence: this.textureDispatchSequence,
         });
         if (!this.loaderHidden) {
-            this._bootPlannedTextures.add(`${state.key}|${tier}`);
-            this.loadingScreen.texturePlanned(this._bootPlannedTextures.size, tier);
+            const plannedSet = tier === TEXTURE_TIER.BOOTSTRAP
+                ? this._bootPlannedBootstrap
+                : this._bootPlannedKtx2;
+            plannedSet.add(`${state.key}|${tier}`);
+            this.loadingScreen.texturePlanned(plannedSet.size, tier);
         }
     }
 

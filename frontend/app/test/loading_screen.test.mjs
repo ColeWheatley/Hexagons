@@ -147,6 +147,20 @@ test('hidden wins over fatal and progress', () => {
     assert.equal(model.phase(5000), LOADER_PHASE.HIDDEN);
 });
 
+test('manifest-only window does not pin the high-water mark', () => {
+    const model = bootedModel();
+    model.manifestLoaded(103_979);
+    // No plan yet: the manifest is the only known work, so the raw ratio is
+    // 1.0 by construction. The bar is indeterminate here — this must not
+    // stick, or the determinate bar would open at 100% (the live-boot bug).
+    model.fraction();
+    model.terrainPlanned(23);
+    const opening = model.fraction();
+    assert.ok(opening < 0.2, `bar should open low once the plan exists, got ${opening}`);
+    model.terrainDone(280_000);
+    assert.ok(model.fraction() >= opening);
+});
+
 test('counter line lists real counts and measured megabytes', () => {
     const model = bootedModel();
     model.manifestLoaded(95_000);

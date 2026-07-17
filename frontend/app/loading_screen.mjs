@@ -160,7 +160,10 @@ export class LoadingProgressModel {
     // work contributes the class's current measured average (seed before the
     // first completion). Averages drift as measurements arrive, so the raw
     // fraction can move both ways — the displayed value is clamped to the
-    // high-water mark and only ever advances.
+    // high-water mark and only ever advances. The clamp is gated on
+    // determinacy: between manifest-loaded and first-plan the ratio is 1.0
+    // by construction (manifest is the only known work) and must not pin
+    // the high-water mark.
     fraction() {
         let plannedBytes = this.manifestDone ? 0 : CLASS_SEED_BYTES.manifest;
         plannedBytes = Math.max(plannedBytes, this.manifestBytes);
@@ -172,6 +175,7 @@ export class LoadingProgressModel {
             doneBytes += entry.bytes;
         }
         const raw = plannedBytes > 0 ? doneBytes / plannedBytes : 0;
+        if (!this.determinate()) return Math.min(1, raw);
         this.maxFraction = Math.max(this.maxFraction, Math.min(1, raw));
         return this.maxFraction;
     }
