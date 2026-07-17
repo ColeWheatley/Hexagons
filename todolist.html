@@ -146,11 +146,11 @@
 <h2><span class="badge aa">AA</span> Delegate now — objective pass/fail, ranked by gain</h2>
 <p class="sub">Every one of these can go to Codex with a numeric gate. Order is by expected user-experience gain.</p>
 
-<div class="item" data-id="aa1">
-  <div class="title-line"><input type="checkbox" id="aa1"><label for="aa1">AA-1 — Make publishing a release atomic and self-verifying</label></div>
-  <div class="meta"><span>Backend + deploy</span><span class="gain-vh">Gain: very high (prevents broken site)</span><span class="solver-std">🔵 Standard</span><span>Integrated; live interrupted-publish drill remains</span></div>
+<div class="item checked" data-id="aa1">
+  <div class="title-line"><input type="checkbox" id="aa1" checked><label for="aa1">AA-1 — Make publishing a release atomic and self-verifying</label></div>
+  <div class="meta"><span>Backend + deploy</span><span class="gain-vh">Gain: very high (prevents broken site)</span><span class="solver-std">✓ Live S3 interruption, pointer, header/hash/decode, and tattoo-policy drill passed at <code>1bfc33e</code></span></div>
   <p>Deploying today means the baker syncs files to the S3 bucket and that's it — nothing verifies that every geometry binary and texture page the manifest promises actually made it up, with the right content types and cache headers. The "app expects 197 files, zero exist" situation this repo was just in is exactly the failure this prevents, but in production. Change the deploy to: upload all assets first, verify each referenced URL responds correctly (existence, hash, headers, one sample decode), refuse diagnostic tattoos in production while allowing them explicitly in the beta validation channel, and only then flip the manifest "pointer" — so a half-finished upload leaves the previous working version live.</p>
-  <div class="done-when"><b>Done when:</b> a deliberately interrupted upload leaves the old release working; a tattooed production manifest is rejected while an explicitly tagged beta manifest is accepted; every published URL passes the automated check.</div>
+  <div class="done-when"><b>Verified:</b> a deliberately interrupted live S3 upload left the old mutable manifest byte-identical; successful completion flipped it only after immutable objects passed length, content-type, cache, SHA-256 and sample-decode checks. The real Stubai beta tattoo manifest is accepted only with the explicit beta flag; the production-mode tattoo copy is rejected even with it. The disposable drill prefix was removed.</div>
 </div>
 
 <div class="item checked" data-id="aa2">
@@ -160,11 +160,11 @@
   <div class="done-when"><b>Verified:</b> the integrated full-corpus gate dropped 2/23 terrain and 4/40 texture first attempts; every resource succeeded on attempt two, visible terrain painted with no final errors/spinner hang, and a forced WebGL loss restored and repainted in 161 ms.</div>
 </div>
 
-<div class="item" data-id="aa3">
-  <div class="title-line"><input type="checkbox" id="aa3"><label for="aa3">AA-3 — Keep profiler overhead out of production; bound it in Stubai beta</label></div>
-  <div class="meta"><span>Frontend + release config</span><span class="gain-vh">Gain: very high (hidden cost on every session)</span><span class="solver-cheap">🟢 Cheap after the mode flag is explicit</span><span>Integrated; 30-minute soak remains</span></div>
+<div class="item checked" data-id="aa3">
+  <div class="title-line"><input type="checkbox" id="aa3" checked><label for="aa3">AA-3 — Keep profiler overhead out of production; bound it in Stubai beta</label></div>
+  <div class="meta"><span>Frontend + release config</span><span class="gain-vh">Gain: very high (hidden cost on every session)</span><span class="solver-cheap">✓ 1,800-second bounded-memory beta soak passed; production/bench policy contracts pass</span></div>
   <p>Make mode explicit in release/manifest configuration: <b>beta means the small Stubai-only imagery square</b>; production means the selected production region. Stubai beta may retain bounded crash-recovery telemetry because it is useful during testing, but it must use a ring buffer/incremental statistics instead of an ever-growing frame array and repeated whole-run serialization. Production visitors get no profiler instance or periodic persistence by default. Full-fidelity profiling remains an explicit <code>?bench=1</code> override in either mode. Do not infer mode from page count or geographic extent.</p>
-  <div class="done-when"><b>Done when:</b> a 30-minute Stubai-beta session shows flat profiler memory; production exposes no profiler or profiler timer unless <code>?bench=1</code>; benchmark reports remain equivalent; a config test proves Stubai beta and production select the intended behavior.</div>
+  <div class="done-when"><b>Verified:</b> the normal Stubai beta URL selected <code>bounded-recovery</code> for the full 1,800 seconds; the ring stopped at 180 samples, allocated JS heap fell 129.1→113.1 MB, and context-loss/OOM counts stayed zero. Production-off and explicit <code>?bench=1</code> full-profiler modes remain covered by release-policy contracts. Evidence: <code>4cc028e</code>.</div>
 </div>
 
 <div class="item checked" data-id="aa4">
@@ -181,11 +181,11 @@
   <div class="done-when"><b>Done when:</b> no off-screen page is requested before idle; cold-load bytes and peak VRAM drop; scripted orbit/traverse flights show zero visibly-blank pages.</div>
 </div>
 
-<div class="item" data-id="aa22">
-  <div class="title-line"><input type="checkbox" id="aa22"><label for="aa22">AA-22 — Promote first-view pages directly from WebP to high texture</label></div>
-  <div class="meta"><span>Frontend + backend</span><span class="gain-vh">Gain: very high (faster perceived detail)</span><span class="solver-frontier">🟣 Code/live trace passed; beta tattoos approved</span></div>
+<div class="item checked" data-id="aa22">
+  <div class="title-line"><input type="checkbox" id="aa22" checked><label for="aa22">AA-22 — Promote first-view pages directly from WebP to high texture</label></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-vh">Gain: very high (faster perceived detail)</span><span class="solver-frontier">✓ Tattoo-3 bake, atomic public beta and direct-high comparison complete</span></div>
   <p>Approved ladder: the yellow 32 px WebP is the immediate whole-page floor. A page initially visible and above the existing perceptual high threshold requests <b>WebP → high</b> directly; it must not spend network, decoder, or replacement work on low/medium first. Medium is reserved for farther, guard-ring, and out-of-frustum pages. Low remains legacy compatibility only, not a prerequisite. Requests stay coarse 1024 m page blocks; bootstrap residency is capped at 1 MB and released as soon as a real KTX2 tier wins.</p>
-  <div class="done-when"><b>Verified in code/live trace:</b> near-visible plans <code>[bootstrap32, high4096]</code>; guard and visible-consumer edge pages plan <code>[bootstrap32, medium256]</code>; unrelated outside pages request nothing; low is never a prerequisite; WebPs remain 32×32 per 1,024 m block with a 1 MB decoded-residency cap. The integrated cold run painted bootstrap coverage in 208 ms and installed first high at 541 ms with zero serialization warnings. Cole approved the yellow/half-thickness diagnostic tattoos for beta validation. Still open: rebake and deploy those beta diagnostics, then record an apples-to-apples old-vs-new high-arrival comparison.</div>
+  <div class="done-when"><b>Verified:</b> the 149-page tattoo-3 corpus is public in atomic release <code>f8602483bdb475fc3ff7</code>; sampled GSP3, WebP and all three KTX2 tiers pass public magic/header/cache checks. In three apples-to-apples 60-second trials the old ladder never dispatched high; direct-high installed it at 550.0/568.2/635.5 ms (568.2 ms median), a &gt;105.9× lower-bound improvement. Request-plan contracts pass 6/6 and the 32 px/1 MB bootstrap residency contract remains intact. Evidence: <code>ce0384b</code> and <code>c8bd12d</code>.</div>
 </div>
 
 <div class="item checked" data-id="aa6">
@@ -440,7 +440,7 @@
 <p><b>Wave 0 (closed 2026-07-17):</b> P1 + P2 + P3 — fresh 197-island/149-page bake, headless ANGLE Metal benchmark, and 490.1 ms localhost TTFTF baseline verified.</p>
 <p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–6 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, direct texture ladder/residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, and adaptive capability budgets. A*-2's complete resource lifecycle and transition suite are integrated at <code>f0d4775</code>; A*-3's measured exact-parity material-churn fix is integrated at <code>c3ec04d</code>. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
 <p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The WebP three-run median is <b>237 ms (57% faster)</b>; the final integrated cold trace is 208 ms profiler-relative, with first high installed at 541 ms and zero serialization warnings. Warm good-LTE TTFTF improves 87.1%. The 60-second orbit is 119.9 FPS with 9.5 ms p95. Fault recovery repaints in 161 ms; Save-Data/3g transfer 98.5% fewer texture bytes than high. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
-<p><b>Still objectively open:</b> AA-22's yellow/half-thickness tattoos are approved for beta; it now needs the rebake/deploy and an apples-to-apples old-vs-new high-arrival comparison. AA-1/3/10/12/13/15/16/20 retain the live, soak, human-visual, or browser gates written on their cards. AV-9's navigation overlay and objective contracts are integrated, but its visual/on-device acceptance remains. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source. A*-2 and A*-3 are closed by their integrated transition/parity gates.</p>
+<p><b>Still objectively open:</b> AA-10 retains its human DPR screenshot-quality gate; AA-12/13/15/16/20 are running through the strengthened release-browser matrix; AA-14 retains physical Mac trackpad feel/fallback checks. AV-1 and AV-9 still need visual/on-device acceptance. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source. AA-1, AA-3, AA-22, A*-2 and A*-3 are closed by their live objective evidence.</p>
 <p><b>Resolved by Cole:</b> current rotation is approved and should reach notebook touchpads where APIs permit; slope palette/thresholds stay with a subtle dynamic legend/scale/compass; offline/app packaging and persistent labels are deferred; settled blur is accepted; and 8×6 residency is the tentative production texture profile. H-4 (public voice/hierarchy) and H-6 (data-provenance policy) remain human decisions.</p>
 </div>
 
