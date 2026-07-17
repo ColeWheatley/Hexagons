@@ -11,17 +11,15 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PowFinder | Bestagon Viewer</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+                "three": "./node_modules/three/build/three.module.js",
+                "three/addons/": "./node_modules/three/examples/jsm/"
             }
         }
     </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
 </head>
 
 <body>
@@ -280,12 +278,9 @@
                 </div>
         </div>
 
-        <div id="css-map-layer">
-            <div id="css-world"></div>
-        </div>
         <div id="canvas-container"></div>
 
-        <script type="module" src="main.js?v=camerafloor1"></script>
+        <script type="module" src="main.js"></script>
 </body>
 
 </html>

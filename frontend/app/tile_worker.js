@@ -1,5 +1,7 @@
 // @atlas: Worker for GSP1/GSP2/current GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP2+ loading is two-stage; GSP3 separates terrain relief from exact rendered bounds.
-importScripts('gosper_core.js?v=pageonly1');
+if (!self.GosperCore) {
+    importScripts('gosper_core.js');
+}
 
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5
@@ -40,16 +42,30 @@ const ASTC_BY_BLOCK = {
     '8x6': { basis: BASIS_FORMAT.cTFASTC_LDR_8x6_RGBA, formatKey: 'astc-8x6' },
 };
 
-const VENDOR_BASE = new URL('./vendor/basisu_v2/', self.location.href).href;
+const BASIS_TRANSCODER_JS_URL = typeof __BASIS_TRANSCODER_JS_URL__ === 'string'
+    ? __BASIS_TRANSCODER_JS_URL__
+    : './vendor/basisu_v2/basis_transcoder.js';
+const BASIS_TRANSCODER_WASM_URL = typeof __BASIS_TRANSCODER_WASM_URL__ === 'string'
+    ? __BASIS_TRANSCODER_WASM_URL__
+    : './vendor/basisu_v2/basis_transcoder.wasm';
+
+function resolveWorkerUrl(url) {
+    return new URL(url, self.location.href).href;
+}
 
 let workerSupport = null; // set once via INIT, before any texture job runs
 let basisModulePromise = null;
 
 function loadBasisModule() {
     if (!basisModulePromise) {
-        importScripts(new URL('basis_transcoder.js', VENDOR_BASE).href);
+        const transcoderUrl = resolveWorkerUrl(BASIS_TRANSCODER_JS_URL);
+        const wasmUrl = resolveWorkerUrl(BASIS_TRANSCODER_WASM_URL);
+        importScripts(transcoderUrl);
         basisModulePromise = globalThis.BASIS({
-            locateFile: (file) => new URL(file, VENDOR_BASE).href,
+            locateFile: (file) => {
+                if (file === 'basis_transcoder.wasm') return wasmUrl;
+                return new URL(file, transcoderUrl).href;
+            },
         }).then((module) => {
             module.initializeBasis();
             return module;
