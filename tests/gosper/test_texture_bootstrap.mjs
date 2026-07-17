@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(here, '../../frontend/app/texture_page_residency.js'), 'utf8');
 const { PAGE_TEXTURE_TIER: TIER, PAGE_TEXTURE_RANK: RANK,
-    selectTextureDispatchTaskIndex, TexturePageResidency } = await import(
+    TIER_STATE, setTierState, selectTextureDispatchTaskIndex, TexturePageResidency } = await import(
     `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 assert.equal(RANK[TIER.BOOTSTRAP], -1);
@@ -17,8 +17,8 @@ residency.finishDemandPass();
 assert.equal(residency.state('offscreen').classification, 'outside');
 
 const visible = residency.state('visible');
-visible.queued.add(TIER.BOOTSTRAP);
-visible.queued.add(TIER.LOW);
+setTierState(visible, TIER.BOOTSTRAP, TIER_STATE.QUEUED, { validate: true });
+setTierState(visible, TIER.LOW, TIER_STATE.QUEUED, { validate: true });
 const queue = [
     { key: 'visible', tier: TIER.LOW, priority: 2000 },
     { key: 'visible', tier: TIER.BOOTSTRAP, priority: 1 },
@@ -29,15 +29,14 @@ assert.equal(selectTextureDispatchTaskIndex(queue, residency.states, {
 
 // Once bootstrap has left the queue but is still decoding, a KTX2 request for
 // the same page must not start and contend with first paint.
-visible.queued.delete(TIER.BOOTSTRAP);
-visible.loading.add(TIER.BOOTSTRAP);
+setTierState(visible, TIER.BOOTSTRAP, TIER_STATE.LOADING, { validate: true });
 assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
     lowCoverageFirst: true, lowCoverageIncludesOutside: false,
 }), -1, 'KTX2 waits until the page bootstrap reaches a terminal state');
 
 const bootstrap = { texture: { dispose() {} }, bytes: 4096 };
 residency.replaceAsset('visible', TIER.BOOTSTRAP, bootstrap);
-visible.loading.delete(TIER.BOOTSTRAP);
+setTierState(visible, TIER.BOOTSTRAP, TIER_STATE.ABSENT, { validate: true });
 assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
     lowCoverageFirst: true, lowCoverageIncludesOutside: false,
 }), 0, 'KTX2 becomes eligible once bootstrap is resident');

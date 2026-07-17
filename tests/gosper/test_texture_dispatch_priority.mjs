@@ -10,9 +10,12 @@ const moduleSource = fs.readFileSync(
 );
 const {
     PAGE_TEXTURE_TIER: TIER,
+    TIER_STATE,
     lowTextureCoveragePending,
     pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
+    setTierState,
+    tierState,
     textureStateHasDemand,
 } = await import(`data:text/javascript;base64,${Buffer.from(moduleSource).toString('base64')}`);
 
@@ -20,12 +23,18 @@ function state(key) {
     return {
         key,
         assets: new Map(),
-        loading: new Set(),
-        queued: new Set(),
-        failed: new Set(),
+        tierStates: new Map(),
+        _tierLoadingStartMs: new Map(),
         classification: 'outside',
         desiredTier: TIER.LOW,
     };
+}
+
+function markLoading(page, tier) {
+    if (tierState(page, tier) === TIER_STATE.ABSENT) {
+        setTierState(page, tier, TIER_STATE.QUEUED, { validate: true });
+    }
+    setTierState(page, tier, TIER_STATE.LOADING, { validate: true });
 }
 
 function take(queue, states, options = {}) {
@@ -53,17 +62,17 @@ assert.deepEqual(
     take(queue, states, { lowCoverageFirst: true }),
     { key: 'b', tier: TIER.LOW, priority: 20 },
 );
-states.get('b').loading.add(TIER.LOW);
+markLoading(states.get('b'), TIER.LOW);
 assert.deepEqual(
     take(queue, states, { lowCoverageFirst: true }),
     { key: 'c', tier: TIER.LOW, priority: 10 },
 );
-states.get('c').loading.add(TIER.LOW);
+markLoading(states.get('c'), TIER.LOW);
 assert.deepEqual(
     take(queue, states, { lowCoverageFirst: true }),
     { key: 'a', tier: TIER.LOW, priority: -1000 },
 );
-states.get('a').loading.add(TIER.LOW);
+markLoading(states.get('a'), TIER.LOW);
 
 // Loading is still pending coverage. With all low requests dispatched, an
 // upgrade waits rather than stealing a worker while the floor is incomplete.
@@ -72,11 +81,10 @@ assert.equal(take(queue, states, { lowCoverageFirst: true }), null);
 // Successful installs and terminal failures both release the barrier. A bad
 // low page therefore cannot starve every medium/high request forever.
 for (const key of ['a', 'b']) {
-    states.get(key).loading.delete(TIER.LOW);
+    setTierState(states.get(key), TIER.LOW, TIER_STATE.ABSENT, { validate: true });
     states.get(key).assets.set(TIER.LOW, { key: `${key}-low` });
 }
-states.get('c').loading.delete(TIER.LOW);
-states.get('c').failed.add(TIER.LOW);
+setTierState(states.get('c'), TIER.LOW, TIER_STATE.FAILED, { validate: true });
 assert.equal(lowTextureCoveragePending(states), false);
 assert.deepEqual(
     take(queue, states, { lowCoverageFirst: true }),
@@ -85,7 +93,7 @@ assert.deepEqual(
 
 // A newly retryable/queued low page reinstates the barrier and preempts an
 // existing upgrade; after it installs, normal priority selection resumes.
-states.get('c').failed.delete(TIER.LOW);
+setTierState(states.get('c'), TIER.LOW, TIER_STATE.ABSENT, { validate: true });
 queue.push({ key: 'c', tier: TIER.LOW, priority: -5000 });
 queue.push({ key: 'b', tier: TIER.HIGH, priority: 1e15 });
 assert.deepEqual(
@@ -153,17 +161,17 @@ assert.deepEqual(
 // high requests; no outside low survives admission.
 const legacyGlobalQueue = [];
 for (const page of globalStates.values()) {
-    page.queued.add(TIER.LOW);
+    setTierState(page, TIER.LOW, TIER_STATE.QUEUED, { validate: true });
     legacyGlobalQueue.push({ key: page.key, tier: TIER.LOW, priority: -1 });
 }
 for (const key of [...visibleKeys, ...guardKeys]) {
     const page = globalStates.get(key);
-    page.queued.add(TIER.MEDIUM);
+    setTierState(page, TIER.MEDIUM, TIER_STATE.QUEUED, { validate: true });
     legacyGlobalQueue.push({ key, tier: TIER.MEDIUM, priority: 1e9 });
 }
 for (const key of visibleKeys) {
     const page = globalStates.get(key);
-    page.queued.add(TIER.HIGH);
+    setTierState(page, TIER.HIGH, TIER_STATE.QUEUED, { validate: true });
     legacyGlobalQueue.push({ key, tier: TIER.HIGH, priority: 2e9 });
 }
 const scopedGlobalQueue = pruneTextureDispatchQueue(legacyGlobalQueue, globalStates);
@@ -173,7 +181,7 @@ assert.equal(scopedGlobalQueue.filter(task => task.tier === TIER.HIGH).length, 2
 assert.equal(scopedGlobalQueue.some(task => (
     globalStates.get(task.key).classification === 'outside'
 )), false);
-assert.equal(globalStates.get('world_-180_-90').queued.has(TIER.LOW), false);
+assert.equal(tierState(globalStates.get('world_-180_-90'), TIER.LOW), TIER_STATE.ABSENT);
 assert.equal(take([...scopedGlobalQueue], globalStates, {
     lowCoverageFirst: true,
     lowCoverageIncludesOutside: false,
@@ -202,14 +210,14 @@ assert.equal(firstRefinement.tier, TIER.HIGH);
 const oldVisible = globalStates.get(visibleKeys[0]);
 oldVisible.classification = 'outside';
 oldVisible.desiredTier = TIER.LOW;
-oldVisible.loading.add(TIER.LOW);
-oldVisible.queued.add(TIER.HIGH);
+markLoading(oldVisible, TIER.LOW);
+setTierState(oldVisible, TIER.HIGH, TIER_STATE.QUEUED, { validate: true });
 const movedKey = 'world_-122_37';
 const movedState = globalStates.get(movedKey);
 movedState.classification = 'visible';
 movedState.desiredTier = TIER.MEDIUM;
-movedState.queued.add(TIER.LOW);
-movedState.queued.add(TIER.MEDIUM);
+setTierState(movedState, TIER.LOW, TIER_STATE.QUEUED, { validate: true });
+setTierState(movedState, TIER.MEDIUM, TIER_STATE.QUEUED, { validate: true });
 const movedQueue = pruneTextureDispatchQueue([
     { key: oldVisible.key, tier: TIER.HIGH, priority: 9e9 },
     { key: movedKey, tier: TIER.LOW, priority: 1e9 + 1000 },
@@ -219,8 +227,9 @@ assert.deepEqual(movedQueue.map(task => [task.key, task.tier]), [
     [movedKey, TIER.LOW],
     [movedKey, TIER.MEDIUM],
 ]);
-assert.equal(oldVisible.queued.has(TIER.HIGH), false);
-assert.equal(oldVisible.loading.has(TIER.LOW), true, 'in-flight work remains safely caller-owned');
+assert.equal(tierState(oldVisible, TIER.HIGH), TIER_STATE.ABSENT);
+assert.equal(tierState(oldVisible, TIER.LOW), TIER_STATE.LOADING,
+    'in-flight work remains safely caller-owned');
 assert.equal(take(movedQueue, globalStates, {
     lowCoverageFirst: true,
     lowCoverageIncludesOutside: false,
@@ -236,7 +245,9 @@ const miniQueue = [
     { key: 'mini-b', tier: TIER.LOW, priority: -1000 },
     { key: 'mini-b', tier: TIER.MEDIUM, priority: -2000 },
 ];
-for (const task of miniQueue) miniStates.get(task.key).queued.add(task.tier);
+for (const task of miniQueue) {
+    setTierState(miniStates.get(task.key), task.tier, TIER_STATE.QUEUED, { validate: true });
+}
 const retainedMiniQueue = pruneTextureDispatchQueue(miniQueue, miniStates, {
     includeOutside: true,
 });
