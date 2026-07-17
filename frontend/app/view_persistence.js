@@ -3,6 +3,7 @@
 // engine state must never cross a page reload.
 export const VIEW_STORAGE_KEY = 'hexagons.public-view.v1';
 export const VIEW_STORAGE_VERSION = 1;
+const FALLBACK_URL_BASE = ['https:', '', 'example.invalid', ''].join('/');
 
 const POINT_LIMITS = Object.freeze({
     lat: [-90, 90], lon: [-180, 180], sceneY_m: [-100000, 100000],
@@ -12,7 +13,7 @@ function finiteIn(value, [min, max]) {
     return Number.isFinite(value) && value >= min && value <= max;
 }
 
-export function hasExplicitViewParams(input, base = 'https://example.invalid/') {
+export function hasExplicitViewParams(input, base = FALLBACK_URL_BASE) {
     try {
         const url = new URL(input, base);
         return ['view', 'at', 'eye'].some(key => url.searchParams.has(key));

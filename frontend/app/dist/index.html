@@ -13,12 +13,12 @@
     <title>PowFinder | Bestagon Viewer</title>
     <link rel="preload" href="tile_manifest.json?v=v0.10.0-rc5" as="fetch" crossorigin="anonymous">
     <link rel="preload" href="assets/basis_transcoder.5046f5772520.wasm" as="fetch" type="application/wasm" crossorigin="anonymous">
-    <link rel="modulepreload" href="main.0c62750566f4.js">
-    <link rel="stylesheet" href="style.852612aeb4b0.css">
+    <link rel="modulepreload" href="main.14ce667f0225.js">
+    <link rel="stylesheet" href="style.07311826b71c.css">
 </head>
 
 <body>
-    <div id="loader">
+    <div id="loader" role="status" aria-live="polite" aria-label="Loading PowFinder 3D">
         <div class="hex-pattern"></div>
         <div class="skier-container">
             <svg width="150" height="200" viewBox="0 0 1008 1356">
@@ -47,16 +47,17 @@
     </div>
 
     <div id="ui">
-        <div class="glass-panel minimized" id="main-panel">
+        <div class="glass-panel minimized" id="main-panel" aria-label="PowFinder controls">
             <div class="panel-header">
                 <div class="header-content">
                     <h1>POWFINDER 3D</h1>
                     <div class="subtitle">Binary Hex Piston Engine</div>
                 </div>
-                <button id="minimize-btn" class="minimize-btn" title="Minimize Panel">+</button>
+                <button id="minimize-btn" class="minimize-btn" type="button" title="Expand controls panel"
+                    aria-controls="main-panel-body" aria-expanded="false" aria-label="Expand controls panel">+</button>
             </div>
 
-            <div class="panel-body">
+            <div class="panel-body" id="main-panel-body" hidden aria-hidden="true">
                 <div class="stats">
                     <!-- Basic Stats (Always Visible) -->
                     <div class="hud-item">
@@ -70,11 +71,11 @@
 
                     <!-- Position & Debug (Collapsible) -->
                     <div class="collapsible-section collapsed" data-section="debug">
-                        <div class="collapsible-header">
+                        <button class="collapsible-header" type="button" aria-expanded="false" aria-controls="debug-content">
                             <span class="title">POSITION & DEBUG</span>
-                            <span class="arrow">▼</span>
-                        </div>
-                        <div class="collapsible-content">
+                            <span class="arrow" aria-hidden="true">▼</span>
+                        </button>
+                        <div class="collapsible-content" id="debug-content" hidden aria-hidden="true">
                             <div class="hud-item">
                                 <span>TRIANGLES</span>
                                 <span class="value" id="tri-count">--</span>
@@ -112,28 +113,30 @@
 
                     <!-- Granular LOD Tuning -->
                     <div class="collapsible-section collapsed" data-section="geometry">
-                        <div class="collapsible-header">
+                        <button class="collapsible-header" type="button" aria-expanded="false" aria-controls="geometry-content">
                             <span class="title">GRANULAR LOD TUNING</span>
-                            <span class="arrow">▼</span>
-                        </div>
-                        <div class="collapsible-content">
+                            <span class="arrow" aria-hidden="true">▼</span>
+                        </button>
+                        <div class="collapsible-content" id="geometry-content" hidden aria-hidden="true">
                             <!-- VISUAL HAZE ONLY; hidden for mini-bakes -->
                             <div class="hud-item" id="haze-distance-control" style="flex-direction: column; margin-top: 5px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span>ATMOSPHERE DISTANCE</span>
+                                    <span id="haze-distance-label">ATMOSPHERE DISTANCE</span>
                                     <span class="value" id="haze-distance-val">4km</span>
                                 </div>
                                 <input type="range" id="haze-distance-slider" min="1" max="50" step="1" value="4"
+                                    aria-labelledby="haze-distance-label haze-distance-val"
                                     style="width: 100%;">
                             </div>
 
                             <!-- TEXTURE UPGRADE -->
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span>HIGH TEXTURE FOOTPRINT</span>
+                                    <span id="tex-upgrade-label">HIGH TEXTURE FOOTPRINT</span>
                                     <span class="value" id="tex-upgrade-val">512px</span>
                                 </div>
                                 <input type="range" id="tex-upgrade-slider" min="128" max="2048" step="64" value="512"
+                                    aria-labelledby="tex-upgrade-label tex-upgrade-val"
                                     style="width: 100%;">
                             </div>
 
@@ -164,28 +167,28 @@
                 <!-- Toggles (Always Visible) -->
                 <div class="hud-item"
                     style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px; border-top: 1px solid #333; padding-top: 10px;">
-                    <span>Gradient</span>
-                    <div class="pill-toggle"
+                    <span id="gradient-label">Gradient</span>
+                    <div class="pill-toggle" role="group" aria-labelledby="gradient-label"
                         style="display: flex; background: rgba(20, 20, 20, 0.7); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 4px; gap: 4px;">
                         <button class="pill-btn"
                             style="background: transparent; color: #ccc; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; font-family: 'Outfit', sans-serif;"
-                            id="gradient-terrain">terrain</button>
+                            id="gradient-terrain" aria-pressed="false">terrain</button>
                         <button class="pill-btn active"
                             style="background: #74b9ff; color: #fff; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; font-family: 'Outfit', sans-serif;"
-                            id="gradient-slope">gradient</button>
+                            id="gradient-slope" aria-pressed="true">gradient</button>
                     </div>
                 </div>
 
 
                 <div class="hud-item"
                     style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
-                    <span>PAUSE LOD UPDATES</span>
+                    <label for="lod-pause-toggle">PAUSE LOD UPDATES</label>
                     <input type="checkbox" id="lod-pause-toggle" style="pointer-events: auto;">
                 </div>
 
                 <!-- Frametime Graph (Always Visible) -->
                 <div class="hud-item frametime-item" style="margin-top: 15px;">
-                    <canvas id="frametime-graph" width="640" height="80"></canvas>
+                    <canvas id="frametime-graph" width="640" height="80" role="img" aria-label="Frametime graph"></canvas>
                 </div>
 
                 <div class="console-panel">
@@ -193,7 +196,7 @@
                         <span>STATUS LOG</span>
                         <button id="copy-log-btn" class="console-btn">COPY</button>
                     </div>
-                    <div id="console-output" class="console-box">
+                    <div id="console-output" class="console-box" role="log" aria-live="polite" aria-relevant="additions">
                         <div class="log-line">Waiting for system...</div>
                     </div>
                 </div>
@@ -218,7 +221,7 @@
     </div>
     <div id="canvas-container"></div>
 
-    <script type="module" src="main.0c62750566f4.js"></script>
+    <script type="module" src="main.14ce667f0225.js"></script>
 </body>
 
 </html>
