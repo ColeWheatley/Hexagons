@@ -10,7 +10,7 @@ A browser-based 3D terrain viewer that renders the Austrian Tirol using a hexago
 │   ├── coordinate_utility.py  # EPSG:31254 ↔ hex/sector coordinate math
 │   ├── generate_manifest.py   # Builds tile_manifest.json from baked output
 │   ├── run_lil_bake.sh     # Quick mini-bake script (default: 12×12 Stubai)
-│   ├── run_big_bake.sh     # Full Tirol bake (hours, needs ~50GB)
+│   ├── run_big_bake.sh     # Durable Rechner full-Tirol control surface
 │   └── aerial_tifs/        # Source orthophotos (git-ignored, ~25 GB)
 │
 ├── frontend/
@@ -39,7 +39,7 @@ These files are required for baking but are too large for the repository:
 | File | Size | Description |
 |---|---|---|
 | `hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif` | 1.1 GB | 5m DEM of Tirol (EPSG:31254) |
-| `hex_backend/DGM_Tirol_gradient_cached.tif` | 14 GB | Full-region gradient cache (only needed for `--full` bakes) |
+| `local_data/cache/gradients/...` | ~14–25 GB | Transactional reusable 2× full-region gradient cache |
 | `hex_backend/aerial_tifs/*.tif` | 24.6 GB | 3,486 RGB orthophotos (~7 MB avg) |
 
 The mini-bake generates its own **regional gradient** on-the-fly (~25–158 MB) so it does **not** need the 14 GB gradient cache.
@@ -61,8 +61,10 @@ python3 hex_backend/waffle_iron.py --grid 6 --center 73,252
 # Force re-bake (ignore version skip)
 python3 hex_backend/waffle_iron.py --force
 
-# Full Tirol bake (needs all aerial TIFs + DEM)
-python3 hex_backend/waffle_iron.py --full
+# Rechner production flow (preflight/start/status/stop/resume/publish)
+./hex_backend/run_big_bake.sh preflight
+./hex_backend/run_big_bake.sh start
+./hex_backend/run_big_bake.sh status
 ```
 
 ### Aerial texture encoding profiles
@@ -85,6 +87,12 @@ instead of 45s for one 4096px encode; the earlier q75 effort comparison changed
 size by less than 2%. Full/production bakes retain the sweep-verified effort 4.
 
 **Performance** (MacBook M1, 16 GB shared RAM): ~4.7s/sector. A 12×12 bake (144 sectors) takes ~11 minutes.
+
+The Mac development path is explicitly `mac-small`; the Rechner production
+path is `rechner-big`. The latter derives coverage from the validated
+orthophoto/DEM intersection, writes a run-specific inventory/output root, uses
+bounded persistent workers, and is resumable. It does not accept a manual
+production rectangle. See [Rechner Big Bake Operations](docs/RECHNER_BIG_BAKE.md).
 
 ## Running the Viewer
 

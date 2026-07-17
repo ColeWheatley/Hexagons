@@ -53,6 +53,7 @@ import sys
 import struct
 import subprocess
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pyproj import Transformer
 from PIL import Image
 
@@ -60,6 +61,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
 import generate_manifest
 from release_profiles import RELEASE_PROFILES
+from execution_profiles import EXECUTION_PROFILES, execution_profile
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_ENCODING_PROFILES,
@@ -498,13 +500,28 @@ def get_or_create_gradient_map(dem_path, output_path, upsample_factor=1):
     Used to derive Slope, Aspect, and Normals on the fly.
     """
     if os.path.exists(output_path):
-        print(f"✅ Found cached gradient map: {output_path}")
-        return rasterio.open(output_path)
+        try:
+            cached = rasterio.open(output_path)
+            if cached.count != 2 or cached.width <= 0 or cached.height <= 0:
+                raise ValueError("gradient cache has an invalid raster shape")
+            print(f"✅ Found cached gradient map: {output_path}")
+            return cached
+        except Exception:
+            # A prior interrupted build has no commit marker and must never be
+            # trusted merely because its destination filename exists.
+            try:
+                cached.close()
+            except Exception:
+                pass
+            os.unlink(output_path)
 
     print(f"⚠️  Gradient map not found. Generating from {dem_path}...")
     start_time = time.time()
 
-    with rasterio.open(dem_path) as src:
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    temporary_output = f"{output_path}.{os.getpid()}.tmp"
+    try:
+      with rasterio.open(dem_path) as src:
         new_width = src.width * upsample_factor
         new_height = src.height * upsample_factor
         
@@ -534,7 +551,7 @@ def get_or_create_gradient_map(dem_path, output_path, upsample_factor=1):
 
         print(f"   -> Processing Gradients (Total: {new_width}x{new_height}, Res: {res_x:.2f}m)...")
         
-        with rasterio.open(output_path, 'w', **profile) as dst:
+        with rasterio.open(temporary_output, 'w', **profile) as dst:
             for jt, window in dst.block_windows(1):
                 pad = 2
                 src_window = rasterio.windows.Window(
@@ -592,6 +609,10 @@ def get_or_create_gradient_map(dem_path, output_path, upsample_factor=1):
                     current_block = jt[0] * (dst.width // 512 + 1) + jt[1]
                     # print(f"   -> Progress...") 
 
+      os.replace(temporary_output, output_path)
+    finally:
+      if os.path.exists(temporary_output):
+        os.unlink(temporary_output)
     print(f"✅ Generated Gradient Map in {time.time() - start_time:.2f}s")
     return rasterio.open(output_path)
 
@@ -654,7 +675,7 @@ def generate_regional_gradient(dem_ds, bounds, upsample_factor=2, output_path="h
     print(f"   ✅ Regional gradient: {size_mb:.1f} MB in {elapsed:.1f}s")
     return rasterio.open(output_path)
 
-def load_tif_bounds(tif_list):
+def load_tif_bounds(tif_list, cache_dir=None):
     """
     Returns [{"path", "poly"}] for every readable TIF, using a persistent
     bounds cache. rasterio.open on all ~3,486 aerial TIFs costs ~5s of pure
@@ -662,7 +683,7 @@ def load_tif_bounds(tif_list):
     run); bounds never change for a given file, so cache them keyed on
     (size, mtime). Cache lives inside AERIAL_DIR, which is gitignored.
     """
-    cache_path = os.path.join(AERIAL_DIR, ".tif_bounds_cache.json")
+    cache_path = os.path.join(cache_dir or AERIAL_DIR, ".tif_bounds_cache.json")
     try:
         with open(cache_path) as fh:
             cache = json.load(fh)
@@ -929,6 +950,7 @@ def encode_texture_tiers(
     encoding_effort=None,
 ):
     """Encode/publish all tiers as one restart-safe transaction."""
+    timings = {}
     tier_names = tuple(tier["name"] for tier in TEXTURE_TIERS)
     bootstrap_dir = os.path.join(output_dir, "bootstrap")
     res_dirs = {tier: os.path.join(output_dir, tier) for tier in tier_names}
@@ -949,15 +971,19 @@ def encode_texture_tiers(
         input_paths = {tier: os.path.join(tmp_dir, f"{tier}.png") for tier in tier_names}
         encoded_paths = {tier: os.path.join(tmp_dir, f"{tier}.ktx2") for tier in tier_names}
         bootstrap_path = os.path.join(tmp_dir, "bootstrap.webp")
+        stage_started = time.perf_counter()
         for tier in tier_names:
             variants[tier].save(input_paths[tier], "PNG")
+        timings["temporary_png"] = time.perf_counter() - stage_started
         # Build bootstrap from the clean high canvas, not the green low tier.
         # It is a separate diagnostic tier: yellow must never inherit low's
         # tattoo through a second resize.
         bootstrap = canvas.resize((32, 32), Image.Resampling.LANCZOS)
         if texture_tattoos:
             apply_texture_tattoo(bootstrap, bounds, "bootstrap")
+        stage_started = time.perf_counter()
         bootstrap.save(bootstrap_path, "WEBP", quality=45, method=4)
+        timings["webp"] = time.perf_counter() - stage_started
         bootstrap.close()
 
         for image in variants.values():
@@ -967,6 +993,7 @@ def encode_texture_tiers(
         gc.collect()
 
         for tier in tier_names:
+            stage_started = time.perf_counter()
             run_basisu_encode(
                 input_paths[tier],
                 encoded_paths[tier],
@@ -974,11 +1001,14 @@ def encode_texture_tiers(
                 tier_name=tier,
                 encoding_effort=encoding_effort,
             )
+            timings[f"ktx2_{tier}"] = time.perf_counter() - stage_started
+        stage_started = time.perf_counter()
         for tier in tier_names:
             os.replace(encoded_paths[tier], final_paths[tier])
         os.replace(bootstrap_path, final_paths["bootstrap"])
+        timings["transaction_publish"] = time.perf_counter() - stage_started
 
-    return final_paths
+    return final_paths, timings
 
 
 def texture_page_asset_paths(page, output_dir=TEXTURE_PAGE_OUTPUT_DIR):
@@ -1422,9 +1452,14 @@ def bake_texture_page(
     internal_holes=None,
 ):
     """Bake one shared absolute imagery page and atomically publish its tiers."""
+    total_started = time.perf_counter()
+    timings = {}
     os.makedirs(output_dir, exist_ok=True)
     invalidate_texture_page_transaction(page, output_dir)
+    stage_started = time.perf_counter()
     canvas, coverage, source_domain = composite_aerial_texture(page.bounds, valid_tifs)
+    timings["aerial_composite"] = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     canvas, coverage, padding_stats = pad_aggregate_boundary_overdraw(
         canvas,
         coverage,
@@ -1434,12 +1469,15 @@ def bake_texture_page(
         internal_holes,
         valid_tifs,
     )
+    timings["boundary_padding"] = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     checked = validate_texture_page_geometry_coverage(coverage, page, tile_sources)
     if checked == 0 and not np.any(coverage):
         raise RuntimeError(f"{page.asset_stem}: page has neither geometry samples nor aerial imagery")
     del coverage
+    timings["coverage_validation"] = time.perf_counter() - stage_started
 
-    final_paths = encode_texture_tiers(
+    final_paths, encode_timings = encode_texture_tiers(
         canvas,
         page.bounds,
         page.asset_stem,
@@ -1448,6 +1486,7 @@ def bake_texture_page(
         encoding_profile=encoding_profile,
         encoding_effort=encoding_effort,
     )
+    timings.update(encode_timings)
     recipe_version = texture_recipe_version or texture_page_cache_version(
         texture_tattoos, encoding_profile, encoding_effort
     )
@@ -1459,7 +1498,47 @@ def bake_texture_page(
     )
     for path in final_paths.values():
         upload_to_s3(path)
-    return final_paths, padding_stats
+    timings["total"] = time.perf_counter() - total_started
+    return final_paths, padding_stats, timings
+
+
+_TEXTURE_WORKER_CONTEXT = {}
+
+
+def _init_texture_worker(
+    valid_tifs, sources_by_page, output_dir, texture_tattoos, recipe_version,
+    encoding_profile, encoding_effort, internal_holes, basisu_binary,
+):
+    """Install read-only page context once in each persistent worker."""
+    global _TEXTURE_WORKER_CONTEXT, BASISU_BINARY, S3_ENABLED
+    BASISU_BINARY = basisu_binary
+    S3_ENABLED = False
+    _TEXTURE_WORKER_CONTEXT = {
+        "valid_tifs": valid_tifs,
+        "sources_by_page": sources_by_page,
+        "output_dir": output_dir,
+        "texture_tattoos": texture_tattoos,
+        "recipe_version": recipe_version,
+        "encoding_profile": encoding_profile,
+        "encoding_effort": encoding_effort,
+        "internal_holes": internal_holes,
+    }
+
+
+def _bake_texture_page_worker(page):
+    context = _TEXTURE_WORKER_CONTEXT
+    paths, padding, timings = bake_texture_page(
+        page,
+        context["valid_tifs"],
+        context["sources_by_page"][page.key],
+        output_dir=context["output_dir"],
+        texture_tattoos=context["texture_tattoos"],
+        texture_recipe_version=context["recipe_version"],
+        encoding_profile=context["encoding_profile"],
+        encoding_effort=context["encoding_effort"],
+        internal_holes=context["internal_holes"],
+    )
+    return page.key, paths, padding, timings
 
 
 def map_gosper_sources_to_texture_pages(
@@ -1492,9 +1571,18 @@ def bake_global_texture_pages(
     output_dir=TEXTURE_PAGE_OUTPUT_DIR,
     encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
     encoding_effort=None,
+    tiles=None,
+    binary_dir=None,
+    aerial_dir=None,
+    workers=1,
+    max_retries=2,
+    on_page_result=None,
+    tif_paths=None,
 ):
-    """Incrementally bake the global page union for every current GSP binary."""
-    tiles = generate_manifest.scan_binary_tiles()
+    """Incrementally bake an explicit tile inventory with bounded page workers."""
+    binary_dir = binary_dir or generate_manifest.BINARY_DIR
+    aerial_dir = aerial_dir or AERIAL_DIR
+    tiles = list(tiles) if tiles is not None else generate_manifest.scan_binary_tiles()
     geom = coord_util.gosper_tile_geometry()
     render_half_x_m = float(geom["render_half_x_m"])
     render_half_y_m = float(geom["render_half_y_m"])
@@ -1507,7 +1595,7 @@ def bake_global_texture_pages(
     tile_sources = {}
     for tile in tiles:
         binary_path = os.path.join(
-            generate_manifest.BINARY_DIR,
+            binary_dir,
             gosper_asset_name(tile["yq"], tile["yr"], "bin"),
         )
         tile_sources[(tile["yq"], tile["yr"])] = {
@@ -1540,8 +1628,12 @@ def bake_global_texture_pages(
         render_half_y_m,
     )
 
-    tif_list = sorted(glob.glob(os.path.join(AERIAL_DIR, "*.tif")))
-    all_tifs = sorted(load_tif_bounds(tif_list), key=lambda source: source["path"])
+    tif_list = sorted(tif_paths) if tif_paths is not None else sorted(
+        glob.glob(os.path.join(aerial_dir, "*.tif"))
+    )
+    all_tifs = sorted(
+        load_tif_bounds(tif_list, cache_dir=aerial_dir), key=lambda source: source["path"]
+    )
     max_aggregate_radius = (
         coord_util.gosper_level_size(coord_util.GOSPER_TILE_LEVEL)
         / math.sqrt(3.0)
@@ -1558,22 +1650,22 @@ def bake_global_texture_pages(
 
     baked = 0
     skipped = 0
+    page_timings = {}
     started = time.time()
-    for index, page in enumerate(pages, start=1):
+    pending = []
+    for page in pages:
         if not force and texture_page_is_current(page, recipe_version, output_dir):
             skipped += 1
             continue
-        print(f"   [{index}/{len(pages)}] Baking {page.asset_stem}...")
-        _paths, padding_stats = bake_texture_page(
-            page,
-            valid_tifs,
-            sources_by_page[page.key],
-            output_dir=output_dir,
-            texture_tattoos=texture_tattoos,
-            texture_recipe_version=recipe_version,
-            encoding_profile=encoding_profile,
-            encoding_effort=encoding_effort,
-            internal_holes=internal_holes,
+        pending.append(page)
+
+    def record_result(page, paths, padding_stats, timings):
+        nonlocal baked
+        baked += 1
+        page_timings[page.key] = timings
+        print(
+            f"   [{baked + skipped}/{len(pages)}] Complete {page.asset_stem} "
+            f"in {timings['total']:.1f}s"
         )
         if padding_stats["padded_pixels"]:
             print(
@@ -1581,8 +1673,54 @@ def bake_global_texture_pages(
                 f"{padding_stats['padded_area_m2']:.1f} m² / "
                 f"max {padding_stats['max_distance_m']:.2f} m"
             )
-        baked += 1
-        gc.collect()
+        if on_page_result:
+            on_page_result(page, paths, padding_stats, timings)
+
+    workers = max(1, int(workers))
+    if workers == 1:
+        for page in pending:
+            print(f"   Baking {page.asset_stem}...")
+            for attempt in range(max_retries + 1):
+                try:
+                    paths, padding_stats, timings = bake_texture_page(
+                        page, valid_tifs, sources_by_page[page.key],
+                        output_dir=output_dir, texture_tattoos=texture_tattoos,
+                        texture_recipe_version=recipe_version,
+                        encoding_profile=encoding_profile, encoding_effort=encoding_effort,
+                        internal_holes=internal_holes,
+                    )
+                    record_result(page, paths, padding_stats, timings)
+                    break
+                except Exception:
+                    if attempt >= max_retries:
+                        raise
+                    print(f"      retrying {page.asset_stem} ({attempt + 1}/{max_retries})")
+    elif pending:
+        if BASISU_BINARY is None:
+            raise RuntimeError("parallel texture workers require a resolved BasisU binary")
+        print(f"   Rechner texture pool: {workers} persistent workers, queue={len(pending)}")
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_texture_worker,
+            initargs=(
+                valid_tifs, sources_by_page, output_dir, texture_tattoos,
+                recipe_version, encoding_profile, encoding_effort, internal_holes,
+                BASISU_BINARY,
+            ),
+        ) as executor:
+            futures = {executor.submit(_bake_texture_page_worker, page): (page, 0) for page in pending}
+            while futures:
+                future = next(as_completed(futures))
+                page, attempt = futures.pop(future)
+                try:
+                    _key, paths, padding_stats, timings = future.result()
+                except Exception:
+                    if attempt >= max_retries:
+                        raise
+                    print(f"      retrying {page.asset_stem} ({attempt + 1}/{max_retries})")
+                    futures[executor.submit(_bake_texture_page_worker, page)] = (page, attempt + 1)
+                    continue
+                record_result(page, paths, padding_stats, timings)
 
     # A marker is the transaction commit record; never generate/upload a new
     # manifest unless the complete expected page set is present and current.
@@ -1620,6 +1758,13 @@ def bake_global_texture_pages(
         f"✅ Global pages complete: {baked} baked, {skipped} cached, "
         f"{len(pages)} total in {elapsed:.1f}s"
     )
+    if page_timings:
+        stage_names = sorted({name for timings in page_timings.values() for name in timings})
+        stage_summary = ", ".join(
+            f"{name}={sum(timings.get(name, 0.0) for timings in page_timings.values()):.1f}s"
+            for name in stage_names
+        )
+        print(f"   Worker-stage CPU/wall sums: {stage_summary}")
     if padding_summary["page_count"]:
         print(
             f"   Boundary padding: {padding_summary['page_count']} pages, "
@@ -1633,6 +1778,7 @@ def bake_global_texture_pages(
         "skipped": skipped,
         "source_count": len(valid_tifs),
         "padding": padding_summary,
+        "timings": dict(page_timings),
     }
 
 
@@ -2011,25 +2157,51 @@ def read_gsp_unit_valid(path):
 read_gsp1_unit_valid = read_gsp_unit_valid
 
 
-def bake_gosper_binary(latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin"):
+def bake_gosper_binary(
+    latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin",
+    return_timings=False,
+):
+    total_started = time.perf_counter()
+    timings = {}
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    stage_started = time.perf_counter()
     dem_sample = _read_unit_dem_samples(latQ, latR, dem_ds)
+    timings["dem_window_sampling"] = time.perf_counter() - stage_started
     if dem_sample is None:
-        return False
+        return (False, timings) if return_timings else False
 
     info, unit_x, unit_y, dem_data, dem_transform, h_unit, unit_valid = dem_sample
+    stage_started = time.perf_counter()
     unit_deltas, unit_slopes, unit_nx, unit_nz = _sample_unit_edges_and_normals(
         unit_x, unit_y, h_unit, unit_valid, dem_data, dem_transform, grad_ds, info["bounds"])
+    timings["gradient_reads_and_normals"] = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     nodes = _build_gsp1_nodes(h_unit, unit_valid, unit_slopes, unit_nx, unit_nz)
+    timings["geometry_aggregation"] = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     blob = _pack_gsp3_blob(info, nodes, unit_deltas, unit_slopes, unit_nx, unit_nz, unit_valid)
+    timings["serialization"] = time.perf_counter() - stage_started
 
     bin_path = os.path.join(output_dir, gosper_asset_name(latQ, latR, "bin"))
-    with open(bin_path, "wb") as f:
-        f.write(blob)
+    # Same-directory temporary + fsync + replace prevents a killed worker from
+    # leaving a truncated GSP that looks complete to resume logic.
+    temporary_path = f"{bin_path}.{os.getpid()}.tmp"
+    stage_started = time.perf_counter()
+    try:
+        with open(temporary_path, "wb") as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, bin_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+    timings["filesystem_write"] = time.perf_counter() - stage_started
     upload_to_s3(bin_path)
-    return True
+    timings["total"] = time.perf_counter() - total_started
+    return (True, timings) if return_timings else True
 
 
 def _lattice_world_basis():
@@ -2095,7 +2267,7 @@ def parse_coverage_bounds(value):
     return bounds
 
 def main():
-    global S3_ENABLED, BASISU_BINARY
+    global S3_ENABLED, BASISU_BINARY, AERIAL_DIR, DEM_PATH
     parser = argparse.ArgumentParser(description="🧇 Waffle Iron v6.0 — Gosper Island Incremental Bake")
     parser.add_argument("--full", action="store_true", help="Removed: full Tirol has no approved release profile")
     parser.add_argument(
@@ -2137,7 +2309,30 @@ def main():
             "local iteration and kept in a separate texture cache"
         ),
     )
+    parser.add_argument(
+        "--execution-profile", choices=tuple(EXECUTION_PROFILES), default="mac-small",
+        help="Machine resource profile (default: mac-small)",
+    )
+    parser.add_argument(
+        "--texture-workers", type=int,
+        help="Override the execution profile's bounded page-worker count",
+    )
+    parser.add_argument("--aerial-dir", help="Override source orthophoto directory")
+    parser.add_argument("--dem-path", help="Override DEM path")
+    parser.add_argument(
+        "--output-root",
+        help="Isolated app-output root containing tiles_bin/, aerial_pages/, and tile_manifest.json",
+    )
     args = parser.parse_args()
+    if args.aerial_dir:
+        AERIAL_DIR = os.path.abspath(args.aerial_dir)
+    if args.dem_path:
+        DEM_PATH = os.path.abspath(args.dem_path)
+    app_output_root = os.path.abspath(args.output_root or "frontend/app")
+    binary_output_dir = os.path.join(app_output_root, "tiles_bin")
+    texture_output_dir = os.path.join(app_output_root, "aerial_pages")
+    metadata_path = os.path.join(binary_output_dir, "metadata.json")
+    manifest_path = os.path.join(app_output_root, "tile_manifest.json")
     if args.full:
         parser.error(
             "--full is no longer a release mode; select production-selected-tirol "
@@ -2151,6 +2346,10 @@ def main():
     # Validate grid size
     grid_size = max(1, min(16, args.grid))
     encoding_profile_name = args.texture_profile
+    machine_profile = execution_profile(args.execution_profile)
+    texture_workers = args.texture_workers or machine_profile.texture_workers
+    if texture_workers < 1:
+        parser.error("--texture-workers must be at least 1")
     encoding_profile = texture_encoding_profile(encoding_profile_name)
     encoding_effort = 1 if args.fast_texture_encode else None
     is_production = args.release_profile == "production-selected-tirol"
@@ -2161,9 +2360,9 @@ def main():
 
     # Load existing metadata for skip logic
     metadata = {}
-    if os.path.exists(METADATA_PATH):
+    if os.path.exists(metadata_path):
         try:
-            with open(METADATA_PATH, "r") as f:
+            with open(metadata_path, "r") as f:
                 metadata = json.load(f)
         except: pass
     
@@ -2202,18 +2401,15 @@ def main():
         f"🎛️  Texture profile: {encoding_profile_name} "
         f"({encoding_profile['label']}; {tier_summary})"
     )
+    print(
+        f"🖥️  Execution profile: {machine_profile.name}; "
+        f"texture workers={texture_workers}, CUDA policy={machine_profile.cuda_policy}"
+    )
 
-    # Disk Space Check
-    import shutil as disk_check
-    total, used, free = disk_check.disk_usage("/")
-    free_gb = free / (1024**3)
-    if free_gb < 5.0:
-        print(f"⚠️  WARNING: Only {free_gb:.1f}GB of free disk space available!")
-        print(f"   The bake may fail if disk fills up. Consider freeing space first.")
-        response = input("   Continue anyway? (y/N): ")
-        if response.lower() != 'y':
-            print("Aborting.")
-            return
+    # Production capacity is enforced non-interactively by bake_preflight.py
+    # from inventory-derived geometry/page counts and the measured gradient
+    # cache size. The development path deliberately has no generic interactive
+    # disk prompt that could hang an unattended run.
 
     if args.texture_pages_only:
         mode = args.release_profile
@@ -2235,8 +2431,8 @@ def main():
         S3_ENABLED = False
 
     # --- CLEANUP (Non-destructive) ---
-    dirs_to_ensure = ["frontend/app/tiles_bin", TEXTURE_PAGE_OUTPUT_DIR]
-    dirs_to_ensure.extend(os.path.join(TEXTURE_PAGE_OUTPUT_DIR, tier["name"]) for tier in TEXTURE_TIERS)
+    dirs_to_ensure = [binary_output_dir, texture_output_dir]
+    dirs_to_ensure.extend(os.path.join(texture_output_dir, tier["name"]) for tier in TEXTURE_TIERS)
     for d in dirs_to_ensure:
         os.makedirs(d, exist_ok=True)
 
@@ -2246,6 +2442,10 @@ def main():
             texture_tattoos=texture_tattoos,
             encoding_profile=encoding_profile_name,
             encoding_effort=encoding_effort,
+            workers=texture_workers,
+            output_dir=texture_output_dir,
+            binary_dir=binary_output_dir,
+            aerial_dir=AERIAL_DIR,
         )
         effective_effort = texture_encoding_for_tier(
             encoding_profile_name, "high", effort_override=encoding_effort
@@ -2262,9 +2462,11 @@ def main():
             "texture_page_boundary_padding": page_results["padding"],
             "last_page_bake": time.ctime(),
         })
-        generate_manifest.write_json_atomic(METADATA_PATH, metadata)
-        generate_manifest.generate_manifest()
-        manifest_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app/tile_manifest.json"))
+        generate_manifest.write_json_atomic(metadata_path, metadata)
+        generate_manifest.generate_manifest(
+            binary_dir=binary_output_dir, texture_page_dir=texture_output_dir,
+            output_file=manifest_path, metadata_file=metadata_path,
+        )
         upload_to_s3(manifest_path)
         print("Done.")
         return
@@ -2321,7 +2523,11 @@ def main():
         # not just the center region, because border island squares intentionally
         # extend outside the requested bbox.
         gradient_bounds = _bounds_union(info["bounds"] for info in islands) or region_bounds
-        grad_ds = generate_regional_gradient(dem, gradient_bounds, upsample_factor=upsample)
+        gradient_output = os.path.join(app_output_root, ".cache", "mini_bake_gradient.tif")
+        os.makedirs(os.path.dirname(gradient_output), exist_ok=True)
+        grad_ds = generate_regional_gradient(
+            dem, gradient_bounds, upsample_factor=upsample, output_path=gradient_output
+        )
 
     # Production uses the pre-computed gradient cache for its approved bounds.
     if grad_ds is None:
@@ -2350,7 +2556,7 @@ def main():
 
         # Geometry binaries are the only island-owned outputs. Imagery is
         # emitted later from the global page inventory.
-        bin_file = f"frontend/app/tiles_bin/{gosper_asset_name(yq, yr, 'bin')}"
+        bin_file = os.path.join(binary_output_dir, gosper_asset_name(yq, yr, "bin"))
         skip_bin = can_skip_bin and os.path.exists(bin_file)
         if skip_bin:
             skipped += 1
@@ -2358,7 +2564,7 @@ def main():
 
         t0 = time.time()
         print(f"Cooking Gosper island {yq}, {yr}...")
-        wrote_bin = bake_gosper_binary(yq, yr, dem, grad_ds)
+        wrote_bin = bake_gosper_binary(yq, yr, dem, grad_ds, output_dir=binary_output_dir)
         if not wrote_bin:
             skipped_no_unit_data += 1
             print("   ⏭️  no valid DEM unit samples")
@@ -2392,11 +2598,15 @@ def main():
         texture_tattoos=texture_tattoos,
         encoding_profile=encoding_profile_name,
         encoding_effort=encoding_effort,
+        workers=texture_workers,
+        output_dir=texture_output_dir,
+        binary_dir=binary_output_dir,
+        aerial_dir=AERIAL_DIR,
     )
 
     # Update metadata
     generate_manifest.write_json_atomic(
-        METADATA_PATH,
+        metadata_path,
         {"release_profile": args.release_profile,
                    "baker_version": BAKER_VERSION,
                    "texture_page_version": effective_texture_page_version,
@@ -2413,16 +2623,18 @@ def main():
                    "grid_size": grid_size, "islands_baked": len(bake_times)},
     )
 
-    generate_manifest.generate_manifest()
+    generate_manifest.generate_manifest(
+        binary_dir=binary_output_dir, texture_page_dir=texture_output_dir,
+        output_file=manifest_path, metadata_file=metadata_path,
+    )
     # Production publication happens only after every local asset and this
     # manifest exist. release_publish uploads immutable release keys, verifies
     # them, then atomically flips the live manifest.
-    manifest_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app/tile_manifest.json"))
     if is_production:
         publisher = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/release_publish.py"))
         subprocess.run([
             sys.executable, publisher, "--manifest", manifest_path,
-            "--app-root", os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/app")),
+            "--app-root", app_output_root,
             "--bucket", S3_BUCKET, "--prefix", S3_PREFIX,
         ], check=True)
     print("Done.")

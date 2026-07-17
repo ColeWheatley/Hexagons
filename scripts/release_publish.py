@@ -148,30 +148,66 @@ def version_manifest(manifest: dict[str, Any], release: str) -> dict[str, Any]:
 
 
 def verify(store: Store, key: str, asset: Asset, cache_control: str,
-           expected_sha: str | None = None, *, decode: bool = False) -> None:
+           expected_sha: str | None = None, *, decode: bool = False,
+           fetch_payload: bool = True) -> None:
     expected_sha = expected_sha or sha256(asset.local)
     head = store.head(key)
     if int(head["ContentLength"]) != asset.local.stat().st_size or head.get("ContentType") != content_type(asset.local) or head.get("CacheControl") != cache_control:
         raise ValueError(f"head verification failed for {key}")
-    payload = store.get(key)
-    if head.get("Metadata", {}).get("sha256") != expected_sha or sha256_bytes(payload) != expected_sha:
+    if head.get("Metadata", {}).get("sha256") != expected_sha:
         raise ValueError(f"hash verification failed for {key}")
-    if decode:
-        decode_sample(asset, payload)
+    if fetch_payload:
+        payload = store.get(key)
+        if sha256_bytes(payload) != expected_sha:
+            raise ValueError(f"hash verification failed for {key}")
+        if decode:
+            decode_sample(asset, payload)
+
+
+def object_matches(store: Store, key: str, asset: Asset, cache_control: str,
+                   expected_sha: str) -> bool:
+    """Use durable metadata to skip an already uploaded immutable object."""
+    try:
+        head = store.head(key)
+    except Exception:
+        return False
+    return (
+        int(head.get("ContentLength", -1)) == asset.local.stat().st_size
+        and head.get("ContentType") == content_type(asset.local)
+        and head.get("CacheControl") == cache_control
+        and head.get("Metadata", {}).get("sha256") == expected_sha
+    )
+
+
+def upload_asset_idempotent(
+    store: Store, key: str, asset: Asset, cache_control: str, expected_sha: str,
+    *, verify_payload: bool = False, decode: bool = False,
+) -> bool:
+    transferred = not object_matches(store, key, asset, cache_control, expected_sha)
+    if transferred:
+        store.put(
+            asset.local, key, cache_control=cache_control,
+            content_type=content_type(asset.local), sha256_hex=expected_sha,
+        )
+    verify(
+        store, key, asset, cache_control, expected_sha,
+        decode=decode, fetch_payload=verify_payload,
+    )
+    return transferred
 
 
 def sha256_bytes(payload: bytes) -> str: return hashlib.sha256(payload).hexdigest()
 
 
 def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_after: int | None = None,
-            allow_beta_diagnostics: bool = False) -> str:
+            allow_beta_diagnostics: bool = False, release_override: str | None = None) -> str:
     manifest = json.loads(manifest_path.read_text())
     reject_diagnostics(manifest, allow_beta_diagnostics=allow_beta_diagnostics)
     assets = referenced_assets(manifest, app_root)
     missing = [str(item.local) for item in assets if not item.local.is_file()]
     if missing: raise FileNotFoundError("manifest references missing assets: " + ", ".join(missing))
     digests = {asset.logical: sha256(asset.local) for asset in assets}
-    release = release_id(manifest_path, assets, digests)
+    release = release_override or release_id(manifest_path, assets, digests)
     staged = version_manifest(manifest, release)
     with tempfile.TemporaryDirectory() as temp:
         staged_path = Path(temp) / "tile_manifest.json"; staged_path.write_text(json.dumps(staged, separators=(",", ":")))
@@ -181,11 +217,12 @@ def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_afte
         for index, asset in enumerate(assets, 1):
             key = f"releases/{release}/{asset.logical}"
             digest = digests[asset.logical]
-            store.put(asset.local, key, cache_control=IMMUTABLE,
-                      content_type=content_type(asset.local), sha256_hex=digest)
             suffix = asset.local.suffix.lower()
-            verify(store, key, asset, IMMUTABLE, digest,
-                   decode=suffix in {".bin", ".ktx2", ".webp"} and suffix not in decoded_types)
+            sample = suffix in {".bin", ".ktx2", ".webp"} and suffix not in decoded_types
+            upload_asset_idempotent(
+                store, key, asset, IMMUTABLE, digest,
+                verify_payload=sample, decode=sample,
+            )
             decoded_types.add(suffix)
             if interrupt_after == index: raise RuntimeError("simulated interrupted upload")
         staged_key = f"releases/{release}/tile_manifest.json"
@@ -203,7 +240,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=Path("frontend/app/tile_manifest.json"))
     parser.add_argument("--app-root", type=Path, default=Path("frontend/app"))
-    parser.add_argument("--bucket"); parser.add_argument("--prefix", default="powfinder/app")
+    parser.add_argument("--bucket"); parser.add_argument("--prefix", default="hexagons/app")
+    parser.add_argument("--release-id", help="preallocated immutable run/release identity")
     parser.add_argument("--allow-beta-diagnostics", action="store_true",
                         help="allow diagnostic tattoos only for the beta-stubai manifest")
     parser.add_argument("--dry-run", action="store_true", help="publish to a temporary local fake-S3 only")
@@ -213,6 +251,6 @@ def main() -> None:
     elif args.dry_run: store = LocalStore(Path(tempfile.mkdtemp(prefix="hexagons-fake-s3-")))
     elif args.bucket: store = AwsStore(args.bucket, args.prefix)
     else: parser.error("provide --bucket for S3 or --dry-run/--fake-s3 for local verification")
-    print(f"published release {publish(args.manifest, args.app_root, store, allow_beta_diagnostics=args.allow_beta_diagnostics)}")
+    print(f"published release {publish(args.manifest, args.app_root, store, allow_beta_diagnostics=args.allow_beta_diagnostics, release_override=args.release_id)}")
 
 if __name__ == "__main__": main()

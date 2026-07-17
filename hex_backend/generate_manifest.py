@@ -4,6 +4,9 @@ import os
 import re
 import struct
 import sys
+from pathlib import Path
+
+from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
@@ -40,16 +43,17 @@ def _read_header(path):
     return GSP_HEADER.unpack(data)
 
 
-def _read_bake_metadata():
+def _read_bake_metadata(metadata_file=None):
+    metadata_file = metadata_file or METADATA_FILE
     try:
-        with open(METADATA_FILE, "r", encoding="utf-8") as source:
+        with open(metadata_file, "r", encoding="utf-8") as source:
             return json.load(source)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
-def _read_page_padding_stats(page):
-    path = os.path.join(TEXTURE_PAGE_DIR, ".coverage", f"{page.asset_stem}.json")
+def _read_page_padding_stats(page, texture_page_dir=None):
+    path = os.path.join(texture_page_dir or TEXTURE_PAGE_DIR, ".coverage", f"{page.asset_stem}.json")
     try:
         with open(path, "r", encoding="utf-8") as source:
             stats = json.load(source)
@@ -78,19 +82,27 @@ def write_json_atomic(path, payload):
             os.unlink(temporary)
 
 
-def scan_binary_tiles():
-    """Return validated GSP tiles without assigning imagery ownership."""
+def scan_binary_tiles(binary_dir=None, expected_tiles=None, reject_unexpected=False):
+    """Return validated GSP tiles, optionally constrained by an explicit inventory."""
+    binary_dir = binary_dir or BINARY_DIR
+    expected = set(expected_tiles) if expected_tiles is not None else None
     tiles = []
 
-    if not os.path.exists(BINARY_DIR):
+    if not os.path.exists(binary_dir):
         return tiles
 
-    for filename in sorted(os.listdir(BINARY_DIR)):
+    present_keys = set()
+    unexpected = []
+    for filename in sorted(os.listdir(binary_dir)):
         match = GSP1_PATTERN.match(filename)
         if not match:
             continue
         file_yq, file_yr = int(match.group(1)), int(match.group(2))
-        path = os.path.join(BINARY_DIR, filename)
+        key = (file_yq, file_yr)
+        if expected is not None and key not in expected:
+            unexpected.append(filename)
+            continue
+        path = os.path.join(binary_dir, filename)
 
         try:
             (magic, version, tile_level, center_q, center_r, yq, yr,
@@ -124,13 +136,74 @@ def scan_binary_tiles():
             "nx": int(nx),
             "nz": int(nz),
         })
+        present_keys.add(key)
+    if reject_unexpected and unexpected:
+        raise ValueError(f"unexpected GSP files outside run inventory: {unexpected[:8]}")
+    if expected is not None:
+        missing = sorted(expected - present_keys)
+        if missing:
+            raise ValueError(f"run inventory GSP outputs are missing or invalid: {missing[:8]}")
     return tiles
 
 
-def generate_manifest():
-    print(f"🔍 Manifest Generator looking in: {BINARY_DIR}")
+def _validate_inventory_texture_assets(texture_page_dir, pages, recipe_version):
+    expected_stems = {page.asset_stem for page in pages}
+    suffixes = {"bootstrap": ".webp", "low": ".ktx2", "medium": ".ktx2", "high": ".ktx2"}
+    for directory, suffix in suffixes.items():
+        path = Path(texture_page_dir) / directory
+        found = {item.stem for item in path.glob(f"*{suffix}")} if path.exists() else set()
+        unexpected = sorted(found - expected_stems)
+        missing = sorted(expected_stems - found)
+        if unexpected:
+            raise ValueError(f"unexpected {directory} assets outside run inventory: {unexpected[:8]}")
+        if missing:
+            raise ValueError(f"missing {directory} assets required by run inventory: {missing[:8]}")
+    for directory, suffix in ((".recipes", ".txt"), (".coverage", ".json")):
+        path = Path(texture_page_dir) / directory
+        found = {item.stem for item in path.glob(f"*{suffix}")} if path.exists() else set()
+        unexpected = sorted(found - expected_stems)
+        if unexpected:
+            raise ValueError(f"unexpected {directory} metadata outside run inventory: {unexpected[:8]}")
+    for page in pages:
+        marker = Path(texture_page_dir) / ".recipes" / f"{page.asset_stem}.txt"
+        coverage = Path(texture_page_dir) / ".coverage" / f"{page.asset_stem}.json"
+        if not marker.is_file() or marker.read_text().strip() != recipe_version:
+            raise ValueError(f"{page.asset_stem}: missing or stale texture recipe marker")
+        if not coverage.is_file():
+            raise ValueError(f"{page.asset_stem}: missing coverage transaction metadata")
+        bootstrap = Path(texture_page_dir) / "bootstrap" / f"{page.asset_stem}.webp"
+        with Image.open(bootstrap) as image:
+            if image.format != "WEBP" or image.size != (32, 32):
+                raise ValueError(f"{page.asset_stem}: bootstrap must be exactly 32x32 WebP")
+        for tier in ("low", "medium", "high"):
+            payload = (Path(texture_page_dir) / tier / f"{page.asset_stem}.ktx2").read_bytes()[:12]
+            if payload != b"\xabKTX 20\xbb\r\n\x1a\n":
+                raise ValueError(f"{page.asset_stem}: invalid {tier} KTX2")
 
-    if not os.path.exists(BINARY_DIR):
+
+def generate_manifest(
+    inventory_path=None, *, binary_dir=None, texture_page_dir=None,
+    output_file=None, metadata_file=None,
+):
+    binary_dir = binary_dir or BINARY_DIR
+    texture_page_dir = texture_page_dir or TEXTURE_PAGE_DIR
+    output_file = output_file or OUTPUT_FILE
+    metadata_file = metadata_file or METADATA_FILE
+    inventory = None
+    expected_tiles = None
+    if inventory_path is not None:
+        from bake_inventory import geometry_keys, load_inventory, texture_page_keys
+        inventory = load_inventory(inventory_path)
+        expected_tiles = geometry_keys(inventory)
+        incomplete_geometry = [
+            (item["yq"], item["yr"]) for item in inventory["geometry"]
+            if item.get("status") != "complete"
+        ]
+        if incomplete_geometry:
+            raise ValueError(f"refusing manifest with incomplete inventory geometry: {incomplete_geometry[:8]}")
+    print(f"🔍 Manifest Generator looking in: {binary_dir}")
+
+    if not os.path.exists(binary_dir):
         print("❌ Error: Binary directory not found.")
         return
 
@@ -141,17 +214,35 @@ def generate_manifest():
     manifest_half_m = float(geom["tex_half_m"])
     render_half_x_m = float(geom["render_half_x_m"])
     render_half_y_m = float(geom["render_half_y_m"])
-    tiles = scan_binary_tiles()
+    tiles = scan_binary_tiles(
+        binary_dir, expected_tiles=expected_tiles,
+        reject_unexpected=inventory is not None,
+    )
     unit_valid_by_tile = {
         (tile["yq"], tile["yr"]): read_unit_valid(
-            os.path.join(BINARY_DIR, f"gosper_{tile['yq']}_{tile['yr']}.bin")
+            os.path.join(binary_dir, f"gosper_{tile['yq']}_{tile['yr']}.bin")
         )
         for tile in tiles
     }
     texture_pages = exact_pages_for_tiles(
         tiles, render_half_x_m, render_half_y_m, unit_valid_by_tile
     )
-    page_padding_stats = {page.key: _read_page_padding_stats(page) for page in texture_pages}
+    if inventory is not None:
+        expected_pages = texture_page_keys(inventory)
+        actual_pages = {(page.page_x, page.page_y) for page in texture_pages}
+        if actual_pages != expected_pages:
+            raise ValueError(
+                "manifest texture pages differ from authoritative run inventory "
+                f"(missing={sorted(expected_pages - actual_pages)[:8]}, "
+                f"unexpected={sorted(actual_pages - expected_pages)[:8]})"
+            )
+        recipe = inventory["texture_recipe"]
+        if recipe.get("diagnostic_tattoos"):
+            raise ValueError("production inventory contains diagnostic mode metadata")
+        _validate_inventory_texture_assets(texture_page_dir, texture_pages, recipe["version"])
+    page_padding_stats = {
+        page.key: _read_page_padding_stats(page, texture_page_dir) for page in texture_pages
+    }
     page_vertical_bounds = {}
     for tile in tiles:
         for page in pages_for_bounds(
@@ -178,7 +269,16 @@ def generate_manifest():
     else:
         min_x = max_x = min_y = max_y = 0.0
 
-    bake_metadata = _read_bake_metadata()
+    bake_metadata = _read_bake_metadata(metadata_file)
+    if inventory is not None:
+        bake_metadata = {
+            "release_profile": inventory["release_profile"],
+            "baker_version": inventory.get("geometry_recipe", {}).get("version", "gsp3-v3"),
+            "texture_page_version": inventory["texture_recipe"]["version"],
+            "texture_encoding_profile": inventory["texture_recipe"]["encoding_profile"],
+            "texture_encoding_effort": inventory["texture_recipe"]["encoding_effort"],
+            "texture_page_tattoos": inventory["texture_recipe"]["diagnostic_tattoos"],
+        }
     release_profile = bake_metadata.get("release_profile")
     if not isinstance(release_profile, str):
         raise ValueError(
@@ -219,6 +319,12 @@ def generate_manifest():
             "extent_quantum_m": 0.1,
         },
         "release": manifest_release_descriptor(release_profile),
+        "build": ({
+            "run_id": inventory["run_id"],
+            "git_commit": inventory["git_commit"],
+            "execution_profile": inventory["execution_profile"]["name"],
+            "source_intersection_bounds": inventory["sources"].get("intersection_bounds"),
+        } if inventory is not None else {}),
         # Geometry-independent absolute imagery pages are the only texture
         # identity. Geometry contributes coverage bounds, never asset ownership.
         "texture_pages": manifest_texture_page_contract(
@@ -239,11 +345,12 @@ def generate_manifest():
         "tiles": tiles,
     }
 
-    write_json_atomic(OUTPUT_FILE, manifest)
+    write_json_atomic(output_file, manifest)
 
     print(f"✅ Generated manifest for {len(tiles)} Gosper islands and {len(texture_pages)} imagery pages.")
     print(f"   Bounds: X[{min_x:.0f}, {max_x:.0f}], Y[{min_y:.0f}, {max_y:.0f}]")
-    print(f"   Saved to: {OUTPUT_FILE}")
+    print(f"   Saved to: {output_file}")
+    return manifest
 
 
 if __name__ == "__main__":
