@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -377,7 +378,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
         [CHROME, "--headless=new", f"--remote-debugging-port={PORT}",
          f"--user-data-dir={profile}", "--no-first-run", f"--window-size={viewport}",
          "--hide-crash-restore-bubble", launch_url],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
     try:
         # Find the page target
@@ -523,11 +524,15 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                     f.write(base64.b64decode(shot["data"]))
             return 0
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
+        # Chrome forks renderers/GPU workers. Killing only the browser parent
+        # leaks those workers into later matrix trials and eventually OOMs the
+        # host; this private process group is safe to reap as a unit.
+        try: os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            try: os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
         shutil.rmtree(profile, ignore_errors=True)
 
 
