@@ -90,6 +90,12 @@ export function selectTextureDispatchTaskIndex(queue, states, {
         const task = queue[index];
         if (!task) continue;
         if (isMoving && task.tier === PAGE_TEXTURE_TIER.HIGH) continue;
+        const state = states?.get?.(task.key);
+        const bootstrapPending = Boolean(
+            state?.queued?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+            || state?.loading?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
+        ) && !tierIsTerminal(state, PAGE_TEXTURE_TIER.BOOTSTRAP);
+        if (task.tier !== PAGE_TEXTURE_TIER.BOOTSTRAP && bootstrapPending) continue;
         if (lowBarrier && task.tier !== (
             bootstrapQueued ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW
         )) continue;

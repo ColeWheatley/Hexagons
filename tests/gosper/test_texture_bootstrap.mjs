@@ -27,9 +27,20 @@ assert.equal(selectTextureDispatchTaskIndex(queue, residency.states, {
     lowCoverageFirst: true, lowCoverageIncludesOutside: false,
 }), 1, 'bootstrap is requested before KTX2 regardless of numeric priority');
 
+// Once bootstrap has left the queue but is still decoding, a KTX2 request for
+// the same page must not start and contend with first paint.
+visible.queued.delete(TIER.BOOTSTRAP);
+visible.loading.add(TIER.BOOTSTRAP);
+assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
+    lowCoverageFirst: true, lowCoverageIncludesOutside: false,
+}), -1, 'KTX2 waits until the page bootstrap reaches a terminal state');
+
 const bootstrap = { texture: { dispose() {} }, bytes: 4096 };
 residency.replaceAsset('visible', TIER.BOOTSTRAP, bootstrap);
-visible.queued.delete(TIER.BOOTSTRAP);
+visible.loading.delete(TIER.BOOTSTRAP);
+assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
+    lowCoverageFirst: true, lowCoverageIncludesOutside: false,
+}), 0, 'KTX2 becomes eligible once bootstrap is resident');
 const low = { texture: { dispose() {} }, bytes: 16384 };
 residency.replaceAsset('visible', TIER.LOW, low);
 let disposed = 0;

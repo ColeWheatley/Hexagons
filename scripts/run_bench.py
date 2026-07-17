@@ -61,6 +61,11 @@ POLL = f"""(() => {{
 FETCH_REPORT = f"localStorage.getItem('{LS_KEY}')"
 STATIC_BUFFER_STATS = "JSON.stringify(window.pistonViewer?.getStaticBufferInstrumentation?.() || null)"
 MATERIAL_CHURN_STATS = "JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ || null)"
+BOOTSTRAP_DIAGNOSTICS = "JSON.stringify(window.pistonViewer?.bootstrapDiagnostics || null)"
+RESOURCE_TIMINGS = """JSON.stringify(performance.getEntriesByType('resource').map(entry => ({
+  name: entry.name, startTime: entry.startTime, responseEnd: entry.responseEnd,
+  transferSize: entry.transferSize, encodedBodySize: entry.encodedBodySize
+})))"""
 VIEWPORT_AUDIT = """(() => {
   const selectors = ['#main-panel', '#hex-search-container'];
   const visible = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none'
@@ -157,6 +162,14 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900"):
                     raw_material_churn = await cdp.js(MATERIAL_CHURN_STATS)
                     report["materialChurn"] = (
                         json.loads(raw_material_churn) if raw_material_churn else None
+                    )
+                    raw_bootstrap_diagnostics = await cdp.js(BOOTSTRAP_DIAGNOSTICS)
+                    report["bootstrapDiagnostics"] = (
+                        json.loads(raw_bootstrap_diagnostics) if raw_bootstrap_diagnostics else None
+                    )
+                    raw_resource_timings = await cdp.js(RESOURCE_TIMINGS)
+                    report["resourceTimings"] = (
+                        json.loads(raw_resource_timings) if raw_resource_timings else []
                     )
                     raw_viewport_audit = await cdp.js(VIEWPORT_AUDIT)
                     report["viewportAudit"] = (

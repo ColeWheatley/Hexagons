@@ -364,6 +364,7 @@ class PistonViewer {
         this.appStartTime = performance.now();
         this.materialsToUpdate = new Set(); // Changed to Set
         this.materialChurn = createMaterialChurnStats();
+        this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
 
         this.gradientMode = 1.0;
         this.highTextureEnterPx = TEXTURE_CONFIG.highEnterPx;
@@ -765,7 +766,11 @@ class PistonViewer {
         // message — the worker destructures e.data.data.
         worker.postMessage({
             type: 'INIT',
-            data: { support: this.textureSupport, prewarmBasis: lane === WORKER_LANE.TEXTURE },
+            // Bootstrap WebP is the first-paint path. Compiling the ~1 MB
+            // Basis module at worker startup contends with its decode and
+            // defeats that purpose; the first KTX2 request initializes Basis
+            // lazily after bootstrap work has been dispatched.
+            data: { support: this.textureSupport, prewarmBasis: false },
         });
         return worker;
     }
@@ -2684,6 +2689,7 @@ class PistonViewer {
         // restart. Do not spin on the same missing URL in this page session.
         if (state.failed.has(tier)) return;
         state.queued.add(tier);
+        if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
         this.textureQueue.push({
             key: state.key,
             textureResource,
@@ -2888,6 +2894,11 @@ class PistonViewer {
 
     _installTextureResult(task, result) {
         const state = this._textureState(task.textureResource);
+        if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapInstalled');
+        if (task.tier === TEXTURE_TIER.BOOTSTRAP &&
+            this.bootstrapDiagnostics.firstConsumer?.pageKeys?.includes(state.key)) {
+            this.bootstrapDiagnostics.matchingInstalls.push({ key: state.key, t: performance.now() - this.appStartTime });
+        }
         state.loading.delete(task.tier);
         state.queued.delete(task.tier);
         state.failed.delete(task.tier);
@@ -2999,6 +3010,7 @@ class PistonViewer {
             if (!pinnedMedium && TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
             if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
             state.loading.add(task.tier);
+            if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, () => (
@@ -3009,6 +3021,7 @@ class PistonViewer {
             ), {
                 onRetry: event => this._logRetry('texture', `${task.key}/${task.tier}`, event),
             }).then(result => {
+                if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDecoded');
                 if (result.networkBytes) {
                     this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
                 }
@@ -3834,7 +3847,7 @@ class PistonViewer {
         }
 
         const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
-        const hasDisplayedPage = TEXTURE_HUD_ROWS.some(({ tier }) => displayed[tier].size > 0);
+        const hasDisplayedPage = Object.values(displayed).some(pages => pages.size > 0);
         if (!this._textureMilestonesDone && hasDisplayedPage) {
             this.profiler?.milestone('firstTexture');
             const bootGeometryDrained = (
@@ -3924,10 +3937,36 @@ class PistonViewer {
                 this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
             }
 
+            // Make the first operational geometry's imagery the next bootstrap
+            // work, even if page-level planning initially ranked another
+            // visible/guard cell ahead of it. This ties first paint to the tile
+            // the user can actually see instead of draining an arbitrary page
+            // prefix before a matching texture arrives.
+            for (const pageKey of t.texturePageKeys) {
+                const page = this.texturePageGrid?.pageByKey?.get(pageKey);
+                if (page) this._queueTextureTier(page, TEXTURE_TIER.BOOTSTRAP, 2e9);
+            }
+            if (!this.bootstrapDiagnostics.firstConsumer) {
+                this.bootstrapDiagnostics.firstConsumer = {
+                    tileKey: key,
+                    t: performance.now() - this.appStartTime,
+                    pageKeys: [...t.texturePageKeys],
+                    states: t.texturePageKeys.map(pageKey => {
+                        const state = this.textureStates.get(pageKey);
+                        return {
+                            key: pageKey,
+                            available: Boolean(state),
+                            bootstrapResident: Boolean(state?.assets.has(TEXTURE_TIER.BOOTSTRAP)),
+                            bootstrapQueued: Boolean(state?.queued.has(TEXTURE_TIER.BOOTSTRAP)),
+                            bootstrapLoading: Boolean(state?.loading.has(TEXTURE_TIER.BOOTSTRAP)),
+                        };
+                    }),
+                };
+            }
+
             // Create one shared base material for the tile. Texture ownership
             // remains with texture page residency, not this material or geometry.
             const sharedMaterial = this.createTileMaterial(0);
-            this._applyTexturePageBindings(sharedMaterial, t.texturePageKeys);
             this.materialsToUpdate.add(sharedMaterial);
 
             const meshGroup = new THREE.Group();
@@ -3954,6 +3993,10 @@ class PistonViewer {
                 // across Three.js versions/builds. We must re-attach our shader patch on every clone,
                 // otherwise height + UV mapping + GPU LOD culling silently fall back to default shaders.
                 this.setupMaterialShader(layerMaterial);
+                // THREE.Material.clone() JSON-serializes userData. Bind page
+                // textures only after cloning so ImageBitmap-backed bootstrap
+                // textures never pass through Texture.toJSON().
+                this._applyTexturePageBindings(layerMaterial, t.texturePageKeys);
                 this.materialsToUpdate.add(layerMaterial);
 
                 const finalMesh = this.createMeshFromWorkerData(lodData, layerMaterial, true);
@@ -3969,6 +4012,7 @@ class PistonViewer {
                     builtLevels[level] = true;
                 }
             }
+            this._applyTexturePageBindings(sharedMaterial, t.texturePageKeys);
             const builtLevelNumbers = Object.keys(builtLevels).map(Number);
             if (builtLevelNumbers.length === 0) throw new Error(`tile ${key} has no selected geometry`);
             const finestBuilt = Math.min(...builtLevelNumbers);
@@ -4049,6 +4093,11 @@ class PistonViewer {
                 q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
             this._refreshTilePageTextures(tileObj);
+            // A bootstrap page can arrive before its first geometry consumer.
+            // Re-evaluate paint milestones when that consumer is attached;
+            // otherwise the profiler waits for an unrelated later texture
+            // result and reports a falsely slow first textured frame.
+            this._updateTexBadge();
 
             this.loadingTiles.delete(key);
 

@@ -8,10 +8,10 @@ export const TEXTURE_HUD_ROWS = Object.freeze([
     Object.freeze({ tier: 'high4096', label: 'HIGH', size: 4096, color: '#ff00aa' }),
 ]);
 
-const HUD_TIERS = new Set(TEXTURE_HUD_ROWS.map(row => row.tier));
+const DISPLAY_TIERS = new Set(['bootstrap32', ...TEXTURE_HUD_ROWS.map(row => row.tier)]);
 
 function tierSets() {
-    return Object.fromEntries(TEXTURE_HUD_ROWS.map(row => [row.tier, new Set()]));
+    return Object.fromEntries(Array.from(DISPLAY_TIERS, tier => [tier, new Set()]));
 }
 
 function tierCounts() {
@@ -63,7 +63,7 @@ export function collectDisplayedTexturePages(tiles, visibilityByKey) {
             for (const binding of bindings) {
                 const tier = binding?.tier;
                 const pageKey = binding?.page?.key;
-                if (!binding?.valid || !binding?.texture || !pageKey || !HUD_TIERS.has(tier)) continue;
+                if (!binding?.valid || !binding?.texture || !pageKey || !DISPLAY_TIERS.has(tier)) continue;
                 displayed[tier].add(String(pageKey));
             }
         });
