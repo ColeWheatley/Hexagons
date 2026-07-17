@@ -4,7 +4,7 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js?v=pageonly1';
 import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
 import { CacheManager } from './cache_manager.js?v=pageonly1';
-import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
+import { PerfProfiler } from './perf_profiler.js?v=bounded1';
 import { initBenchmark } from './benchmark.js?v=pageonly1';
 import { ShareableViewState } from './view_state.js?v=pageonly1';
 import {
