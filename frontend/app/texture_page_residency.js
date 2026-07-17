@@ -157,6 +157,19 @@ export function textureTierRequestPlan(state, { isMoving = false } = {}) {
     return plan;
 }
 
+// The page frustum is exact while a terrain island carries a conservative
+// page-AABB. If a visible island still binds an adjacent page, retain medium
+// for that page even when its own page box is just outside the frustum. This
+// is consumer-scoped, never a whole-corpus outside preload.
+export function promoteVisibleConsumerPages(states, visiblePageKeys) {
+    const keys = visiblePageKeys instanceof Set ? visiblePageKeys : new Set(visiblePageKeys || []);
+    for (const state of states instanceof Map ? states.values() : (states || [])) {
+        if (state?.classification !== 'outside' || !keys.has(state.key)) continue;
+        state.classification = 'guard';
+        state.desiredTier = PAGE_TEXTURE_TIER.MEDIUM;
+    }
+}
+
 export class TexturePageResidency {
     constructor({
         pages,

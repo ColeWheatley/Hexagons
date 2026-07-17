@@ -50,6 +50,7 @@ import {
     PAGE_TEXTURE_TIER,
     TexturePageResidency,
     pruneTextureDispatchQueue,
+    promoteVisibleConsumerPages,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
     textureTierRequestPlan,
@@ -2742,6 +2743,7 @@ class PistonViewer {
         if (state.failed.has(tier)) return;
         state.queued.add(tier);
         if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
+        if (tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighQueued');
         this.textureQueue.push({
             key: state.key,
             textureResource,
@@ -3019,6 +3021,7 @@ class PistonViewer {
             result.gpuBytes || 0,
             this._textureLedgerLocation(task.textureResource),
         );
+        if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighInstalled');
         this._reconcileTextureState(state);
         // Bootstrap is a first-paint placeholder, not a fourth resident copy.
         // Any real KTX2 replacement releases it immediately.
@@ -3086,6 +3089,7 @@ class PistonViewer {
             if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
             state.loading.add(task.tier);
             if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
+            if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighDispatched');
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, () => (
@@ -3210,6 +3214,18 @@ class PistonViewer {
         residency.finishDemandPass({
             highEnterPx: this._effectiveHighTextureEnterPx(),
         });
+
+        // A visible island's conservative texture-page AABB can cross a page
+        // frustum boundary. Promote only those actually bound adjacent pages
+        // to guard/medium; never revive beta's whole outside corpus preload.
+        const visibleConsumerPages = new Set();
+        for (const [consumerKey, visibility] of this.visibilityByKey) {
+            if (visibility?.classification !== 'visible') continue;
+            for (const pageKey of residency.pagesForConsumer(consumerKey)) {
+                visibleConsumerPages.add(pageKey);
+            }
+        }
+        promoteVisibleConsumerPages(residency.states, visibleConsumerPages);
 
         // Camera motion can leave old lows and refinements in the queue. On a
         // world-scale manifest those stale lows must never become a hidden
@@ -3629,9 +3645,7 @@ class PistonViewer {
             for (const level of levels) {
                 const lodData = lods[level];
                 if (!lodData) continue;
-                const material = tile.material.clone();
-                material.userData = { ...tile.material.userData, lodIdx: level, shader: null };
-                this.setupMaterialShader(material);
+                const material = this._cloneTileMaterial(tile.material, level, tile.texturePageKeys);
                 this.materialsToUpdate.add(material);
                 replacementMaterials.push(material);
                 const layer = this.createMeshFromWorkerData(lodData, material, true);
@@ -3711,6 +3725,25 @@ class PistonViewer {
             }
             throw error;
         }
+    }
+
+    _cloneTileMaterial(source, lodIdx, pageKeys) {
+        // THREE.Material.clone serializes userData. Texture page bindings hold
+        // ImageBitmap-backed WebP textures, so they must never be present
+        // during clone—even on a later geometry rebuild after high arrives.
+        const priorBindings = source.userData.texturePageBindings;
+        const { texturePageBindings, shader, ...cloneSafeUserData } = source.userData;
+        delete source.userData.texturePageBindings;
+        let material;
+        try {
+            material = source.clone();
+        } finally {
+            if (priorBindings !== undefined) source.userData.texturePageBindings = priorBindings;
+        }
+        material.userData = { ...cloneSafeUserData, lodIdx, shader: null };
+        this.setupMaterialShader(material);
+        this._applyTexturePageBindings(material, pageKeys);
+        return material;
     }
 
     processQueues() {
@@ -3939,11 +3972,14 @@ class PistonViewer {
         const hasDisplayedPage = Object.values(displayed).some(pages => pages.size > 0);
         if (!this._textureMilestonesDone && hasDisplayedPage) {
             this.profiler?.milestone('firstTexture');
-            const bootGeometryDrained = (
-                (this.loadQueue?.length ?? 0) === 0 &&
-                (this.instantiateQueue?.length ?? 0) === 0
+            // Do not wait for guard/background geometry to drain: that is not
+            // part of the visible-coverage claim and can stream indefinitely.
+            // Instead require every currently visible island to be resident
+            // plus every rendered visible material to have a real page bound.
+            const visibleGeometryPending = Array.from(this.visibilityByKey.entries()).some(
+                ([key, visibility]) => visibility?.classification === 'visible' && !this.tiles.has(key),
             );
-            if (bootGeometryDrained && countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
+            if (!visibleGeometryPending && countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
                 this.profiler?.milestone('visibleTexturedCoverage');
             }
             const milestones = this.profiler?.milestones || {};

@@ -13,6 +13,7 @@ const {
     TexturePageResidency,
     textureTierRequestPlan,
     textureStateHasDemand,
+    promoteVisibleConsumerPages,
 } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 function stateFor({ classification, projectedDiameterPx }) {
@@ -65,6 +66,20 @@ test('outside corpus pages are not demand-planned, including beta', () => {
     assert.equal(state.desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
     assert.equal(state.queued.size, 0);
     assert.equal(state.loading.size, 0);
+});
+
+test('only an outside page bound by visible geometry is promoted to guard medium', () => {
+    const residency = new TexturePageResidency({
+        pages: [{ key: 'bound', minX: 0, minY: 0, maxX: 1, maxY: 1 }, { key: 'other', minX: 1, minY: 0, maxX: 2, maxY: 1 }],
+    });
+    residency.beginDemandPass();
+    residency.finishDemandPass();
+    promoteVisibleConsumerPages(residency.states, new Set(['bound']));
+    assert.equal(residency.state('bound').classification, 'guard');
+    assert.equal(residency.state('bound').desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
+    assert.equal(textureStateHasDemand(residency.state('bound')), true);
+    assert.equal(residency.state('other').classification, 'outside');
+    assert.equal(textureStateHasDemand(residency.state('other')), false);
 });
 
 test('a resident WebP only permits the direct high request; low is never prerequisite', () => {
