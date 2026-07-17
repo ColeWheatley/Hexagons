@@ -339,13 +339,6 @@
   <div class="done-when"><b>Done when:</b> default DOM has zero diagnostic elements; <code>?debug=1</code> restores everything; core actions pass task-flow tests.</div>
 </div>
 
-<div class="item" data-id="av3">
-  <div class="title-line"><input type="checkbox" id="av3"><label for="av3">AV-3 — Kill the magenta flash and cross-fade texture upgrades</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (perceived polish)</span><span class="solver-std">🔵 Standard build + 👁 visual/human accept</span></div>
-  <p>Two hard-swap behaviors make streaming look broken: terrain whose imagery hasn't arrived renders <em>solid magenta</em> (an intentional dev sentinel that shipped), and every low→medium→high upgrade is an instant swap that visibly pops. Replace the magenta with a neutral placeholder (elevation-tinted like the horizon, or the page's average color baked into the manifest), and blend tier swaps with a short shader cross-fade. Implementation is standard; whether 150 ms or 400 ms feels right — and which placeholder color — is a look call.</p>
-  <div class="done-when"><b>Done when:</b> automated screenshots contain no magenta during a cold-load flight; a human approves the fade timing and placeholder tint.</div>
-</div>
-
 <div class="item" data-id="av4">
   <div class="title-line"><input type="checkbox" id="av4"><label for="av4">AV-4 — Honest loading: real progress, truthful phases, designed failure states</label></div>
   <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high</span><span class="solver-std">🔵 Standard build + copy/pacing sign-off by Cole</span></div>
@@ -446,7 +439,7 @@
 <p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–6 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, direct texture ladder/residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, material churn, adaptive capability budgets, and the first A*-2 lifecycle milestone. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
 <p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The WebP three-run median is <b>237 ms (57% faster)</b>; the final integrated cold trace is 208 ms profiler-relative, with first high installed at 541 ms and zero serialization warnings. Warm good-LTE TTFTF improves 87.1%. The 60-second orbit is 119.9 FPS with 9.5 ms p95. Fault recovery repaints in 161 ms; Save-Data/3g transfer 98.5% fewer texture bytes than high. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
 <p><b>Still objectively open:</b> AA-22's yellow/half-thickness tattoos are approved for beta; it now needs the rebake/deploy and an apples-to-apples old-vs-new high-arrival comparison. AA-1/3/10/12/13/15/16/20 and A*-3 have integrated implementations but retain the live, soak, human-visual, or before/after gates written on their cards. A*-2 has only milestone 1. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source.</p>
-<p><b>Meanwhile, Cole:</b> the five decisions that unblock the AV queue — H-1 (rotation), H-2 (slope wording), H-4 (voice/hierarchy), H-8 (texture point), and a yes/no on H-3 (offline). Each is a coffee-length decision, and together they unblock all nine AV items.</p>
+<p><b>Meanwhile, Cole:</b> the five decisions that unblock the AV queue — H-1 (rotation), H-2 (slope wording), H-4 (voice/hierarchy), H-8 (texture point), and a yes/no on H-3 (offline). Each is a coffee-length decision, and together they unblock the eight remaining AV items.</p>
 </div>
 
 <p class="foot">This file is the surviving consolidated Fable + Codex board; the two source audit files were intentionally removed after their recommendations were merged. Product decisions recorded 2026-07-17: bounded profiling only in Stubai beta (production off unless benching), retina/screenshot optimization approved, AA-13 requires frontier review, macOS trackpad controls exclude iOS, AA-18 is low-priority/Cole-owned, AA-19 is complete, production coverage is selected Tirol rather than all Tirol, and A*-1 is conditional on a real sub-2 m terrain + higher-resolution imagery path. Checked defaults reflect verified gates; your browser can persist additional local checkbox choices.</p>
