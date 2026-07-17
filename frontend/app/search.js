@@ -13,6 +13,12 @@ export class HexSearch {
 
         this.injectStyles();
         this.initUI();
+        // Keep the compact index off the first keystroke. Parsing it while the
+        // visitor is deciding what to search is imperceptible; parsing on the
+        // input event is a measurable interaction long-task on slower CPUs.
+        const prefetch = () => this.loadData().catch(() => {});
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(prefetch, { timeout: 3000 });
+        else setTimeout(prefetch, 250);
     }
 
     injectStyles() {

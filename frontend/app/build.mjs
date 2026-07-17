@@ -219,6 +219,7 @@ async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, servi
 async function copyStaticAssets() {
     await copyFile('tile_manifest.json');
     await copyFile('assets/skigebiete.json');
+    await copyFile('assets/search_index.json');
     await copyFile('assets/tirol_peaks.geojson');
 }
 
