@@ -295,7 +295,17 @@ function waitForReady(viewer, timeoutMs = 45000) {
 function finishScenario(viewer, hud, name, duration, appVersion) {
     updateHud(hud, name, duration, duration, true);
     console.log(`[BENCHMARK] Scenario "${name}" complete.`);
-    window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ = { scenario: name, duration, counters: viewer.getMaterialChurnStats?.() || null };
+    window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ = {
+        scenario: name,
+        duration,
+        counters: viewer.getMaterialChurnStats?.() || null,
+        lod: viewer.getLodSelectionFingerprint?.() || null,
+        renderInfo: viewer.renderer?.info ? {
+            calls: viewer.renderer.info.render?.calls,
+            triangles: viewer.renderer.info.render?.triangles,
+            programs: viewer.renderer.info.programs?.length,
+        } : null,
+    };
     console.log('[MATERIAL_CHURN] ' + JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__));
     viewer._restoreMaterialWarningTracker?.();
     viewer._restoreMaterialWarningTracker = null;

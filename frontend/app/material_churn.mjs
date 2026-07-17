@@ -4,10 +4,25 @@ export function createMaterialChurnStats() {
     return { compileCalls: 0, materialShaderSetups: 0, materialReplacements: 0,
         traversalCalls: 0, traversedObjects: 0, textureSerializationWarnings: 0,
         uniformPasses: 0, uniformCandidates: 0, uniformWrites: 0,
-        unchangedUniformWritesAvoided: 0, resizeEvents: 0, motionEvents: 0 };
+        unchangedUniformWritesAvoided: 0, resizeEvents: 0, motionEvents: 0,
+        renderCycleCount: 0, renderCycleTotalMs: 0, renderCycleMaxMs: 0 };
 }
 export function resetMaterialChurnStats(stats) { for (const key of Object.keys(stats)) stats[key] = 0; }
-export function snapshotMaterialChurnStats(stats) { return { ...stats }; }
+export function snapshotMaterialChurnStats(stats) {
+    return {
+        ...stats,
+        renderCycleAverageMs: stats.renderCycleCount
+            ? stats.renderCycleTotalMs / stats.renderCycleCount
+            : 0,
+    };
+}
+export function recordRenderCycle(stats, durationMs) {
+    if (!stats || !Number.isFinite(durationMs) || durationMs < 0) return false;
+    stats.renderCycleCount++;
+    stats.renderCycleTotalMs += durationMs;
+    stats.renderCycleMaxMs = Math.max(stats.renderCycleMaxMs, durationMs);
+    return true;
+}
 function sameValue(a, b) {
     if (a === b) return true;
     if (!a || !b || !Number.isFinite(a.x) || !Number.isFinite(b.x) ||

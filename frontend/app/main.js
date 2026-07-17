@@ -113,8 +113,9 @@ import {
     watchDevicePixelRatio,
 } from './render_policy.js';
 import { IdleRenderScheduler } from './idle_render_scheduler.js';
-import { createMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
+import { createMaterialChurnStats, recordRenderCycle, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
 import { APP_LIFECYCLE, AppLifecycle } from './app_lifecycle.mjs';
+import { ResourceLifecycleRegistry } from './resource_lifecycle.mjs';
 import './gosper_core.js';
 import { navigationOverlayState } from './navigation_overlay.mjs';
 
@@ -248,6 +249,8 @@ class PistonViewer {
         });
         this.container.appendChild(this.renderer.domElement);
         this.appLifecycle = new AppLifecycle();
+        this.resourceLifecycles = new ResourceLifecycleRegistry();
+        this.resourceLifecycles.ensure('manifest', 'tile_manifest.json');
         this.contextRecovery = {
             active: false,
             timer: null,
@@ -1089,6 +1092,7 @@ class PistonViewer {
         this.contextRecovery.restoredAt = null;
         this.contextRecovery.durationMs = null;
         this.appLifecycle.transition(APP_LIFECYCLE.CONTEXT_LOST, { cause: 'webglcontextlost' });
+        this.resourceLifecycles.contextLost({ cause: 'webglcontextlost' });
         this.failureStats.contextLost++;
         persistContextLoss(localStorage, readPersistedContextLosses(localStorage));
         this.log('Graphics context lost; waiting for browser restore.', 'error');
@@ -1116,6 +1120,7 @@ class PistonViewer {
         this.appLifecycle.transition(APP_LIFECYCLE.RECOVERING, { cause: 'webglcontextrestored' });
         try {
             this._reuploadGpuResidentState();
+            this.resourceLifecycles.recovered({ cause: 'webglcontextrestored' });
             this.contextRecovery.active = false;
             if (resumeState === APP_LIFECYCLE.BOOTING) {
                 // A lifecycle transition cancelled startup before it could
@@ -1791,6 +1796,27 @@ class PistonViewer {
         console.warn(`[${kind.toUpperCase()}_RETRY] ${key}: ${event.error.message}`);
     }
 
+    _resourceKind(kind) {
+        if (kind === 'tile') return 'geometry';
+        return kind;
+    }
+
+    _resourceRetrying(kind, key, event) {
+        this.resourceLifecycles.retrying(this._resourceKind(kind), key, {
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            delayMs: event.delayMs,
+        });
+        this._logRetry(kind, key, event);
+    }
+
+    _resourceFailed(kind, key, error) {
+        this.resourceLifecycles.failed(this._resourceKind(kind), key, {
+            offline: typeof navigator !== 'undefined' && navigator.onLine === false,
+            detail: { message: error?.message || String(error) },
+        });
+    }
+
     _validateManifestContract(manifest) {
         if (manifest.type !== 'gosper_l5') {
             throw new Error(`Manifest type '${manifest.type}' is not gosper_l5 — re-run the baker`);
@@ -1838,6 +1864,7 @@ class PistonViewer {
 
     async _loadManifestWithRetry(scope) {
         return this.resourceRetries.run(MANIFEST_RETRY_KEY, async () => {
+            this.resourceLifecycles.begin('manifest', 'tile_manifest.json', { cause: 'fetch-attempt' });
             // This small file is the cache-identity authority for every large
             // asset, so rebakes must revalidate it even when app code did not
             // change. Binaries and textures remain explicitly recipe-keyed.
@@ -1848,10 +1875,14 @@ class PistonViewer {
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
             const manifest = await res.json();
             this._validateManifestContract(manifest);
+            this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
             return manifest;
         }, {
-            onRetry: event => this._logRetry('manifest', 'tile_manifest.json', event),
-            onExhausted: () => { this.failureStats.manifestFailures++; },
+            onRetry: event => this._resourceRetrying('manifest', 'tile_manifest.json', event),
+            onExhausted: ({ error }) => {
+                this.failureStats.manifestFailures++;
+                this._resourceFailed('manifest', 'tile_manifest.json', error);
+            },
             signal: scope.signal,
         });
     }
@@ -1902,6 +1933,7 @@ class PistonViewer {
                 highEnterPx: TEXTURE_CONFIG.highEnterPx,
             });
             this.textureStates = this.texturePageResidency.states;
+            this.resourceLifecycles.settled('manifest', 'tile_manifest.json', { cause: 'world-contract-ready' });
             this.texturePageVisibilityAdapter = new TexturePageVisibilityAdapter({
                 pages: this.texturePageGrid.pages,
                 worldOrigin: this.worldOrigin,
@@ -2735,11 +2767,13 @@ class PistonViewer {
     _markTileFailed(tileKey, error) {
         if (this.tileStates.get(tileKey) !== 'failed') this.failureStats.tileFailures++;
         this.tileStates.set(tileKey, 'failed');
+        this._resourceFailed('tile', tileKey, error);
         this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TILES);
         this.log(`Terrain tile failed: ${tileKey} (${error.message})`, 'error');
     }
 
     _markTextureFailed(key, tier, error) {
+        this._resourceFailed('texture', `${key}/${tier}`, error);
         const failureKey = this._textureFailureKey(key, tier);
         const state = this.textureStates.get(key);
         if (state) setTierState(state, tier, TIER_STATE.FAILED);
@@ -2759,6 +2793,7 @@ class PistonViewer {
             for (const [key, state] of this.tileStates) {
                 if (state === 'failed') {
                     this.resourceRetries.reset(`tile:${key}`);
+                    this.resourceLifecycles.retrying('geometry', key, { cause: 'settled-resweep' });
                     tileCount++;
                 }
             }
@@ -2772,6 +2807,7 @@ class PistonViewer {
                 const state = this.textureStates.get(key);
                 if (state) setTierState(state, tier, TIER_STATE.ABSENT);
                 this.resourceRetries.reset(`texture:${failureKey}`);
+                this.resourceLifecycles.retrying('texture', `${key}/${tier}`, { cause: 'settled-resweep' });
                 textureCount++;
             }
             this.failedTextures.clear();
@@ -2832,8 +2868,10 @@ class PistonViewer {
         // restart. Do not spin on the same missing URL in this page session.
         if (isTier(state, tier, TIER_STATE.FAILED)) return;
         setTierState(state, tier, TIER_STATE.QUEUED);
-        if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
-        if (tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighQueued');
+        const resourceKey = `${state.key}/${tier}`;
+        this.resourceLifecycles.begin('texture', resourceKey, {
+            cause: 'tier-queued', tier,
+        });
         if (tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapQueued');
         if (tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighQueued');
         this.textureQueue.push({
@@ -3093,6 +3131,9 @@ class PistonViewer {
                 texture.dispose();
                 state.desiredTier = TEXTURE_TIER.MEDIUM;
                 this._reconcileTextureState(state);
+                this.resourceLifecycles.settled('texture', `${state.key}/${task.tier}`, {
+                    cause: 'budget-rejected', tier: task.tier,
+                });
                 return;
             }
             this.texStats.highUploadSize = result.width;
@@ -3120,6 +3161,9 @@ class PistonViewer {
         }
         if (task.tier === TEXTURE_TIER.BOOTSTRAP) this._enforceBootstrapBudget(state.key);
         this.updateTexStats(result);
+        this.resourceLifecycles.settled('texture', `${state.key}/${task.tier}`, {
+            cause: 'gpu-resident', tier: task.tier,
+        });
 
         if (task.tier === TEXTURE_TIER.HIGH) {
             this.recentlyUpgradedTextures.push({
@@ -3142,8 +3186,12 @@ class PistonViewer {
                 // Demand changed during transcode. These are still CPU-side
                 // bytes, so avoid a pointless GPU upload and immediate drop.
                 setTierState(state, task.tier, TIER_STATE.ABSENT);
+                this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
                 continue;
             }
+            this.resourceLifecycles.refining('texture', `${task.key}/${task.tier}`, {
+                cause: 'gpu-upload', tier: task.tier,
+            });
             this._installTextureResult(task, result);
             installed++;
         }
@@ -3170,6 +3218,7 @@ class PistonViewer {
             if (task.epoch !== this.viewEpoch) {
                 const st = this.textureStates.get(task.key);
                 if (st) setTierState(st, task.tier, TIER_STATE.ABSENT);
+                this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
                 this.workerLaneStats.texture.cancelledQueued++;
                 continue;
             }
@@ -3178,6 +3227,9 @@ class PistonViewer {
             if (TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
             if (state.assets.has(task.tier) || isTier(state, task.tier, TIER_STATE.LOADING)) continue;
             setTierState(state, task.tier, TIER_STATE.LOADING);
+            this.resourceLifecycles.begin('texture', `${task.key}/${task.tier}`, {
+                cause: 'worker-dispatch', tier: task.tier,
+            });
             if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
             if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighDispatched');
             this.activeTextureJobs++;
@@ -3190,13 +3242,16 @@ class PistonViewer {
                     faultDrop: this._faultGateDrop('texture', attempt),
                 })
             ), {
-                onRetry: event => this._logRetry('texture', `${task.key}/${task.tier}`, event),
+                onRetry: event => this._resourceRetrying('texture', `${task.key}/${task.tier}`, event),
             }).then(result => {
                 if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDecoded');
                 if (result.networkBytes) {
                     this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
                 }
                 this.textureResultQueue.push({ task, result });
+                this.resourceLifecycles.ready('texture', `${task.key}/${task.tier}`, {
+                    cause: 'decoded', tier: task.tier,
+                });
                 this.needsRender = true;
             }).catch(error => {
                 setTierState(state, task.tier, TIER_STATE.FAILED);
@@ -3512,6 +3567,7 @@ class PistonViewer {
             if (classification !== 'outside') {
                 if (!this.tiles.has(key) && !this.tileStates.has(key)) {
                     this.tileStates.set(key, 'loading');
+                    this.resourceLifecycles.begin('geometry', key, { cause: 'visibility-demand' });
                     this.loadQueue.push({
                         t: manifestTile,
                         priority,
@@ -3864,6 +3920,7 @@ class PistonViewer {
             // is stale and safe to discard; retained textures are independent.
             if (task.epoch !== this.viewEpoch || this.tiles.has(key) || this.visibilityByKey.get(key)?.classification === 'outside') {
                 this.tileStates.delete(key);
+                this.resourceLifecycles.delete('geometry', key);
                 continue;
             }
 
@@ -3883,6 +3940,7 @@ class PistonViewer {
         const tileKey = `${task.t.yq}_${task.t.yr}`;
         try {
             const { t } = task;
+            this.resourceLifecycles.begin('geometry', tileKey, { cause: 'worker-fetch' });
             const expectedGspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
             const binaryBaseKey = this.binaryContract.cache_key
                 ?? `${this.binaryContract.default_format || 'GSP'}${this.binaryContract.default_version || expectedGspVersion}`;
@@ -3908,8 +3966,10 @@ class PistonViewer {
                 }
                 return result;
             }, {
-                onRetry: event => this._logRetry('tile', tileKey, event),
+                onRetry: event => this._resourceRetrying('tile', tileKey, event),
             });
+
+            this.resourceLifecycles.ready('geometry', tileKey, { cause: 'binary-decoded' });
 
             if (workerData.binaryVersion >= 2) {
                 if (!(workerData.geometrySource instanceof ArrayBuffer) || !workerData.visibilityData) {
@@ -3928,6 +3988,7 @@ class PistonViewer {
                 // Deliberately do not transfer geometrySource here. The
                 // structured clone sent to the worker leaves one compact
                 // source copy attached to the tile for future re-plans.
+                this.resourceLifecycles.refining('geometry', tileKey, { cause: 'detail-build' });
                 const geometryResult = await this.postWorkerJob('BUILD_GEOMETRY', {
                     binBuffer: workerData.geometrySource,
                     yq: t.yq,
@@ -3941,6 +4002,7 @@ class PistonViewer {
                 workerData.lods = geometryResult.lods;
                 workerData.geometryBytes = geometryResult.geometryBytes;
                 workerData.geometrySelection = geometrySelection;
+                this.resourceLifecycles.ready('geometry', tileKey, { cause: 'detail-built' });
             }
 
             // (silent — structured perf logging only)
@@ -4297,6 +4359,7 @@ class PistonViewer {
             };
             this._markFinestBuilt(tileObj);
             this.tiles.set(key, tileObj);
+            this.resourceLifecycles.settled('geometry', key, { cause: 'gpu-instantiated' });
             if (tileObj.binaryVersion >= 2) {
                 // Revalidate against the latest camera after both async worker
                 // phases and any instantiation-queue delay.
@@ -4358,6 +4421,7 @@ class PistonViewer {
 
         this.tiles.delete(key);
         this.tileStates.delete(key);
+        this.resourceLifecycles.delete('geometry', key);
         this.visibilityAdapter?.detachDecodedIsland(key);
 
         // The manifest-driven horizon cap takes over for this island again.
@@ -4591,6 +4655,20 @@ class PistonViewer {
 
     getMaterialChurnStats() { return snapshotMaterialChurnStats(this.materialChurn); }
 
+    getLodSelectionFingerprint() {
+        const tiles = Array.from(this.tiles.entries()).map(([key, tile]) => ({
+            key,
+            finestBuilt: tile.finestBuilt,
+            selection: tile.geometrySelection?.signature || null,
+            visibleLevels: (tile.mesh?.children || [])
+                .filter(child => child.visible)
+                .map(child => child.userData?.gosperLevel)
+                .filter(Number.isFinite)
+                .sort((a, b) => a - b),
+        })).sort((a, b) => a.key.localeCompare(b.key));
+        return { movingLevel: this.movingLevel, isMoving: this.isMovingView, tiles };
+    }
+
     // --- ENGINE STATE DERIVATION ---
     deriveEngineState(flat) {
         // Camera motion is latched, so a completed wheel burst still reports
@@ -4656,6 +4734,7 @@ class PistonViewer {
             timestamp: performance.now(),
             engineState: this.engineState,
             appLifecycle: this.appLifecycle.snapshot(),
+            resourceLifecycles: this.resourceLifecycles.snapshot(),
             capability: {
                 profile: this.capabilityProfile.name,
                 workers: this.capabilityProfile.workerCount,
@@ -4993,6 +5072,7 @@ class PistonViewer {
 
         // ===== END TIMED RENDER CYCLE =====
         const cycleDuration = performance.now() - cycleStart;
+        recordRenderCycle(this.materialChurn, cycleDuration);
         const budget = STATE_BUDGETS_MS[this.engineState];
 
         // --- STRUCTURED VIOLATION LOGGING ---

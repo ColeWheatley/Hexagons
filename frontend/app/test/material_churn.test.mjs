@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createMaterialChurnStats, resetMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from '../material_churn.mjs';
+import { createMaterialChurnStats, recordRenderCycle, resetMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from '../material_churn.mjs';
 
 test('unchanged scalar and vector uniform values are not rewritten', () => {
     const stats = createMaterialChurnStats();
@@ -21,5 +21,13 @@ test('unchanged Vector2 values are not rewritten', () => {
 });
 test('reset provides deterministic scenario baselines', () => {
     const stats = createMaterialChurnStats(); stats.compileCalls = 2; resetMaterialChurnStats(stats);
-    assert.deepEqual(snapshotMaterialChurnStats(stats), createMaterialChurnStats());
+    assert.deepEqual(snapshotMaterialChurnStats(stats), snapshotMaterialChurnStats(createMaterialChurnStats()));
+});
+test('render-cycle accounting exposes the measured main-thread average', () => {
+    const stats = createMaterialChurnStats();
+    assert.equal(recordRenderCycle(stats, 2), true);
+    assert.equal(recordRenderCycle(stats, 4), true);
+    assert.equal(recordRenderCycle(stats, NaN), false);
+    assert.equal(snapshotMaterialChurnStats(stats).renderCycleAverageMs, 3);
+    assert.equal(stats.renderCycleMaxMs, 4);
 });
