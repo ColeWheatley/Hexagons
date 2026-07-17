@@ -55,6 +55,26 @@ function resolveWorkerUrl(url) {
 
 let workerSupport = null; // set once via INIT, before any texture job runs
 let basisModulePromise = null;
+let faultGateEnabled = false;
+
+function emitFaultGateEvent(kind, url, attempt, action) {
+    if (!faultGateEnabled) return;
+    self.postMessage({
+        type: 'FAULT_GATE_EVENT',
+        event: { kind, url, attempt, action },
+    });
+}
+
+async function fetchForFaultGate(url, kind, attempt = 1, drop = false) {
+    emitFaultGateEvent(kind, url, attempt, 'attempt');
+    if (faultGateEnabled && attempt === 1 && drop) {
+        emitFaultGateEvent(kind, url, attempt, 'dropped');
+        throw new Error(`[AA2_FAULT_GATE] deterministic ${kind} request drop: ${url}`);
+    }
+    const response = await fetch(url);
+    if (response.ok) emitFaultGateEvent(kind, url, attempt, 'success');
+    return response;
+}
 
 function loadBasisModule() {
     if (!basisModulePromise) {
@@ -204,6 +224,7 @@ self.onmessage = async function (e) {
     if (type === 'INIT') {
         // Capability handshake from main.js — no reply expected.
         workerSupport = data.support;
+        faultGateEnabled = data.faultGateEnabled === true;
         if (data.prewarmBasis) {
             // Only dedicated texture-lane workers instantiate the decoder.
             // Keep initialization asynchronous so INIT remains fire-and-forget.
@@ -287,19 +308,19 @@ self.onmessage = async function (e) {
     }
 };
 
-async function fetchFirst(urls) {
+async function fetchFirst(urls, kind, attempt, drop) {
     const candidates = Array.isArray(urls) ? urls : [urls];
     let last = null;
     for (const url of candidates.filter(Boolean)) {
-        const response = await fetch(url);
+        const response = await fetchForFaultGate(url, kind, attempt, drop);
         last = response;
         if (response.ok) return { response, url };
     }
     return { response: last, url: candidates[candidates.length - 1] };
 }
 
-async function loadTile({ yq, yr, binUrl, expectedGspVersion }) {
-    const binRes = await fetch(binUrl);
+async function loadTile({ yq, yr, binUrl, expectedGspVersion, faultAttempt, faultDrop }) {
+    const binRes = await fetchForFaultGate(binUrl, 'terrain', faultAttempt, faultDrop);
     if (!binRes.ok) throw new Error(`Failed to load bin: ${binUrl}`);
     const binBuf = await binRes.arrayBuffer();
 
@@ -373,8 +394,8 @@ function buildGeometryFromSource({
     };
 }
 
-async function loadTextureOnly({ url, urls, bootstrap = false }) {
-    const fetched = await fetchFirst(urls || url);
+async function loadTextureOnly({ url, urls, bootstrap = false, faultAttempt, faultDrop }) {
+    const fetched = await fetchFirst(urls || url, 'texture', faultAttempt, faultDrop);
     const res = fetched.response;
     if (!res?.ok) throw new Error(`Failed to load tex: ${fetched.url}`);
     const buf = await res.arrayBuffer();

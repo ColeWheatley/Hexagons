@@ -38,6 +38,13 @@ python3 scripts/run_idle_browser_gate.py "${BASE_URL}/?idle-gate=1" "$OUT/idle-b
 # context-loss/OOM counters. This remains in the asset-backed opt-in tier.
 python3 scripts/run_capability_matrix.py "${BASE_URL}/" "$OUT/capability-matrix.json" --timeout 150
 python3 scripts/validate_capability_matrix.py "$OUT/capability-matrix.json"
+# AA-2: deterministic 10% first-attempt request loss, followed by a forced
+# WEBGL_lose_context round trip. The viewer-side hook is enabled only by the
+# paired bench=1/fault-gate=1 query and reports global retry attempt numbers
+# across its worker lanes.
+python3 scripts/run_fault_recovery_gate.py \
+  "${BASE_URL}/?bench=1&fault-gate=1" "$OUT/fault-recovery.json" \
+  --full-assets --screenshot "$OUT/fault-recovery.png" --timeout 150
 # Inspection artifacts, not pixel-goldens: GPU rasterization and terrain data vary by runner.
 for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150

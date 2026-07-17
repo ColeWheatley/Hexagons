@@ -246,6 +246,9 @@ class PistonViewer {
             timer: null,
             wasLoaderHidden: false,
             resumeLifecycleState: null,
+            startedAt: null,
+            restoredAt: null,
+            durationMs: null,
         };
 
         this.controls = new MapControls(this.camera, this.renderer.domElement);
@@ -375,6 +378,13 @@ class PistonViewer {
         this.materialsToUpdate = new Set(); // Changed to Set
         this.materialChurn = createMaterialChurnStats();
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
+        const faultParams = new URLSearchParams(window.location.search);
+        this.faultGateEnabled = faultParams.get('bench') === '1' && faultParams.get('fault-gate') === '1';
+        this.faultGateDiagnostics = {
+            terrain: { attempts: new Map(), dropped: new Set(), successful: new Set() },
+            texture: { attempts: new Map(), dropped: new Set(), successful: new Set() },
+        };
+        this.faultGateSequences = { terrain: 0, texture: 0 };
 
         this.gradientMode = 1.0;
         this.highTextureEnterPx = TEXTURE_CONFIG.highEnterPx;
@@ -780,7 +790,11 @@ class PistonViewer {
             // Basis module at worker startup contends with its decode and
             // defeats that purpose; the first KTX2 request initializes Basis
             // lazily after bootstrap work has been dispatched.
-            data: { support: this.textureSupport, prewarmBasis: false },
+            data: {
+                support: this.textureSupport,
+                prewarmBasis: false,
+                faultGateEnabled: this.faultGateEnabled,
+            },
         });
         return worker;
     }
@@ -797,7 +811,11 @@ class PistonViewer {
     }
 
     handleWorkerMessage(e) {
-        const { id, status, result, error } = e.data;
+        const { id, type, event, status, result, error } = e.data;
+        if (type === 'FAULT_GATE_EVENT') {
+            this._recordFaultGateEvent(event);
+            return;
+        }
         const job = this.pendingJobs.get(id);
         if (!job) return;
 
@@ -834,6 +852,44 @@ class PistonViewer {
 
             this._postPendingWorkerJob(job, workerIndex);
         });
+    }
+
+    _recordFaultGateEvent(event) {
+        if (!this.faultGateEnabled || !event?.url) return;
+        const row = this.faultGateDiagnostics[event.kind];
+        if (!row) return;
+        if (event.action === 'attempt') {
+            row.attempts.set(event.url, Math.max(row.attempts.get(event.url) || 0, event.attempt || 1));
+        } else if (event.action === 'dropped') {
+            row.dropped.add(event.url);
+        } else if (event.action === 'success') {
+            row.successful.add(event.url);
+        }
+    }
+
+    getFaultGateDiagnostics() {
+        const output = {};
+        for (const kind of ['terrain', 'texture']) {
+            const row = this.faultGateDiagnostics[kind];
+            const attemptsByResource = Object.fromEntries(
+                Array.from(row.attempts.entries()).sort(([a], [b]) => a.localeCompare(b)),
+            );
+            output[kind] = {
+                uniqueResources: row.attempts.size,
+                droppedFirstAttempts: row.dropped.size,
+                requestAttempts: Array.from(row.attempts.values()).reduce((sum, count) => sum + count, 0),
+                attemptsByResource,
+                droppedResources: Array.from(row.dropped).sort(),
+                successfulResources: Array.from(row.successful).sort(),
+            };
+        }
+        return output;
+    }
+
+    _faultGateDrop(kind, attempt) {
+        if (!this.faultGateEnabled || attempt !== 1) return false;
+        this.faultGateSequences[kind]++;
+        return this.faultGateSequences[kind] % 10 === 0;
     }
 
     _workerJobResourceKey(type, data) {
@@ -1020,6 +1076,9 @@ class PistonViewer {
         this.contextRecovery.active = true;
         this.contextRecovery.wasLoaderHidden = this.loaderHidden;
         this.contextRecovery.resumeLifecycleState = this.appLifecycle.state;
+        this.contextRecovery.startedAt = performance.now();
+        this.contextRecovery.restoredAt = null;
+        this.contextRecovery.durationMs = null;
         this.appLifecycle.transition(APP_LIFECYCLE.CONTEXT_LOST, { cause: 'webglcontextlost' });
         this.failureStats.contextLost++;
         persistContextLoss(localStorage, readPersistedContextLosses(localStorage));
@@ -1039,6 +1098,10 @@ class PistonViewer {
             this.contextRecovery.timer = null;
         }
         this.failureStats.contextRestored++;
+        this.contextRecovery.restoredAt = performance.now();
+        this.contextRecovery.durationMs = this.contextRecovery.startedAt === null
+            ? null
+            : this.contextRecovery.restoredAt - this.contextRecovery.startedAt;
         this.log('Graphics context restored; rebuilding GPU resources.', 'info');
         const resumeState = this.contextRecovery.resumeLifecycleState || APP_LIFECYCLE.BOOTING;
         this.appLifecycle.transition(APP_LIFECYCLE.RECOVERING, { cause: 'webglcontextrestored' });
@@ -1069,6 +1132,11 @@ class PistonViewer {
                 this._showLoadingState();
                 this.checkInitialLoad();
             }
+            // AA-8's demand scheduler may be fully asleep when the browser
+            // dispatches webglcontextrestored. Reuploading retained CPU-side
+            // resources sets needsRender, but that flag alone cannot schedule
+            // a frame. Wake explicitly so restored means visibly repainted.
+            this.frameScheduler?.wake('webgl-context-restored');
         } catch (error) {
             this.failureStats.contextRecoveryFailures++;
             if (this.appLifecycle.canTransition(APP_LIFECYCLE.CONTEXT_LOST)) {
@@ -1285,6 +1353,9 @@ class PistonViewer {
         }
         this.contextRecovery.active = false;
         this.contextRecovery.resumeLifecycleState = null;
+        this.contextRecovery.startedAt = null;
+        this.contextRecovery.restoredAt = null;
+        this.contextRecovery.durationMs = null;
         this.geometryPlanEpoch++;
         this.activeTextureJobs = 0;
         this.activeWorkerCount = 0;
@@ -3093,10 +3164,12 @@ class PistonViewer {
             if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighDispatched');
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
-            this.resourceRetries.run(retryKey, () => (
+            this.resourceRetries.run(retryKey, ({ attempt }) => (
                 this.postWorkerJob('LOAD_TEXTURE', {
                     urls: task.urls,
                     bootstrap: task.tier === TEXTURE_TIER.BOOTSTRAP,
+                    faultAttempt: attempt,
+                    faultDrop: this._faultGateDrop('texture', attempt),
                 })
             ), {
                 onRetry: event => this._logRetry('texture', `${task.key}/${task.tier}`, event),
@@ -3801,11 +3874,13 @@ class PistonViewer {
                 `${binaryBaseKey}-gsp${expectedGspVersion}`,
             );
 
-            const workerData = await this.resourceRetries.run(`tile:${tileKey}`, async () => {
+            const workerData = await this.resourceRetries.run(`tile:${tileKey}`, async ({ attempt }) => {
                 const result = await this.postWorkerJob('LOAD_TILE', {
                     yq: t.yq, yr: t.yr,
                     binUrl,
                     expectedGspVersion,
+                    faultAttempt: attempt,
+                    faultDrop: this._faultGateDrop('terrain', attempt),
                 });
                 if (result.binaryVersion !== expectedGspVersion) {
                     throw new Error(
@@ -4696,6 +4771,9 @@ class PistonViewer {
                     restored: this.failureStats.contextRestored,
                     recoveryFailures: this.failureStats.contextRecoveryFailures,
                     recovering: this.contextRecovery.active,
+                    recoveryDurationMs: this.contextRecovery.durationMs,
+                    startedAt: this.contextRecovery.startedAt,
+                    restoredAt: this.contextRecovery.restoredAt,
                 },
                 globalErrors: this.failureStats.globalErrors,
                 unhandledRejections: this.failureStats.unhandledRejections,
