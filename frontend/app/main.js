@@ -3156,6 +3156,7 @@ class PistonViewer {
         }
 
         this.loaderHidden = true;
+        this.profiler?.milestone('loaderHidden');
         console.log(`[HEXAGONS] ${APP_VERSION} — ready in ${(elapsed / 1000).toFixed(1)}s (${this.tiles.size} tiles)`);
         const loader = document.getElementById('loader');
         if (loader) {
