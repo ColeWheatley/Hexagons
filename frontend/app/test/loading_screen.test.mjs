@@ -79,10 +79,14 @@ test('planned counts are max-seen, and texture classes split by tier', () => {
     assert.deepEqual(model.textureCounts(), { planned: 8, done: 0 });
 });
 
-test('bar stays indeterminate until the manifest and a plan exist', () => {
+test('bar stays indeterminate until the manifest and a terrain plan exist', () => {
     const model = bootedModel();
     assert.equal(model.determinate(), false);
     model.manifestLoaded(95_000);
+    assert.equal(model.determinate(), false);
+    // Textures alone are not enough: a lone 3 KB bootstrap made the raw
+    // ratio ~0.97 and the monotonic clamp pinned it (the live-boot bug).
+    model.texturePlanned(5, 'bootstrap32');
     assert.equal(model.determinate(), false);
     model.terrainPlanned(1);
     assert.equal(model.determinate(), true);

@@ -217,12 +217,13 @@ export class LoadingProgressModel {
         return this.quips[index];
     }
 
-    // The bar is determinate once the manifest has landed and at least one
-    // unit of real work is planned; before that only the manifest itself is
-    // known, which would pin the bar at 0.
+    // The bar is determinate once the manifest has landed and the terrain
+    // plan exists. The terrain islands are the bulk of the boot denominator;
+    // engaging earlier (manifest-only, or a lone 3 KB bootstrap) produced a
+    // raw ratio near 1.0 that the monotonic clamp then pinned forever.
     determinate() {
         if (!this.manifestDone) return false;
-        return Object.values(this.classes).some(entry => entry.planned > 0);
+        return this.classes.terrain.planned > 0;
     }
 
     tick(now) {
