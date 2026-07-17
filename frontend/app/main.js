@@ -334,6 +334,7 @@ class PistonViewer {
         this.materialsToUpdate = new Set(); // Changed to Set
 
         this.gradientMode = 1.0;
+        this.highTextureEnterPx = TEXTURE_CONFIG.highEnterPx;
         this.heightFactor = 0.0;
         this.transSettings = { flatThresh: 5.0, riseStart: 6.0, riseEnd: 25.0, curve: 1.0 };
         this.worldOrigin = { x: 0, y: 0 };
@@ -400,6 +401,7 @@ class PistonViewer {
         this.initCollapsibleSections();
         this.initLODSliders();
         this.initLodTruthLabels();
+        this.viewState.restorePublicSettings();
         this.updateFogAndClip();
 
         // WORKER SYSTEM
@@ -579,6 +581,7 @@ class PistonViewer {
             this.controls.update();
             this.needsRender = true;
             this.notifyCameraMotion(performance.now());
+            this.viewState?.commitViewChange();
         }
 
         this.lastTouchDistance = dist;
@@ -1146,6 +1149,7 @@ class PistonViewer {
                 this.atmosphereSettings.hazeDistance = parseInt(rdSlider.value) * 1000;
                 if (rdVal) rdVal.textContent = rdSlider.value + "km";
                 this.updateFogAndClip();
+                this.viewState?.commitSettingsChange();
             });
         }
 
@@ -1157,8 +1161,8 @@ class PistonViewer {
             texSlider.min = '128';
             texSlider.max = '2048';
             texSlider.step = '64';
-            texSlider.value = TEXTURE_CONFIG.highEnterPx;
-            if (texVal) texVal.textContent = TEXTURE_CONFIG.highEnterPx + "px";
+            texSlider.value = this.highTextureEnterPx;
+            if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
             texSlider.addEventListener('input', () => {
                 // Object.freeze protects defaults, so retain a deliberately
                 // tiny per-view override for manual tuning.
@@ -1166,6 +1170,7 @@ class PistonViewer {
                 if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
                 this.needsLODUpdate = true;
                 this.needsRender = true;
+                this.viewState?.commitSettingsChange();
             });
         }
 
@@ -1184,6 +1189,7 @@ class PistonViewer {
                 gradientBtn.style.background = 'transparent';
                 gradientBtn.style.color = '#ccc';
                 this.needsRender = true;
+                this.viewState?.commitSettingsChange();
             });
             gradientBtn.addEventListener('click', () => {
                 this.gradientMode = 1.0;
@@ -1194,6 +1200,7 @@ class PistonViewer {
                 terrainBtn.style.background = 'transparent';
                 terrainBtn.style.color = '#ccc';
                 this.needsRender = true;
+                this.viewState?.commitSettingsChange();
             });
         }
 
@@ -1205,6 +1212,33 @@ class PistonViewer {
                 this.log(this.lodPaused ? "LOD Updates PAUSED" : "LOD Updates RESUMED", "info");
             });
         }
+    }
+
+    applyPublicSettings(settings) {
+        this.atmosphereSettings.hazeDistance = settings.hazeDistanceKm * 1000;
+        this.highTextureEnterPx = settings.highTextureEnterPx;
+        this.gradientMode = settings.gradientMode;
+        const hazeSlider = document.getElementById('haze-distance-slider');
+        const hazeValue = document.getElementById('haze-distance-val');
+        if (hazeSlider) hazeSlider.value = String(settings.hazeDistanceKm);
+        if (hazeValue) hazeValue.textContent = `${settings.hazeDistanceKm}km`;
+        const textureSlider = document.getElementById('tex-upgrade-slider');
+        const textureValue = document.getElementById('tex-upgrade-val');
+        if (textureSlider) textureSlider.value = String(settings.highTextureEnterPx);
+        if (textureValue) textureValue.textContent = `${settings.highTextureEnterPx}px`;
+        const terrainBtn = document.getElementById('gradient-terrain');
+        const gradientBtn = document.getElementById('gradient-slope');
+        const terrain = settings.gradientMode === 0;
+        terrainBtn?.classList.toggle('active', terrain);
+        gradientBtn?.classList.toggle('active', !terrain);
+        if (terrainBtn && gradientBtn) {
+            terrainBtn.style.background = terrain ? '#74b9ff' : 'transparent';
+            terrainBtn.style.color = terrain ? '#fff' : '#ccc';
+            gradientBtn.style.background = terrain ? 'transparent' : '#74b9ff';
+            gradientBtn.style.color = terrain ? '#ccc' : '#fff';
+        }
+        this.updateFogAndClip();
+        this.needsLODUpdate = true;
     }
 
     // --- FIXED WORLD-DISTANCE LOD BAND RADII ---
