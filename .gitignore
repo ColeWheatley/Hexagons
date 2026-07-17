@@ -27,6 +27,7 @@ sandboxes/
 
 # Test outputs
 hive_assets/.test_results/
+artifacts/
 
 # Local bake transcripts
 lil_bake_*.log
