@@ -76,6 +76,13 @@ const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERIN
 const MANIFEST_RETRY_KEY = 'manifest:tile_manifest.json';
 const RECOVERABLE_SWEEP_TILES = 'tiles';
 const RECOVERABLE_SWEEP_TEXTURES = 'textures';
+
+class UnsupportedDeviceError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'UnsupportedDeviceError';
+    }
+}
 // Per-state frame budgets (ms). Violations logged only when exceeded.
 // MOVING targets 60fps. STATIC must never render at all (budget=0).
 const STATE_BUDGETS_MS = { MOVING_2D: 16, MOVING_3D: 16, SINTERING: 1200, STATIC: 0 };
@@ -297,6 +304,7 @@ class PistonViewer {
         // this.isUpgradingTex = false; // REMOVED
 
         this.loaderHidden = false;
+        this.fatalState = null;
         this.appStartTime = performance.now();
         this.materialsToUpdate = new Set(); // Changed to Set
 
@@ -607,6 +615,157 @@ class PistonViewer {
 
     initDebugConsole() {
         this.log("PistonViewer Initialized.", "success");
+    }
+
+    _setLoaderText(main, sub, detail = '') {
+        const loader = document.getElementById('loader');
+        const mainEl = loader?.querySelector('.main-message');
+        const subEl = loader?.querySelector('.fetching-message');
+        const detailEl = document.getElementById('fatal-detail');
+        if (mainEl) mainEl.textContent = main;
+        if (subEl) subEl.textContent = sub;
+        if (detailEl) {
+            detailEl.textContent = detail;
+            detailEl.hidden = !detail;
+        }
+    }
+
+    _showLoader() {
+        const loader = document.getElementById('loader');
+        if (!loader) return;
+        loader.style.display = 'flex';
+        loader.classList.remove('hide');
+        this.loaderHidden = false;
+    }
+
+    _showLoadingState(main = 'Good code loads fast.', sub = 'Fetching high-res bestagons...') {
+        this._showLoader();
+        const loader = document.getElementById('loader');
+        const retry = document.getElementById('fatal-retry-btn');
+        loader?.classList.remove('fatal');
+        if (retry) retry.hidden = true;
+        this._setLoaderText(main, sub);
+    }
+
+    _showFatalState(kind, error) {
+        this.fatalState = { kind, message: error?.message || String(error) };
+        this._showLoader();
+        const loader = document.getElementById('loader');
+        const retry = document.getElementById('fatal-retry-btn');
+        loader?.classList.add('fatal');
+        if (retry) {
+            retry.hidden = false;
+            retry.onclick = () => this.retryInitWorld();
+        }
+
+        if (kind === 'unsupported-device') {
+            this._setLoaderText(
+                "This device can't run the viewer.",
+                'The graphics hardware is missing a required capability.',
+                this.fatalState.message,
+            );
+        } else if (kind === 'manifest') {
+            this._setLoaderText(
+                'Could not load the terrain manifest.',
+                'Check the asset build or network path, then retry.',
+                this.fatalState.message,
+            );
+        } else {
+            this._setLoaderText(
+                'The viewer failed to initialize.',
+                'Retry after fixing the reported startup problem.',
+                this.fatalState.message,
+            );
+        }
+    }
+
+    _disposeObjectTree(root) {
+        if (!root) return;
+        root.parent?.remove(root);
+        const disposedMaterials = new Set();
+        root.traverse(object => {
+            if (object.isMesh) object.geometry?.dispose();
+            const materials = object.material
+                ? (Array.isArray(object.material) ? object.material : [object.material])
+                : [];
+            for (const material of materials) {
+                if (!material || disposedMaterials.has(material)) continue;
+                disposedMaterials.add(material);
+                this.materialsToUpdate.delete(material);
+                material.dispose();
+            }
+        });
+    }
+
+    _disposeHorizon() {
+        this._disposeObjectTree(this.horizonMesh);
+        this._disposeObjectTree(this.movingHorizonMesh);
+        this.horizonMesh = null;
+        this.movingHorizonMesh = null;
+        this.horizonIndex = null;
+        this.movingHorizonIndex = null;
+        this.movingHorizonLocalXZ = null;
+        this.movingHorizonChildrenPerTile = 0;
+    }
+
+    _disposeTextureAssets() {
+        for (const state of this.textureStates.values()) {
+            for (const asset of state.assets.values()) {
+                asset.texture?.dispose();
+            }
+            state.assets.clear();
+            state.loading.clear();
+            state.queued.clear();
+            state.failed.clear();
+            state.activeTier = null;
+        }
+    }
+
+    _resetWorldForInitRetry() {
+        for (const key of Array.from(this.tiles.keys())) this.unloadTile(key);
+        this._disposeHorizon();
+        this._disposeTextureAssets();
+        for (const geometry of [this.capGeometry, this.unitSkirtGeometry, this.aggregateSkirtGeometry]) {
+            geometry?.dispose();
+        }
+
+        this.manifest = null;
+        this.textureContract = null;
+        this.binaryContract = {};
+        this.manifestGrid = null;
+        this.texturePageGrid = null;
+        this.texturePageResidency = null;
+        this.texturePageVisibilityAdapter = null;
+        this.textureStates = new Map();
+        this.visibilityByKey.clear();
+        this.currentVisibilityContext = null;
+        this.geometryPageFootprint = null;
+        this.loadingTiles.clear();
+        this.failedTiles.clear();
+        this.failedTextures.clear();
+        this.loadQueue.length = 0;
+        this.geometryRebuildQueue.length = 0;
+        this.textureQueue.length = 0;
+        this.textureResultQueue.length = 0;
+        this.instantiateQueue.length = 0;
+        this.recoverableResweeps.consumeAll();
+        this.resourceRetries.reset(MANIFEST_RETRY_KEY);
+        this.geometryPlanEpoch++;
+        this.activeTextureJobs = 0;
+        this.activeWorkerCount = 0;
+        this.vramLedger = new VRAMLedger();
+        this.cacheManager = new CacheManager();
+        this.appStartTime = performance.now();
+        this.fatalState = null;
+        this.needsLODUpdate = true;
+        this.needsRender = true;
+    }
+
+    retryInitWorld() {
+        this.log('Retrying viewer initialization.', 'info');
+        this._resetWorldForInitRetry();
+        this._showLoadingState();
+        this.initWorld();
     }
 
     initMinimizeButton() {
@@ -1020,7 +1179,7 @@ class PistonViewer {
                 throw new Error('Texture pages must use the EPSG:31254 global 1024m grid');
             }
             if (this.renderer.capabilities.maxTextures < MAX_TEXTURE_PAGE_BINDINGS) {
-                throw new Error(
+                throw new UnsupportedDeviceError(
                     `Global texture pages need ${MAX_TEXTURE_PAGE_BINDINGS} fragment samplers; device exposes ${this.renderer.capabilities.maxTextures}`,
                 );
             }
@@ -1129,8 +1288,16 @@ class PistonViewer {
             this.buildHorizon();
             this.updateLOD();
         } catch (e) {
-            console.error("Manifest error: " + e.message);
-            this.log("Manifest error: " + e.message, "error");
+            console.error("Init error: " + e.message);
+            this.log("Init error: " + e.message, "error");
+            const manifestRetry = this.resourceRetries.snapshot(MANIFEST_RETRY_KEY);
+            if (e instanceof UnsupportedDeviceError) {
+                this._showFatalState('unsupported-device', e);
+            } else if (manifestRetry.exhausted || !this.manifest) {
+                this._showFatalState('manifest', e);
+            } else {
+                this._showFatalState('init', e);
+            }
         }
     }
 
