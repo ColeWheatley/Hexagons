@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../../frontend/app/desktop_navigation.js', import.meta.url), 'utf8');
+const main = await readFile(new URL('../../frontend/app/main.js', import.meta.url), 'utf8');
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const {
     commitIfChanged,
@@ -48,5 +49,16 @@ let commits = 0;
 assert.equal(commitIfChanged(false, () => { commits++; }), false);
 assert.equal(commitIfChanged(true, () => { commits++; }), true);
 assert.equal(commits, 1, 'only a changed camera pose commits URL/persistence state');
+
+assert.match(main, /initDesktopNavigation\(\)[\s\S]*?window\.addEventListener\('keydown'/,
+    'real viewer installs deterministic keyboard navigation');
+assert.match(main, /resolveNavigationKey\(event\)[\s\S]*?event\.preventDefault\(\)/,
+    'handled navigation keys prevent browser scrolling');
+assert.match(main, /viewState\?\.commitViewChange\(\)/,
+    'changed keyboard/gesture poses persist and update the share URL');
+assert.match(main, /shouldHandleNormalizedPinch\(event, navigator\)/,
+    'macOS ctrl-wheel pinch is canvas-scoped');
+assert.match(main, /supportsDesktopGestureEvents\(window, navigator\)[\s\S]*?gesturechange/,
+    'twist is feature-detected and only registered where GestureEvent exists');
 
 console.log('desktop navigation tests passed');

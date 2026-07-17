@@ -11,7 +11,7 @@ and gives baseline/candidate runs an identical environment.
 
 Usage:
   python3.14 scripts/run_bench.py <url> <out.json> [--screenshot out.png] [--timeout 300]
-      [--warm-reload]
+      [--warm-reload] [--dpr 1|2|3] [--render-cap capped|native]
 
 With --warm-reload, the first navigation seeds the service worker and Cache
 Storage. The runner waits for that page to be controlled, then navigates the
@@ -94,6 +94,12 @@ POLL = f"""(() => {{
 
 FETCH_REPORT = f"localStorage.getItem('{LS_KEY}')"
 STATIC_BUFFER_STATS = "JSON.stringify(window.pistonViewer?.getStaticBufferInstrumentation?.() || null)"
+RENDER_RESOLUTION = """JSON.stringify((() => {
+  const v = window.pistonViewer, c = v?.renderer?.domElement;
+  return v && c ? {devicePixelRatio, renderPixelRatio:v.renderPixelRatio,
+    configuredCap:v.renderDprCap, canvasCssWidth:c.clientWidth, canvasCssHeight:c.clientHeight,
+    drawingBufferWidth:c.width, drawingBufferHeight:c.height} : null;
+})())"""
 MATERIAL_CHURN_STATS = "JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ || null)"
 BOOTSTRAP_DIAGNOSTICS = "JSON.stringify(window.pistonViewer?.bootstrapDiagnostics || null)"
 RESOURCE_TIMINGS = """JSON.stringify(performance.getEntriesByType('resource').map(entry => ({
@@ -318,6 +324,10 @@ async def wait_for_report(cdp, timeout, excluded_run_id=None, label="benchmark")
             report["staticBufferInstrumentation"] = (
                 json.loads(raw_buffer_stats) if raw_buffer_stats else None
             )
+            raw_render_resolution = await cdp.js(RENDER_RESOLUTION)
+            report["renderResolution"] = (
+                json.loads(raw_render_resolution) if raw_render_resolution else None
+            )
             raw_material_churn = await cdp.js(MATERIAL_CHURN_STATS)
             report["materialChurn"] = (
                 json.loads(raw_material_churn) if raw_material_churn else None
@@ -369,9 +379,17 @@ def print_done(report, out_json, label=""):
           f"staticBuffers={report['staticBufferInstrumentation']} -> {out_json}", flush=True)
 
 
-async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", warm_reload=False):
+async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", warm_reload=False,
+               device_scale_factor=1, render_cap="capped"):
     global PORT
     PORT = reserve_debug_port()
+    if render_cap not in ("capped", "native"):
+        raise ValueError("--render-cap must be capped or native")
+    if device_scale_factor <= 0:
+        raise ValueError("--dpr must be positive")
+    if render_cap == "native":
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}benchRenderDprCap=native"
     profile = tempfile.mkdtemp(prefix="chrome-bench-")
     launch_url = "about:blank" if warm_reload else url
     proc = subprocess.Popen(
@@ -412,7 +430,7 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
             await cdp.call("Emulation.setDeviceMetricsOverride", {
                 "width": viewport_width,
                 "height": viewport_height,
-                "deviceScaleFactor": 1,
+                "deviceScaleFactor": device_scale_factor,
                 "mobile": False,
             })
 
@@ -559,8 +577,10 @@ def main():
     timeout = int(args[args.index("--timeout") + 1]) if "--timeout" in args else 300
     viewport = args[args.index("--viewport") + 1] if "--viewport" in args else "1440,900"
     warm_reload = "--warm-reload" in args
-    print(f"[bench] {url}", flush=True)
-    return asyncio.run(run(url, out_json, screenshot, timeout, viewport, warm_reload))
+    dpr = float(args[args.index("--dpr") + 1]) if "--dpr" in args else 1
+    render_cap = args[args.index("--render-cap") + 1] if "--render-cap" in args else "capped"
+    print(f"[bench] {url} dpr={dpr:g} render-cap={render_cap}", flush=True)
+    return asyncio.run(run(url, out_json, screenshot, timeout, viewport, warm_reload, dpr, render_cap))
 
 
 if __name__ == "__main__":

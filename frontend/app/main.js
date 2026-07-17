@@ -108,6 +108,7 @@ import {
     createSharedLodInstanceAttributes,
     disposeGeometryWithSharedStaticBuffers,
     rendererOptionsForLocation,
+    renderDprCapForLocation,
     staticBufferSharingStats,
     watchDevicePixelRatio,
 } from './render_policy.js';
@@ -237,10 +238,12 @@ class PistonViewer {
         this.camera.position.set(0, 800, 0);
 
         this.renderer = new THREE.WebGLRenderer(rendererOptionsForLocation(window.location.search));
+        this.renderDprCap = renderDprCapForLocation(window.location.search, window.devicePixelRatio);
         this.renderPixelRatio = applyRenderResolution(this.renderer, {
             width: window.innerWidth,
             height: window.innerHeight,
             devicePixelRatio: window.devicePixelRatio,
+            maxDpr: this.renderDprCap,
         });
         this.container.appendChild(this.renderer.domElement);
         this.appLifecycle = new AppLifecycle();
@@ -1742,6 +1745,7 @@ class PistonViewer {
             width: window.innerWidth,
             height: window.innerHeight,
             devicePixelRatio: window.devicePixelRatio,
+            maxDpr: this.renderDprCap,
         });
         this.needsLODUpdate = true;
         this.needsRender = true;

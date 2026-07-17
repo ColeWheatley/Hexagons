@@ -14,6 +14,20 @@ export function isBenchmarkLocation(search = '') {
     return new URLSearchParams(search).has('bench');
 }
 
+// The production policy is always capped.  A benchmark can explicitly opt
+// into the old native behavior so that a DPR>2 run compares identical code,
+// scene, browser, and device scale factor.  Do not make this a general URL
+// setting: it exists solely to produce an auditable capped-vs-native report.
+export function renderDprCapForLocation(search = '', devicePixelRatio = 1) {
+    const params = new URLSearchParams(search);
+    if (!params.has('bench') || params.get('benchRenderDprCap') !== 'native') {
+        return MAX_RENDER_DPR;
+    }
+    return Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+        ? devicePixelRatio
+        : MAX_RENDER_DPR;
+}
+
 export function rendererOptionsForLocation(search = '') {
     // Keeping the back buffer is only required for the CDP benchmark runner's
     // final screenshot. Normal interactive rendering can discard it promptly.

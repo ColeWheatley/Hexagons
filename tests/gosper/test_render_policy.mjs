@@ -24,6 +24,7 @@ const {
     bindSharedLodInstanceAttributes,
     disposeGeometryWithSharedStaticBuffers,
     rendererOptionsForLocation,
+    renderDprCapForLocation,
     staticBufferSharingStats,
     watchDevicePixelRatio,
 } = module.namespace;
@@ -36,6 +37,9 @@ assert.equal(cappedRenderDpr(undefined), 1);
 
 assert.deepEqual({ ...rendererOptionsForLocation('') }, { antialias: true, preserveDrawingBuffer: false });
 assert.deepEqual({ ...rendererOptionsForLocation('?bench=orbit') }, { antialias: true, preserveDrawingBuffer: true });
+assert.equal(renderDprCapForLocation('?bench=orbit', 3), 2, 'bench does not accidentally disable the cap');
+assert.equal(renderDprCapForLocation('?bench=orbit&benchRenderDprCap=native', 3), 3);
+assert.equal(renderDprCapForLocation('?benchRenderDprCap=native', 3), 2, 'production URL cannot disable the cap');
 
 const calls = [];
 const renderer = {
