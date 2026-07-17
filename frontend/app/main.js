@@ -89,6 +89,13 @@ import {
     WorkerWatchdogBookkeeper,
 } from './worker_watchdog.js';
 import {
+    MAX_TEXTURE_DECODERS,
+    WORKER_LANE,
+    cancelStaleViewTasks,
+    workerLaneForJob,
+    workerLaneSizes,
+} from './worker_lanes.js';
+import {
     applyRenderResolution,
     bindSharedLodInstanceAttributes,
     createGeometryWithSharedStaticBuffers,
@@ -323,6 +330,9 @@ class PistonViewer {
         this.loadQueue = [];
         this.geometryRebuildQueue = [];
         this.geometryPlanEpoch = 0;
+        this.viewEpoch = 0;
+        this.workerDispatchSequence = 0;
+        this.textureDispatchSequence = 0;
         this.textureQueue = [];
         this.textureResultQueue = [];
         this.textureStates = new Map();
@@ -427,12 +437,17 @@ class PistonViewer {
         // WORKER SYSTEM
         this.workers = [];
         this.capabilityProfile = detectCapabilityProfile();
-        this.nextWorkerIdx = 0;
+        this.workerLanes = { geometry: [], texture: [] };
+        this.nextWorkerIdx = { geometry: 0, texture: 0 };
         this.pendingJobs = new Map(); // ID -> {resolve, reject}
         this.jobIdCounter = 0;
         this.workerScriptUrl = TILE_WORKER_URL;
         this.workerWatchdog = new WorkerWatchdogBookkeeper();
         this.workerWatchdogTimer = null;
+        this.workerLaneStats = {
+            geometry: { workers: 0, dispatched: 0, completed: 0, cancelledQueued: 0 },
+            texture: { workers: 0, dispatched: 0, completed: 0, cancelledQueued: 0, decoderCap: MAX_TEXTURE_DECODERS },
+        };
         this.textureSupport = null; // set by initWorkers() from renderer.extensions
         this.initWorkers();
 
@@ -448,6 +463,7 @@ class PistonViewer {
             highUploadSize: null,
             highSourceSize: null,
             highSkippedTopMips: 0,
+            firstTextureHeapBytes: null,
         };
         this._textureMilestonesDone = false;
         this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
@@ -708,7 +724,7 @@ class PistonViewer {
     }
 
     initWorkers() {
-        const count = this.capabilityProfile.workerCount;
+        const sizes = workerLaneSizes(this.capabilityProfile.workerCount);
         // Workers initialized silently
 
         // Capability handshake: detect compressed-texture extension support once
@@ -726,12 +742,17 @@ class PistonViewer {
             maxTextureSize: this.renderer.capabilities.maxTextureSize,
         };
 
-        for (let i = 0; i < count; i++) {
-            this.workers.push(this._createWorker(i));
+        for (const lane of [WORKER_LANE.GEOMETRY, WORKER_LANE.TEXTURE]) {
+            for (let laneIndex = 0; laneIndex < sizes[lane]; laneIndex++) {
+                const index = this.workers.length;
+                this.workerLanes[lane].push(index);
+                this.workers.push(this._createWorker(index, lane));
+            }
+            this.workerLaneStats[lane].workers = sizes[lane];
         }
     }
 
-    _createWorker(index) {
+    _createWorker(index, lane = this._workerLaneForIndex(index)) {
         const worker = new Worker(this.workerScriptUrl);
         worker.onmessage = (e) => this.handleWorkerMessage(e);
         worker.onerror = (e) => {
@@ -740,13 +761,20 @@ class PistonViewer {
         // Worker does not reply to INIT — fire and forget.
         // NB: must use the same {type, data} envelope as every other worker
         // message — the worker destructures e.data.data.
-        worker.postMessage({ type: 'INIT', data: { support: this.textureSupport } });
+        worker.postMessage({
+            type: 'INIT',
+            data: { support: this.textureSupport, prewarmBasis: lane === WORKER_LANE.TEXTURE },
+        });
         return worker;
+    }
+
+    _workerLaneForIndex(index) {
+        return this.workerLanes.texture.includes(index) ? WORKER_LANE.TEXTURE : WORKER_LANE.GEOMETRY;
     }
 
     _restartWorker(index, reason) {
         this.workers[index]?.terminate();
-        this.workers[index] = this._createWorker(index);
+        this.workers[index] = this._createWorker(index, this._workerLaneForIndex(index));
         this.failureStats.workerRespawns++;
         this.log(`Worker ${index} restarted: ${reason}`, 'error');
     }
@@ -758,6 +786,7 @@ class PistonViewer {
 
         this.pendingJobs.delete(id);
         this.workerWatchdog.complete(id);
+        this.workerLaneStats[job.lane].completed++;
 
         if (status === 'success') job.resolve(result);
         else job.reject(new Error(error));
@@ -777,11 +806,14 @@ class PistonViewer {
                 reject,
                 resourceKey: this._workerJobResourceKey(type, data),
                 workerIndex: null,
+                lane: workerLaneForJob(type),
             };
             this.pendingJobs.set(id, job);
 
-            const workerIndex = this.nextWorkerIdx;
-            this.nextWorkerIdx = (this.nextWorkerIdx + 1) % this.workers.length;
+            const laneWorkers = this.workerLanes[job.lane];
+            const laneIndex = this.nextWorkerIdx[job.lane];
+            const workerIndex = laneWorkers[laneIndex];
+            this.nextWorkerIdx[job.lane] = (laneIndex + 1) % laneWorkers.length;
 
             this._postPendingWorkerJob(job, workerIndex);
         });
@@ -795,6 +827,7 @@ class PistonViewer {
 
     _postPendingWorkerJob(job, workerIndex, { scheduleWatchdog = true } = {}) {
         job.workerIndex = workerIndex;
+        this.workerLaneStats[job.lane].dispatched++;
         this.workerWatchdog.track(job.id, workerIndex, {
             type: job.type,
             resourceKey: job.resourceKey,
@@ -2641,6 +2674,8 @@ class PistonViewer {
             tier,
             priority,
             urls: this._textureUrls(tier, state.key),
+            epoch: this.viewEpoch,
+            enqueuedSequence: this.textureDispatchSequence,
         });
     }
 
@@ -2905,8 +2940,7 @@ class PistonViewer {
     }
 
     _dispatchTextureJobs(maxConcurrent) {
-        while (this.activeWorkerCount < maxConcurrent &&
-            this.activeTextureJobs < this.capabilityProfile.maxTextureJobs &&
+        while (this.activeTextureJobs < Math.min(maxConcurrent, this.capabilityProfile.maxTextureJobs) &&
             this.textureQueue.length > 0) {
             const index = selectTextureDispatchTaskIndex(
                 this.textureQueue,
@@ -2919,17 +2953,23 @@ class PistonViewer {
                     // fixture is itself the local safety region.
                     lowCoverageFirst: true,
                     lowCoverageIncludesOutside: this.isMiniBake,
+                    dispatchSequence: this.textureDispatchSequence,
                 },
             );
             if (index < 0) break;
             const task = this.textureQueue.splice(index, 1)[0];
+            this.textureDispatchSequence++;
+            if (task.epoch !== this.viewEpoch) {
+                this.textureStates.get(task.key)?.queued.delete(task.tier);
+                this.workerLaneStats.texture.cancelledQueued++;
+                continue;
+            }
             const state = this._textureState(task.textureResource);
             state.queued.delete(task.tier);
             const pinnedMedium = this.isMiniBake && task.tier === TEXTURE_TIER.MEDIUM;
             if (!pinnedMedium && TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
             if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
             state.loading.add(task.tier);
-            this.activeWorkerCount++;
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, () => (
@@ -2952,7 +2992,6 @@ class PistonViewer {
                     console.warn(`[TEX_FAIL] ${task.key}/${task.tier}: ${error.message}`);
                 }
             }).finally(() => {
-                this.activeWorkerCount--;
                 this.activeTextureJobs--;
                 this.processQueues();
             });
@@ -3252,7 +3291,12 @@ class PistonViewer {
             if (classification !== 'outside') {
                 if (!this.tiles.has(key) && !this.loadingTiles.has(key) && !this.failedTiles.has(key)) {
                     this.loadingTiles.add(key);
-                    this.loadQueue.push({ t: manifestTile, priority });
+                    this.loadQueue.push({
+                        t: manifestTile,
+                        priority,
+                        epoch: this.viewEpoch,
+                        enqueuedSequence: this.workerDispatchSequence++,
+                    });
                 }
             } else if (this.tiles.has(key)) {
                 this.unloadTile(key);
@@ -3296,6 +3340,9 @@ class PistonViewer {
         this.needsLODUpdate = true;
         this.frameScheduler?.wake('camera-input');
         this.frameScheduler?.wakeAfter(310, 'motion-settle');
+        // Each observed pose change starts a new demand generation, including
+        // successive pan events inside one continuous moving-mode interval.
+        this._advanceViewEpoch();
         if (!entered) return false;
 
         // This method runs inside the controls `change` event, before another
@@ -3304,6 +3351,24 @@ class PistonViewer {
         this._beginGeometryMode(true);
         this._suppressHighTextureWorkForMotion();
         return true;
+    }
+
+    _advanceViewEpoch() {
+        this.viewEpoch++;
+        this.loadQueue = cancelStaleViewTasks(this.loadQueue, this.viewEpoch, task => {
+            if (task?.t) this.loadingTiles.delete(`${task.t.yq}_${task.t.yr}`);
+            this.workerLaneStats.geometry.cancelledQueued++;
+        });
+        this.geometryRebuildQueue = this.geometryRebuildQueue.filter(task => {
+            if (task.viewEpoch === this.viewEpoch) return true;
+            if (task?.tile) task.tile.geometryRebuildQueued = null;
+            this.workerLaneStats.geometry.cancelledQueued++;
+            return false;
+        });
+        this.textureQueue = cancelStaleViewTasks(this.textureQueue, this.viewEpoch, task => {
+            this.textureStates.get(task?.key)?.queued.delete(task?.tier);
+            this.workerLaneStats.texture.cancelledQueued++;
+        });
     }
 
     _beginGeometryMode(isMovingView) {
@@ -3331,6 +3396,8 @@ class PistonViewer {
             epoch: this.geometryPlanEpoch,
             mode: this.isMovingView ? 'moving' : 'settled',
             signature: selection.signature,
+            viewEpoch: this.viewEpoch,
+            enqueuedSequence: this.workerDispatchSequence++,
         };
         tile.geometryDesiredSelection = selection;
         tile.geometryDesiredSignature = selection.signature;
@@ -3506,7 +3573,7 @@ class PistonViewer {
     }
 
     processQueues() {
-        const maxConcurrent = this.workers.length;
+        const maxConcurrent = this.workerLanes.geometry.length;
         // New-root loads and resident range rebuilds share one priority lane.
         // A visible missing tile must outrank a guard-only refinement, while a
         // centered visible refinement can still beat speculative guard loads.
@@ -3528,7 +3595,7 @@ class PistonViewer {
 
             // Camera may have moved while the task waited. Outside-guard work
             // is stale and safe to discard; retained textures are independent.
-            if (this.tiles.has(key) || this.visibilityByKey.get(key)?.classification === 'outside') {
+            if (task.epoch !== this.viewEpoch || this.tiles.has(key) || this.visibilityByKey.get(key)?.classification === 'outside') {
                 this.loadingTiles.delete(key);
                 continue;
             }
@@ -3540,9 +3607,9 @@ class PistonViewer {
                 this.processQueues(); // Keep the pipe full
             });
         }
-        if (this.loadQueue.length === 0 && this.geometryRebuildQueue.length === 0) {
-            this._dispatchTextureJobs(maxConcurrent);
-        }
+        // Texture decoders own an independent lane, so geometry backlog cannot
+        // delay first paint or refinement dispatch.
+        this._dispatchTextureJobs(this.workerLanes.texture.length);
     }
 
     async fetchTileOnWorker(task) {
@@ -3642,6 +3709,10 @@ class PistonViewer {
     // Dumb telemetry accumulator for the perf harness — no logging loop, just
     // running totals read externally via window.pistonViewer.texStats.
     updateTexStats(texResult) {
+        if (this.texStats.count === 0 && Number.isFinite(performance.memory?.usedJSHeapSize)) {
+            // Chromium-only diagnostic; null elsewhere is an explicit gate.
+            this.texStats.firstTextureHeapBytes = performance.memory.usedJSHeapSize;
+        }
         this.texStats.count++;
         this.texStats.totalTranscodeMs += texResult.transcodeMs || 0;
         this.texStats.maxTranscodeMs = Math.max(this.texStats.maxTranscodeMs, texResult.transcodeMs || 0);
@@ -4333,6 +4404,12 @@ class PistonViewer {
                 highSourceSize: this.texStats.highSourceSize,
                 highUploadSize: this.texStats.highUploadSize,
                 highSkippedTopMips: this.texStats.highSkippedTopMips,
+                workerLane: { ...this.workerLaneStats.texture },
+            },
+            workerLanes: {
+                geometry: { ...this.workerLaneStats.geometry },
+                texture: { ...this.workerLaneStats.texture },
+                viewEpoch: this.viewEpoch,
             },
             failures: {
                 manifest: {

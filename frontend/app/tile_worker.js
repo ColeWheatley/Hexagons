@@ -204,6 +204,11 @@ self.onmessage = async function (e) {
     if (type === 'INIT') {
         // Capability handshake from main.js — no reply expected.
         workerSupport = data.support;
+        if (data.prewarmBasis) {
+            // Only dedicated texture-lane workers instantiate the decoder.
+            // Keep initialization asynchronous so INIT remains fire-and-forget.
+            loadBasisModule().catch(() => {});
+        }
         return;
     }
 

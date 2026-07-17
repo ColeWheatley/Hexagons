@@ -67,6 +67,8 @@ export function selectTextureDispatchTaskIndex(queue, states, {
     isMoving = false,
     lowCoverageFirst = false,
     lowCoverageIncludesOutside = true,
+    dispatchSequence = null,
+    agingInterval = 8,
 } = {}) {
     const lowBarrier = lowCoverageFirst && lowTextureCoveragePending(states, {
         includeOutside: lowCoverageIncludesOutside,
@@ -78,7 +80,11 @@ export function selectTextureDispatchTaskIndex(queue, states, {
         if (!task) continue;
         if (isMoving && task.tier === PAGE_TEXTURE_TIER.HIGH) continue;
         if (lowBarrier && task.tier !== PAGE_TEXTURE_TIER.LOW) continue;
-        const priority = Number.isFinite(task.priority) ? task.priority : 0;
+        const age = Number.isFinite(dispatchSequence)
+            ? Math.max(0, dispatchSequence - (task.enqueuedSequence || 0))
+            : 0;
+        const priority = (Number.isFinite(task.priority) ? task.priority : 0)
+            + Math.floor(age / Math.max(1, agingInterval)) * 1e9;
         if (selectedIndex < 0 || priority > selectedPriority) {
             selectedIndex = index;
             selectedPriority = priority;
