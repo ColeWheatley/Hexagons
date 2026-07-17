@@ -105,6 +105,19 @@ const ordinaryQueue = [
 assert.equal(take([...ordinaryQueue], states).tier, TIER.HIGH);
 assert.equal(take([...ordinaryQueue], states, { isMoving: true }).tier, TIER.MEDIUM);
 
+// Bounded aging preserves visible-first dispatch while guaranteeing that a
+// retained lower-priority task eventually gets a turn under sustained churn.
+const agingQueue = [
+    { key: 'b', tier: TIER.MEDIUM, priority: 1, enqueuedSequence: 0 },
+    { key: 'a', tier: TIER.MEDIUM, priority: 1e9, enqueuedSequence: 8 },
+];
+assert.equal(selectTextureDispatchTaskIndex(agingQueue, states, {
+    dispatchSequence: 7,
+}), 1);
+assert.equal(selectTextureDispatchTaskIndex(agingQueue, states, {
+    dispatchSequence: 16,
+}), 0);
+
 // A one-degree global page manifest is large enough to reproduce the failure
 // hidden by the Stubai mini-bake: 64,800 unrelated postage assets used to be
 // admitted into the same queue as the handful surrounding the camera.
