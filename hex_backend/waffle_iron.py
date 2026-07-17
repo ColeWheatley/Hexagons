@@ -102,21 +102,22 @@ STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
 TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
-TEXTURE_TATTOO_VERSION = "2"  # three-tier colors/sizes; separate from clean textures
+TEXTURE_TATTOO_VERSION = "3"  # includes the yellow 32px WebP bootstrap mark
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
 # world metres, so overlapping island textures paint the same strokes at the
-# same terrain locations.  A 7.7m stroke is approximately 1/2/64 pixels at the
-# global 1024m / {128,256,4096}px pages (and migration-era 980m canvases):
-# sparse in the landscape, with comparable world-space weight in every tier.
+# same terrain locations. A 3.85m stroke is intentionally half the former
+# weight: visible enough to identify the delivered tier without obscuring
+# aerial detail.
 TEXTURE_TATTOO_COLORS = {
+    "bootstrap": (255, 220, 0), # yellow, transient 32px WebP first paint
     "low": (0, 255, 48),       # very vibrant green postage tier
     "medium": (0, 96, 255),    # electric blue medium tier
     "high": (255, 0, 170),     # hot pink high tier
 }
 TEXTURE_TATTOO_SPACING_M = 128.0
 TEXTURE_TATTOO_RADIUS_M = 24.0
-TEXTURE_TATTOO_STROKE_M = 7.7
+TEXTURE_TATTOO_STROKE_M = 3.85
 SHADER_SKIRT_EXTENSION_M = 12.0
 AGGREGATE_SKIRT_BASE_EXTENSION_M = 12.0
 
@@ -949,9 +950,14 @@ def encode_texture_tiers(
         bootstrap_path = os.path.join(tmp_dir, "bootstrap.webp")
         for tier in tier_names:
             variants[tier].save(input_paths[tier], "PNG")
-        variants["low"].resize((32, 32), Image.Resampling.LANCZOS).save(
-            bootstrap_path, "WEBP", quality=45, method=4
-        )
+        # Build bootstrap from the clean high canvas, not the green low tier.
+        # It is a separate diagnostic tier: yellow must never inherit low's
+        # tattoo through a second resize.
+        bootstrap = canvas.resize((32, 32), Image.Resampling.LANCZOS)
+        if texture_tattoos:
+            apply_texture_tattoo(bootstrap, bounds, "bootstrap")
+        bootstrap.save(bootstrap_path, "WEBP", quality=45, method=4)
+        bootstrap.close()
 
         for image in variants.values():
             image.close()

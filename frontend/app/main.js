@@ -48,11 +48,13 @@ import { TexturePageGrid } from './texture_page_grid.js';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
+    BOOTSTRAP_MAX_RESIDENT_BYTES,
     TexturePageResidency,
     pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
-} from './texture_page_residency.js';
+    textureTierRequestPlan,
+} from './texture_page_residency.mjs';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
@@ -157,6 +159,10 @@ const TEXTURE_CONFIG = Object.freeze({
     highExitPx: 384,   // 25% downgrade hysteresis
     maxTextureJobs: 2,
     maxUploadsPerFrame: 1,
+    // 32px RGBA pages are only 4 KiB each. Keep a strict 1 MiB ceiling so a
+    // larger production manifest cannot turn first-paint placeholders into a
+    // stealth VRAM residency pool.
+    bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
 
 function appendCacheKey(url, cacheKey) {
@@ -2763,16 +2769,17 @@ class PistonViewer {
         }
         this.cacheManager.updatePriority(state.key, state.perceptibility);
 
-        // The tiny WebP is the first-paint floor. It is deliberately transient:
-        // the KTX2 postage tier replaces it without double-charging VRAM.
-        this._queueTextureTier(textureResource, TEXTURE_TIER.BOOTSTRAP, priority + 1500);
-        this._queueTextureTier(textureResource, TEXTURE_TIER.LOW, priority + 1000);
-
-        if (TEXTURE_RANK[state.desiredTier] >= TEXTURE_RANK[TEXTURE_TIER.MEDIUM]) {
-            this._queueTextureTier(textureResource, TEXTURE_TIER.MEDIUM, priority + 500);
-        }
-        if (state.desiredTier === TEXTURE_TIER.HIGH && !this.isMovingView) {
-            this._queueTextureTier(textureResource, TEXTURE_TIER.HIGH, priority);
+        // Near first-view imagery deliberately skips the legacy 128/256px
+        // rungs: WebP32 gives immediate coverage, then high4096 is the next
+        // network/decode job. Guard, off-frustum, and below-threshold pages
+        // receive medium256 only. Each request covers a full 1024m page, never
+        // individual terrain islands, which keeps HTTP overhead bounded.
+        const requestPlan = textureTierRequestPlan(state, { isMoving: this.isMovingView });
+        for (const requestedTier of requestPlan) {
+            const tierPriority = requestedTier === TEXTURE_TIER.BOOTSTRAP
+                ? priority + 1500
+                : (requestedTier === TEXTURE_TIER.HIGH ? priority : priority + 500);
+            this._queueTextureTier(textureResource, requestedTier, tierPriority);
         }
 
         this._reconcileTextureState(state);
@@ -2938,6 +2945,29 @@ class PistonViewer {
         return true;
     }
 
+    _enforceBootstrapBudget(protectedKey = null) {
+        const bootstrapEntries = Array.from(this.vramLedger.textureEntries.values())
+            .filter(entry => entry.tier === TEXTURE_TIER.BOOTSTRAP);
+        let bytes = bootstrapEntries.reduce((sum, entry) => sum + entry.bytes, 0);
+        if (bytes <= TEXTURE_CONFIG.bootstrapBudgetBytes) return true;
+        // Never blank the current visible page to make room for another
+        // placeholder. Evict the least perceptible non-visible pages first;
+        // they can fetch their 32px block again if the camera returns.
+        const victims = bootstrapEntries
+            .map(entry => this.textureStates.get(entry.key))
+            .filter(state => state && state.key !== protectedKey && state.classification !== 'visible')
+            .sort((a, b) => (a.perceptibility || 0) - (b.perceptibility || 0));
+        for (const victim of victims) {
+            if (bytes <= TEXTURE_CONFIG.bootstrapBudgetBytes) break;
+            const asset = victim.assets.get(TEXTURE_TIER.BOOTSTRAP);
+            if (!asset) continue;
+            if (this._dropTextureTier(victim.key, TEXTURE_TIER.BOOTSTRAP, false, true)) {
+                bytes -= asset.bytes || 0;
+            }
+        }
+        return bytes <= TEXTURE_CONFIG.bootstrapBudgetBytes;
+    }
+
     _installTextureResult(task, result) {
         const state = this._textureState(task.textureResource);
         if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapInstalled');
@@ -2991,9 +3021,12 @@ class PistonViewer {
             this._textureLedgerLocation(task.textureResource),
         );
         this._reconcileTextureState(state);
-        if (task.tier === TEXTURE_TIER.LOW && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
+        // Bootstrap is a first-paint placeholder, not a fourth resident copy.
+        // Any real KTX2 replacement releases it immediately.
+        if (task.tier !== TEXTURE_TIER.BOOTSTRAP && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP);
         }
+        if (task.tier === TEXTURE_TIER.BOOTSTRAP) this._enforceBootstrapBudget(state.key);
         this.updateTexStats(result);
 
         if (task.tier === TEXTURE_TIER.HIGH) {
@@ -3033,12 +3066,10 @@ class PistonViewer {
                 this.textureStates,
                 {
                     isMoving: this.isMovingView,
-                    // The postage floor gates upgrades only inside the current
-                    // visible+guard demand. Mini-bakes deliberately retain the
-                    // historical whole-corpus floor because the complete
-                    // fixture is itself the local safety region.
-                    lowCoverageFirst: true,
-                    lowCoverageIncludesOutside: this.isMiniBake,
+                    // Bootstrap only gates the same page's upgrade. There is
+                    // no whole-corpus low/medium barrier ahead of a visible
+                    // high request.
+                    lowCoverageFirst: false,
                     dispatchSequence: this.textureDispatchSequence,
                 },
             );
@@ -3052,8 +3083,7 @@ class PistonViewer {
             }
             const state = this._textureState(task.textureResource);
             state.queued.delete(task.tier);
-            const pinnedMedium = this.isMiniBake && task.tier === TEXTURE_TIER.MEDIUM;
-            if (!pinnedMedium && TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
+            if (TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
             if (state.assets.has(task.tier) || state.loading.has(task.tier)) continue;
             state.loading.add(task.tier);
             if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
@@ -3092,16 +3122,8 @@ class PistonViewer {
     _seedMiniTexturePins() {
         if (!this.isMiniBake || this.miniTexturePinsSeeded || !this.manifest) return;
         this.miniTexturePinsSeeded = true;
-        const resources = this.texturePageGrid.pages;
-        // Seed the complete coverage floor before placing any upgrades in the
-        // queue. The dispatch barrier below remains authoritative if later
-        // demand promotion changes numeric priorities.
-        for (const resource of resources) {
-            this._queueTextureTier(resource, TEXTURE_TIER.LOW, -1000);
-        }
-        for (const resource of resources) {
-            this._queueTextureTier(resource, TEXTURE_TIER.MEDIUM, -2000);
-        }
+        // Demand planning now owns all tiers. Do not enqueue a beta-wide low /
+        // medium corpus: that used to sit in front of visible high imagery.
     }
 
     _planTileGeometry(manifestTile, { coarseOnly = false } = {}) {
@@ -4566,6 +4588,20 @@ class PistonViewer {
             },
             textureResidency: {
                 identity: 'global-page',
+                bootstrapPolicy: {
+                    pageSizePx: 32,
+                    decodedBytesPerPage: 4096,
+                    budgetBytes: TEXTURE_CONFIG.bootstrapBudgetBytes,
+                    residentPages: residentTiers.bootstrap32,
+                    residentBytes: Array.from(this.vramLedger.textureEntries.values())
+                        .filter(entry => entry.tier === TEXTURE_TIER.BOOTSTRAP)
+                        .reduce((sum, entry) => sum + entry.bytes, 0),
+                    requestedPages: Array.from(this.textureStates.values()).filter(state => (
+                        state.assets.has(TEXTURE_TIER.BOOTSTRAP)
+                        || state.loading.has(TEXTURE_TIER.BOOTSTRAP)
+                        || state.queued.has(TEXTURE_TIER.BOOTSTRAP)
+                    )).length,
+                },
                 resident: residentTiers,
                 active: activeTiers,
                 desired: desiredTiers,

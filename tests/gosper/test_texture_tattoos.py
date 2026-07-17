@@ -132,7 +132,20 @@ class TextureTattooTests(unittest.TestCase):
         self.assertEqual(waffle.TEXTURE_TIER_SIZES, {
             "low": 128, "medium": 256, "high": 4096,
         })
-        self.assertEqual(set(waffle.TEXTURE_TATTOO_COLORS), set(waffle.TEXTURE_TIER_SIZES))
+        self.assertEqual(set(waffle.TEXTURE_TATTOO_COLORS), {
+            "bootstrap", *waffle.TEXTURE_TIER_SIZES,
+        })
+        self.assertEqual(waffle.TEXTURE_TATTOO_COLORS["bootstrap"], (255, 220, 0))
+        self.assertEqual(waffle.TEXTURE_TATTOO_STROKE_M, 3.85)
+
+    def test_bootstrap_has_its_own_yellow_mark_after_downsample(self):
+        # The delivery asset is built independently from clean high imagery;
+        # this guards against inheriting the green low-tier mark.
+        source = Image.new("RGB", (1024, 1024), BASE_COLOR)
+        bootstrap = source.resize((32, 32), Image.Resampling.LANCZOS)
+        waffle.apply_texture_tattoo(bootstrap, BOUNDS, "bootstrap")
+        self.assertTrue(color_mask(bootstrap, waffle.TEXTURE_TATTOO_COLORS["bootstrap"]).any())
+        self.assertFalse(color_mask(bootstrap, waffle.TEXTURE_TATTOO_COLORS["low"]).any())
 
     def test_invalid_bounds_and_resolution_kind_fail_loudly(self):
         image = Image.new("RGB", (32, 32), BASE_COLOR)
