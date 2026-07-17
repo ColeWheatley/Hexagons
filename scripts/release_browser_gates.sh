@@ -21,6 +21,13 @@ for trial in 1 2 3; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=orbit" "$OUT/orbit-${trial}.json" --timeout 150
 done
 python3 scripts/validate_perf_medians.py "$OUT"/orbit-{1,2,3}.json
+# AA-7 returning-visitor gate. Each pair uses a fresh profile internally, but
+# the cold and warm navigation inside a pair share one tab/profile. Three
+# independent pairs keep Chrome startup and filesystem noise out of the verdict.
+for trial in 1 2 3; do
+  python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/warm-reload-${trial}.json" --warm-reload --timeout 150
+done
+python3 scripts/validate_warm_reload.py "$OUT"/warm-reload-{1,2,3}.json --min-improvement-percent 60
 # Inspection artifacts, not pixel-goldens: GPU rasterization and terrain data vary by runner.
 for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150

@@ -6,6 +6,8 @@ echo '== production build =='
 (cd frontend/app && npm ci && npm run build) | tee artifacts/ci/build.log
 echo '== frontend unit contracts =='
 (cd frontend/app && npm test) | tee artifacts/ci/frontend-unit.log
+echo '== browser gate validator contracts =='
+python -m unittest tests/test_warm_reload_gate.py 2>&1 | tee artifacts/ci/browser-gate-unit.log
 echo '== Gosper JavaScript contracts =='
 for test in tests/gosper/test_*.mjs; do node --experimental-vm-modules "$test"; done | tee artifacts/ci/gosper-js.log
 echo '== Gosper Python contracts =='
