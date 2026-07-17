@@ -80,6 +80,7 @@ const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERIN
 const MANIFEST_RETRY_KEY = 'manifest:tile_manifest.json';
 const RECOVERABLE_SWEEP_TILES = 'tiles';
 const RECOVERABLE_SWEEP_TEXTURES = 'textures';
+const CONTEXT_RESTORE_TIMEOUT_MS = 10000;
 
 class UnsupportedDeviceError extends Error {
     constructor(message) {
@@ -188,6 +189,11 @@ class PistonViewer {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.container.appendChild(this.renderer.domElement);
+        this.contextRecovery = {
+            active: false,
+            timer: null,
+            wasLoaderHidden: false,
+        };
 
         this.controls = new MapControls(this.camera, this.renderer.domElement);
         this.controls.enableDamping = true;
@@ -229,6 +235,7 @@ class PistonViewer {
         this.renderer.domElement.addEventListener('wheel', () => {
             this.notifyCameraMotion(performance.now());
         }, { capture: true, passive: true });
+        this.attachContextRecovery();
         this.lastObservedCameraPose = writeCameraPose(
             this.camera,
             this.controls.target,
@@ -351,6 +358,9 @@ class PistonViewer {
             workerTimeouts: 0,
             workerRespawns: 0,
             workerFailedJobs: 0,
+            contextLost: 0,
+            contextRestored: 0,
+            contextRecoveryFailures: 0,
         };
         this.resourceRetries = new ResourceRetryScheduler();
         this.recoverableResweeps = new ResweepScheduler({
@@ -754,6 +764,103 @@ class PistonViewer {
         console.error(`[GLOBAL_${kind.toUpperCase()}]`, payload);
     }
 
+    attachContextRecovery() {
+        const canvas = this.renderer?.domElement;
+        if (!canvas) return;
+        canvas.addEventListener('webglcontextlost', event => this._onWebGLContextLost(event), false);
+        canvas.addEventListener('webglcontextrestored', () => this._onWebGLContextRestored(), false);
+    }
+
+    _onWebGLContextLost(event) {
+        event.preventDefault();
+        if (this.contextRecovery.active) return;
+        this.contextRecovery.active = true;
+        this.contextRecovery.wasLoaderHidden = this.loaderHidden;
+        this.failureStats.contextLost++;
+        this.log('Graphics context lost; waiting for browser restore.', 'error');
+        this._showLoadingState('Restoring graphics context.', 'Waiting for WebGL to recover...');
+        this.contextRecovery.timer = setTimeout(() => {
+            if (!this.contextRecovery.active) return;
+            this.failureStats.contextRecoveryFailures++;
+            this._showFatalState('context', new Error('WebGL context was not restored within 10 seconds.'));
+        }, CONTEXT_RESTORE_TIMEOUT_MS);
+    }
+
+    _onWebGLContextRestored() {
+        if (!this.contextRecovery.active) return;
+        if (this.contextRecovery.timer) {
+            clearTimeout(this.contextRecovery.timer);
+            this.contextRecovery.timer = null;
+        }
+        this.failureStats.contextRestored++;
+        this.log('Graphics context restored; rebuilding GPU resources.', 'info');
+        try {
+            this._reuploadGpuResidentState();
+            this.contextRecovery.active = false;
+            if (this.contextRecovery.wasLoaderHidden) {
+                const loader = document.getElementById('loader');
+                if (loader) {
+                    loader.classList.add('hide');
+                    setTimeout(() => { loader.style.display = 'none'; }, 600);
+                }
+                this.loaderHidden = true;
+            } else {
+                this._showLoadingState();
+                this.checkInitialLoad();
+            }
+        } catch (error) {
+            this.failureStats.contextRecoveryFailures++;
+            this._showFatalState('context', error);
+        }
+    }
+
+    _markGeometryForReupload(geometry) {
+        if (!geometry) return;
+        if (geometry.index) geometry.index.needsUpdate = true;
+        for (const attribute of Object.values(geometry.attributes || {})) {
+            attribute.needsUpdate = true;
+        }
+        if (geometry.instanceMatrix) geometry.instanceMatrix.needsUpdate = true;
+        if (geometry.instanceColor) geometry.instanceColor.needsUpdate = true;
+    }
+
+    _markTextureForReupload(texture) {
+        if (!texture) return;
+        texture.needsUpdate = true;
+    }
+
+    _reuploadGpuResidentState() {
+        // three.js r160 handles the raw WebGLRenderer restore by rebuilding
+        // GL state, capabilities, and shader/program caches internally. The
+        // app still owns CPU-side BufferGeometry attributes and
+        // Texture/CompressedTexture mip arrays produced by its loaders. Mark
+        // those retained objects dirty so r160's normal WebGLGeometries and
+        // WebGLTextures upload paths recreate the GPU buffers/textures on the
+        // next compile/render, without refetching asset files.
+        this.renderer.resetState();
+        this.scene.traverse(object => {
+            this._markGeometryForReupload(object.geometry);
+            const materials = object.material
+                ? (Array.isArray(object.material) ? object.material : [object.material])
+                : [];
+            for (const material of materials) {
+                if (!material) continue;
+                material.needsUpdate = true;
+                for (const value of Object.values(material)) {
+                    if (value?.isTexture) this._markTextureForReupload(value);
+                }
+            }
+        });
+        this._markTextureForReupload(this.missingPageTexture);
+        for (const state of this.textureStates.values()) {
+            for (const asset of state.assets.values()) {
+                this._markTextureForReupload(asset.texture);
+            }
+        }
+        this.renderer.compile(this.scene, this.camera);
+        this.needsRender = true;
+    }
+
     _setLoaderText(main, sub, detail = '') {
         const loader = document.getElementById('loader');
         const mainEl = loader?.querySelector('.main-message');
@@ -805,6 +912,12 @@ class PistonViewer {
             this._setLoaderText(
                 'Could not load the terrain manifest.',
                 'Check the asset build or network path, then retry.',
+                this.fatalState.message,
+            );
+        } else if (kind === 'context') {
+            this._setLoaderText(
+                'Graphics context could not be restored.',
+                'Retry after the browser recovers WebGL.',
                 this.fatalState.message,
             );
         } else {
@@ -887,6 +1000,11 @@ class PistonViewer {
         this.instantiateQueue.length = 0;
         this.recoverableResweeps.consumeAll();
         this.resourceRetries.reset(MANIFEST_RETRY_KEY);
+        if (this.contextRecovery.timer) {
+            clearTimeout(this.contextRecovery.timer);
+            this.contextRecovery.timer = null;
+        }
+        this.contextRecovery.active = false;
         this.geometryPlanEpoch++;
         this.activeTextureJobs = 0;
         this.activeWorkerCount = 0;
@@ -2832,7 +2950,7 @@ class PistonViewer {
     }
 
     checkInitialLoad(sorted) {
-        if (this.loaderHidden) return;
+        if (this.loaderHidden || this.contextRecovery.active) return;
         // If we have successfully instantiated at least 1 tile, hide the loader.
         // The rest will pop in.
         let operational = 0;
@@ -3915,6 +4033,12 @@ class PistonViewer {
                     respawns: this.failureStats.workerRespawns,
                     failedJobs: this.failedWorkerJobs.size,
                     finalFailures: this.failureStats.workerFailedJobs,
+                },
+                context: {
+                    lost: this.failureStats.contextLost,
+                    restored: this.failureStats.contextRestored,
+                    recoveryFailures: this.failureStats.contextRecoveryFailures,
+                    recovering: this.contextRecovery.active,
                 },
                 globalErrors: this.failureStats.globalErrors,
                 unhandledRejections: this.failureStats.unhandledRejections,
