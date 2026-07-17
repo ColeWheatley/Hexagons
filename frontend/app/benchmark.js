@@ -194,6 +194,7 @@ function stressScenario(t, ctx) {
 }
 
 const SCENARIOS = {
+    coldload: { duration: 45, fn: null, holdStill: true },
     orbit: { duration: 60, fn: orbitScenario },
     traverse: { duration: 90, fn: traverseScenario },
     stress: { duration: 120, fn: stressScenario },
@@ -239,6 +240,46 @@ function waitForReady(viewer, timeoutMs = 45000) {
     });
 }
 
+function finishScenario(viewer, hud, name, duration, appVersion) {
+    updateHud(hud, name, duration, duration, true);
+    console.log(`[BENCHMARK] Scenario "${name}" complete.`);
+    // The runtime contract is KTX2-only. Missing telemetry means the
+    // pipeline has not produced a sample yet; it is not a WebP fallback.
+    const texturePipeline = 'ktx2';
+    if (viewer.profiler) {
+        const report = viewer.profiler.finalize({
+            scenario: name,
+            texturePipeline,
+            appVersion: appVersion || null,
+            timestamp: new Date().toISOString(),
+            userAgent: navigator.userAgent,
+        });
+        viewer.profiler.downloadReport(report);
+    } else {
+        console.error('[BENCHMARK] viewer.profiler not found — cannot finalize/download the perf report.');
+    }
+    setTimeout(() => hud?.remove(), 5000);
+}
+
+function runColdloadScenario(viewer, name, scenario, appVersion) {
+    const hud = createHud();
+    const t0 = performance.now();
+
+    const poll = () => {
+        const elapsed = (performance.now() - t0) / 1000;
+        const covered = viewer.profiler?.milestones?.visibleTexturedCoverage !== undefined;
+        if (covered || elapsed >= scenario.duration) {
+            finishScenario(viewer, hud, name, scenario.duration, appVersion);
+            return;
+        }
+        updateHud(hud, name, elapsed, scenario.duration);
+        setTimeout(poll, 250);
+    };
+
+    console.log(`[BENCHMARK] Starting scenario "${name}" (${scenario.duration}s)...`);
+    poll();
+}
+
 function runScenario(viewer, name, scenario, appVersion) {
     const hud = createHud();
     const startPos = viewer.camera.position.clone();
@@ -259,26 +300,7 @@ function runScenario(viewer, name, scenario, appVersion) {
 
     const t0 = performance.now();
 
-    const finish = () => {
-        updateHud(hud, name, scenario.duration, scenario.duration, true);
-        console.log(`[BENCHMARK] Scenario "${name}" complete.`);
-        // The runtime contract is KTX2-only. Missing telemetry means the
-        // pipeline has not produced a sample yet; it is not a WebP fallback.
-        const texturePipeline = 'ktx2';
-        if (viewer.profiler) {
-            const report = viewer.profiler.finalize({
-                scenario: name,
-                texturePipeline,
-                appVersion: appVersion || null,
-                timestamp: new Date().toISOString(),
-                userAgent: navigator.userAgent,
-            });
-            viewer.profiler.downloadReport(report);
-        } else {
-            console.error('[BENCHMARK] viewer.profiler not found — cannot finalize/download the perf report.');
-        }
-        setTimeout(() => hud?.remove(), 5000);
-    };
+    const finish = () => finishScenario(viewer, hud, name, scenario.duration, appVersion);
 
     const tick = () => {
         const elapsed = (performance.now() - t0) / 1000;
@@ -323,7 +345,7 @@ function runScenario(viewer, name, scenario, appVersion) {
 /**
  * Entry point — call once after the viewer is constructed:
  *   initBenchmark(window.pistonViewer, APP_VERSION)
- * No-ops unless the page URL has ?bench=<orbit|traverse|stress>.
+ * No-ops unless the page URL has ?bench=<coldload|orbit|traverse|stress>.
  */
 export function initBenchmark(viewer, appVersion) {
     const scenarioName = new URLSearchParams(window.location.search).get('bench');
@@ -337,6 +359,12 @@ export function initBenchmark(viewer, appVersion) {
 
     console.log(`[BENCHMARK] Scenario "${scenarioName}" queued — waiting for the viewer's initial tile load...`);
     waitForReady(viewer)
-        .then(() => runScenario(viewer, scenarioName, scenario, appVersion))
+        .then(() => {
+            if (scenario.holdStill) {
+                runColdloadScenario(viewer, scenarioName, scenario, appVersion);
+            } else {
+                runScenario(viewer, scenarioName, scenario, appVersion);
+            }
+        })
         .catch((e) => console.error('[BENCHMARK] ' + e.message));
 }

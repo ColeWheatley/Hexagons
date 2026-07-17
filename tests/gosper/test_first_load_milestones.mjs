@@ -19,8 +19,9 @@ const {
     PerfProfiler,
 } = await importFrontendModule('../../frontend/app/perf_profiler.js');
 
-function binding({ key = '52_199', tier = 'low128', valid = true, texture = {} } = {}) {
-    return { page: { key }, tier, valid, texture };
+function binding({ key = '52_199', tier = 'low128', valid = true, texture = {}, available = true, page } = {}) {
+    const pageValue = page === undefined ? { key, available } : page;
+    return { page: pageValue, tier, valid, texture };
 }
 
 function material(bindings) {
@@ -102,7 +103,7 @@ assert.equal(
         visibility(),
     ),
     1,
-    'one invalid binding makes the visible tile unpainted',
+    'one available-but-invalid binding makes the visible tile unpainted',
 );
 
 assert.equal(
@@ -110,8 +111,35 @@ assert.equal(
         new Map([['tile-a', tile([material([])])]]),
         visibility(),
     ),
+    0,
+    'an empty bindings array is not a texture consumer',
+);
+
+assert.equal(
+    countUnpaintedVisibleTiles(
+        new Map([['tile-a', tile([material([binding(), binding({ page: null, valid: false, texture: null })])])]]),
+        visibility(),
+    ),
+    0,
+    'null-page binding slots are ignored',
+);
+
+assert.equal(
+    countUnpaintedVisibleTiles(
+        new Map([['tile-a', tile([material([binding({ available: false, valid: false, texture: null })])])]]),
+        visibility(),
+    ),
+    0,
+    'all-unavailable binding slots are ignored',
+);
+
+assert.equal(
+    countUnpaintedVisibleTiles(
+        new Map([['tile-a', tile([material([binding({ valid: false, texture: null })])])]]),
+        visibility(),
+    ),
     1,
-    'a rendered material with an empty bindings array is unpainted',
+    'available page slots without a texture count as unpainted',
 );
 
 assert.equal(
