@@ -127,8 +127,9 @@ export function desiredTextureTier(state, projectedDiameterPx, classification, t
     // Keep LOW in the rank table solely to read legacy resident assets.
     if (classification === 'outside') return PAGE_TEXTURE_TIER.MEDIUM;
     const previous = state.desiredTier || PAGE_TEXTURE_TIER.MEDIUM;
-    const highExit = thresholds.highEnterPx * thresholds.hysteresis;
-    if (classification === 'visible') {
+    const highEnabled = Number.isFinite(thresholds.highEnterPx);
+    const highExit = highEnabled ? thresholds.highEnterPx * thresholds.hysteresis : Infinity;
+    if (classification === 'visible' && highEnabled) {
         if (previous === PAGE_TEXTURE_TIER.HIGH && projectedDiameterPx >= highExit) {
             return PAGE_TEXTURE_TIER.HIGH;
         }

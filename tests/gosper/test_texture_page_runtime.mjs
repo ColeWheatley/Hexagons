@@ -246,6 +246,16 @@ residency.beginDemandPass();
 residency.finishDemandPass();
 assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.LOW);
 
+// Infinity is also the conservative projection result when the camera is
+// inside a page footprint. An Infinity policy threshold means high is
+// disabled; it must not accidentally pass via `Infinity >= Infinity`.
+residency.beginDemandPass();
+residency.contribute('0_0', {
+    classification: 'visible', projectedDiameterPx: Infinity, perceptibility: 10,
+});
+residency.finishDemandPass({ highEnterPx: Infinity });
+assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
+
 // The generic grid module is an explicit geometry-translation boundary.
 for (const genericFilename of [
     'texture_page_grid.js',

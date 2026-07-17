@@ -2699,12 +2699,13 @@ class PistonViewer {
 
         const previous = state.desiredTier || TEXTURE_TIER.LOW;
         const highEnter = this._effectiveHighTextureEnterPx();
-        const highExit = highEnter * 0.75;
+        const highEnabled = Number.isFinite(highEnter);
+        const highExit = highEnabled ? highEnter * 0.75 : Infinity;
 
         // High is useful only for pixels that can actually reach the viewport.
         // Guard-only nodes still receive/preserve medium imagery for seamless
         // entry, but cannot start an expensive high upgrade.
-        if (classification === 'visible') {
+        if (classification === 'visible' && highEnabled) {
             if (previous === TEXTURE_TIER.HIGH && projectedDiameterPx >= highExit) {
                 return TEXTURE_TIER.HIGH;
             }

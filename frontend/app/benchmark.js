@@ -193,12 +193,43 @@ function stressScenario(t, ctx) {
     return { camPos: sphericalPosition(target, radius, theta, phi), target };
 }
 
+/** Objective AA-11 gate: approach the starting focus point from a nearly
+ * top-down, flat-map view. At 700 m the 1,024 m texture-page footprint is
+ * genuinely larger than the production 512 px high-tier threshold. This
+ * exercises real high-quality demand without changing the threshold itself. */
+function capabilityScenario(t, ctx) {
+    const p = easeInOut(t / Math.min(5, ctx.totalDuration / 2));
+    return {
+        camPos: sphericalPosition(
+            ctx.pivot,
+            lerp(ctx.initialRadius, 700, p),
+            ctx.initialTheta,
+            lerp(ctx.initialPhi, 0.04, p),
+        ),
+        target: ctx.pivot,
+    };
+}
+
 const SCENARIOS = {
     coldload: { duration: 45, fn: null, holdStill: true },
     orbit: { duration: 60, fn: orbitScenario },
     traverse: { duration: 90, fn: traverseScenario },
     stress: { duration: 120, fn: stressScenario },
+    capability: { duration: 20, fn: capabilityScenario, flatTextureGate: true },
 };
+
+/**
+ * Permit release gates to run a shortened, still deterministic scenario.
+ * Normal benchmark URLs omit this parameter and retain their historical
+ * durations. The lower bound prevents a gate from claiming coverage after a
+ * startup-only sample; the upper bound prevents accidental scenario extension.
+ */
+export function resolveBenchmarkDuration(configured, defaultDuration) {
+    if (configured === null || configured === undefined || configured === '') return defaultDuration;
+    const value = Number(configured);
+    if (!Number.isFinite(value)) return defaultDuration;
+    return clampNum(value, 10, defaultDuration);
+}
 
 // ─── HUD ───────────────────────────────────────────────────────────────
 
@@ -323,6 +354,14 @@ function runScenario(viewer, name, scenario, appVersion) {
         heightLookup: buildHeightLookup(viewer.manifest),
     };
     if (name === 'stress') ctx.locations = pickStressLocations(viewer);
+    if (scenario.flatTextureGate) {
+        // The gate's camera is close to a deliberately flat map. Keep the
+        // rendered geometry and visibility bounds in that same state before
+        // the first keyframe; the general 3D terrain clamp below is irrelevant
+        // to this scenario and would prevent the 512 px threshold crossing.
+        viewer.heightFactor = 0;
+        viewer.updateLevelVisibility?.(0);
+    }
 
     const t0 = performance.now();
     resetMaterialChurn(viewer);
@@ -347,7 +386,7 @@ function runScenario(viewer, name, scenario, appVersion) {
         // normalization the renderer itself uses, worst-cased at heightFactor
         // 1.0 (full 3D) so the guard never under-clamps mid-tilt.
         const ceilH = groundCeilingNear(ctx.heightLookup, camPos.x, camPos.z, 1500);
-        if (ceilH !== null) {
+        if (ceilH !== null && !scenario.flatTextureGate) {
             const minY = (ceilH - viewer.floorState.value) * 1.0 + SCENARIO_GROUND_MARGIN;
             if (camPos.y < minY) camPos.y = minY;
         }
@@ -377,15 +416,20 @@ function runScenario(viewer, name, scenario, appVersion) {
  * starting a scripted camera scenario.
  */
 export function initBenchmark(viewer, appVersion) {
-    const scenarioName = new URLSearchParams(window.location.search).get('bench');
+    const params = new URLSearchParams(window.location.search);
+    const scenarioName = params.get('bench');
     if (!scenarioName) return;
     if (scenarioName === '1') return;
 
-    const scenario = SCENARIOS[scenarioName];
-    if (!scenario) {
+    const configuredScenario = SCENARIOS[scenarioName];
+    if (!configuredScenario) {
         console.error(`[BENCHMARK] Unknown scenario "${scenarioName}". Valid options: ${Object.keys(SCENARIOS).join(', ')}`);
         return;
     }
+    const scenario = {
+        ...configuredScenario,
+        duration: resolveBenchmarkDuration(params.get('benchDuration'), configuredScenario.duration),
+    };
 
     console.log(`[BENCHMARK] Scenario "${scenarioName}" queued — waiting for the viewer's initial tile load...`);
     viewer._restoreMaterialWarningTracker = installTextureWarningTracker(viewer);

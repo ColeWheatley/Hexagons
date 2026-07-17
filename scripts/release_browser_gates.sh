@@ -32,6 +32,12 @@ python3 scripts/validate_warm_reload.py "$OUT"/warm-reload-{1,2,3}.json --min-im
 # hidden/visible transition. This is intentionally separate from scripted
 # benchmarks, whose camera driver keeps rAF active by design.
 python3 scripts/run_idle_browser_gate.py "${BASE_URL}/?idle-gate=1" "$OUT/idle-browser.json" --timeout 150
+# AA-11: emulate standard low/mid/high, Save-Data, and effective-network
+# signals before application startup. The validator proves the selected live
+# budgets, measured transfer reduction, unchanged high quality, and clean
+# context-loss/OOM counters. This remains in the asset-backed opt-in tier.
+python3 scripts/run_capability_matrix.py "${BASE_URL}/" "$OUT/capability-matrix.json" --timeout 150
+python3 scripts/validate_capability_matrix.py "$OUT/capability-matrix.json"
 # Inspection artifacts, not pixel-goldens: GPU rasterization and terrain data vary by runner.
 for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150
