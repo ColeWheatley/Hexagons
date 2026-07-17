@@ -56,3 +56,36 @@ export function computeTerrainAnchorRebase({
         cameraY: cameraY + translationY,
     });
 }
+
+/**
+ * Clamp an eye position above terrain rendered with the current piston morph.
+ *
+ * This deliberately operates only in renderer-scene Y. It does not alter the
+ * controls target, polar angle, height factor, or any geometry-transition
+ * state; callers remain responsible for sampling source elevation at the
+ * camera's own X/Z position.
+ */
+export function computeCameraClearance({
+    cameraY,
+    sourceElevation,
+    floor,
+    factor,
+    clearance = 50,
+}) {
+    const values = { cameraY, sourceElevation, floor, factor, clearance };
+    for (const [name, value] of Object.entries(values)) {
+        if (!Number.isFinite(value)) throw new TypeError(`${name} must be finite`);
+    }
+    if (factor < 0) throw new RangeError('factor must be non-negative');
+    if (clearance < 0) throw new RangeError('clearance must be non-negative');
+
+    const terrainY = (sourceElevation - floor) * factor;
+    const minCameraY = terrainY + clearance;
+    const clampedCameraY = Math.max(cameraY, minCameraY);
+    return Object.freeze({
+        terrainY,
+        minCameraY,
+        cameraY: clampedCameraY,
+        clamped: clampedCameraY !== cameraY,
+    });
+}

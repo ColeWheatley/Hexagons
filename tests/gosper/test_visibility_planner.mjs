@@ -67,6 +67,7 @@ const {
     planGosperGeometrySelection,
 } = geometrySelectionModule.namespace;
 const {
+    computeCameraClearance,
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
 } = verticalBootstrapModule.namespace;
@@ -459,6 +460,65 @@ function testTerrainAnchorRebase() {
     }), /factor must be non-negative/);
 }
 
+function testCameraClearance() {
+    // Regression shape: the target can sit safely over a valley while the eye
+    // crosses a much higher cap. Clearance must use the eye-local source
+    // elevation, not the controls target's elevation.
+    const belowHighCell = computeCameraClearance({
+        cameraY: 300,
+        sourceElevation: 2350,
+        floor: 2000,
+        factor: 1,
+        clearance: 50,
+    });
+    assert.deepEqual({ ...belowHighCell }, {
+        terrainY: 350,
+        minCameraY: 400,
+        cameraY: 400,
+        clamped: true,
+    });
+
+    const alreadySafe = computeCameraClearance({
+        cameraY: 451,
+        sourceElevation: 2350,
+        floor: 2000,
+        factor: 1,
+        clearance: 50,
+    });
+    assert.equal(alreadySafe.cameraY, 451);
+    assert.equal(alreadySafe.clamped, false);
+
+    const partialMorph = computeCameraClearance({
+        cameraY: 100,
+        sourceElevation: 2400,
+        floor: 2000,
+        factor: 0.25,
+        clearance: 50,
+    });
+    assert.equal(partialMorph.terrainY, 100);
+    assert.equal(partialMorph.cameraY, 150);
+
+    const flat = computeCameraClearance({
+        cameraY: 49,
+        sourceElevation: 9999,
+        floor: -9999,
+        factor: 0,
+        clearance: 50,
+    });
+    assert.equal(flat.terrainY, 0);
+    assert.equal(flat.cameraY, 50);
+
+    assert.throws(() => computeCameraClearance({
+        cameraY: NaN, sourceElevation: 1, floor: 0, factor: 1, clearance: 50,
+    }), /cameraY must be finite/);
+    assert.throws(() => computeCameraClearance({
+        cameraY: 1, sourceElevation: 1, floor: 0, factor: -1, clearance: 50,
+    }), /factor must be non-negative/);
+    assert.throws(() => computeCameraClearance({
+        cameraY: 1, sourceElevation: 1, floor: 0, factor: 1, clearance: -1,
+    }), /clearance must be non-negative/);
+}
+
 function testL3GeometryRangeExclusion() {
     const adapter = new GosperVisibilityAdapter({
         manifestTiles: [
@@ -515,5 +575,6 @@ testPlannerFrontier();
 testGosperAdapter();
 testManifestFloorBootstrap();
 testTerrainAnchorRebase();
+testCameraClearance();
 testL3GeometryRangeExclusion();
 console.log('visibility planner + Gosper adapter: ok');

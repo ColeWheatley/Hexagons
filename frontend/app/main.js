@@ -33,9 +33,10 @@ import {
     writeCameraPose,
 } from './geometry_transition_state.js?v=pageonly1';
 import {
+    computeCameraClearance,
     computeTerrainAnchorRebase,
     selectManifestFloorBaseline,
-} from './vertical_bootstrap.js?v=pageonly1';
+} from './vertical_bootstrap.js?v=camerafloor1';
 import { TexturePageGrid } from './texture_page_grid.js?v=pageonly1';
 import {
     PAGE_TEXTURE_RANK,
@@ -82,6 +83,7 @@ const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
 const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
 const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper island
+const CAMERA_TERRAIN_CLEARANCE_METERS = 50;
 
 // Three deterministic imagery tiers. Quality is selected from projected screen
 // footprint, never a radial distance or inferred device class.
@@ -1382,7 +1384,7 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_global_pages_v3';
+        material.customProgramCacheKey = () => 'piston_hex_global_pages_v4';
 
         const pageSize = this.texturePageGrid.pageSize;
         const sourceOrigin = this.worldOrigin;
@@ -1425,7 +1427,14 @@ class PistonViewer {
                              baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
                          }
                     }
-                    diffuseColor = vec4(baseColor * lighting, 1.0);
+                    vec3 finalColor = baseColor * lighting;
+                    if (vIsTop > 0.5 && !gl_FrontFacing) {
+                        // Radioactive green is a deliberate invariant alarm:
+                        // it can only appear when the camera sees a cap from
+                        // below. Keep it distinct from magenta missing pages.
+                        finalColor = vec3(0.0, 1.0, 0.0);
+                    }
+                    diffuseColor = vec4(finalColor, 1.0);
                 #endif
             `;
 
@@ -3174,40 +3183,40 @@ class PistonViewer {
         if (el) { el.textContent = text; this._hudLast[id] = text; }
     }
 
-    maintainCameraAltitudeDuringAnimation(h) {
-        const target = this.controls.target;
-        const wx = target.x + this.worldOrigin.x;
-        const wy = this.worldOrigin.y - target.z;
-
-        // Which unit hex, and which gosper island owns it?
+    sampleTerrainSourceElevation(sceneX, sceneZ) {
+        const wx = sceneX + this.worldOrigin.x;
+        const wy = this.worldOrigin.y - sceneZ;
         const axial = worldToUnitAxial(wx, wy);
         const [tq, tr] = G.tileOfUnit(axial.q, axial.r);
         const key = `${tq}_${tr}`;
         const tile = this.tiles.get(key);
 
-        // Update Readouts
-        this._setHudText('sector-val', `${tq}, ${tr}`);
-        this._setHudText('world-val', `${wx.toFixed(0)}, ${wy.toFixed(0)}`);
-        this._setHudText('hex-val', `${axial.q}, ${axial.r}`);
-
-        let groundH;
+        let sourceElevation;
         if (tile && tile.center && tile.unitHeights) {
-            // O(1) picking: heap-order unit index from the static offset map
-            // (identical for every island), then one Float32Array read.
             const dq = axial.q - tile.center.q;
             const dr = axial.r - tile.center.r;
             const idx = this.unitIndexMap.get(((dq + 128) << 8) | (dr + 128));
-            groundH = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
-            if (groundH === undefined) groundH = tile.stats.avg;
+            sourceElevation = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
+            if (sourceElevation === undefined) sourceElevation = tile.stats?.avg;
         } else {
-            // A manifest root is available before its GSP payload. It is less
-            // precise than a unit sample, but keeps the navigation focus in
-            // the same vertical coordinate frame during bootstrap/loading.
-            // animate() starts synchronously while initWorld() is still
-            // awaiting the manifest fetch, so the lookup itself is optional
-            // during the cold-start frames.
-            groundH = this.manifestGrid?.get(key)?.hMean;
+            // The manifest horizon renders hMean until decoded unit geometry
+            // arrives, so hMean is the correct eye-clearance surface here.
+            sourceElevation = this.manifestGrid?.get(key)?.hMean;
         }
+
+        return { sourceElevation, wx, wy, axial, tq, tr };
+    }
+
+    maintainCameraAltitudeDuringAnimation(h) {
+        const target = this.controls.target;
+        const targetSample = this.sampleTerrainSourceElevation(target.x, target.z);
+
+        // Update Readouts
+        this._setHudText('sector-val', `${targetSample.tq}, ${targetSample.tr}`);
+        this._setHudText('world-val', `${targetSample.wx.toFixed(0)}, ${targetSample.wy.toFixed(0)}`);
+        this._setHudText('hex-val', `${targetSample.axial.q}, ${targetSample.axial.r}`);
+
+        const groundH = targetSample.sourceElevation;
 
         if (Number.isFinite(groundH)) {
             const anchored = computeTerrainAnchorRebase({
@@ -3226,11 +3235,27 @@ class PistonViewer {
             target.y = anchored.targetY;
             this.camera.position.y = anchored.cameraY;
 
-            // Soft clearance constraint. Normally MapControls' polar/range
-            // constraints already satisfy this; malformed saved views still
-            // cannot place the eye inside the cap.
-            const minCamY = anchored.terrainY + 50.0;
-            if (this.camera.position.y < minCamY) this.camera.position.y = minCamY;
+            // The target anchor alone cannot protect a camera crossing a
+            // taller hex elsewhere. Sample the eye's own X/Z after rebasing
+            // and clamp before visibility planning and rendering. This does
+            // not touch the 2D -> raised-piston height morph.
+            const eyeGroundH = this.sampleTerrainSourceElevation(
+                this.camera.position.x,
+                this.camera.position.z,
+            ).sourceElevation;
+            const clearanceGroundH = Number.isFinite(eyeGroundH)
+                // Preserve the existing target-local clearance while adding
+                // the missing eye-local constraint.
+                ? Math.max(eyeGroundH, groundH)
+                : groundH;
+            const clearance = computeCameraClearance({
+                cameraY: this.camera.position.y,
+                sourceElevation: clearanceGroundH,
+                floor: this.floorState.value,
+                factor: h,
+                clearance: CAMERA_TERRAIN_CLEARANCE_METERS,
+            });
+            this.camera.position.y = clearance.cameraY;
 
             this._setHudText('tile-height', `${anchored.terrainY.toFixed(1)}m`);
         }
