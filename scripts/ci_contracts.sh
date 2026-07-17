@@ -8,7 +8,8 @@ echo '== frontend unit contracts =='
 (cd frontend/app && npm test) | tee artifacts/ci/frontend-unit.log
 echo '== browser gate validator contracts =='
 python -m unittest tests/test_warm_reload_gate.py tests/test_capability_matrix_gate.py \
-  tests/test_fault_recovery_gate.py \
+  tests/test_fault_recovery_gate.py tests/test_perf_medians_gate.py \
+  tests/test_profiler_soak_gate.py tests/test_aa20_ui_gates.py \
   2>&1 | tee artifacts/ci/browser-gate-unit.log
 echo '== Gosper JavaScript contracts =='
 for test in tests/gosper/test_*.mjs; do node --experimental-vm-modules "$test"; done | tee artifacts/ci/gosper-js.log

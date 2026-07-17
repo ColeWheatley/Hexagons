@@ -40,7 +40,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.release_browser
     name: Asset-backed browser release tier
     runs-on: [self-hosted, hexagons-assets, chromium]
-    timeout-minutes: 25
+    # Includes the faithful 30-minute profiler soak plus the existing browser
+    # matrix, build, and artifact upload margin.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

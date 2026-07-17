@@ -6,6 +6,7 @@ PORT="${PORT:-8124}"
 BASE_URL="${BASE_URL:-http://localhost:${PORT}}"
 OUT="${OUT:-artifacts/release-browser}"
 BENCH_DURATION="${BENCH_DURATION:-20}"
+SOAK_SECONDS="${SOAK_SECONDS:-1800}"
 mkdir -p "$OUT"
 if [[ ! -d frontend/app/tiles_bin || ! -d frontend/app/aerial_pages ]]; then
   echo 'release browser gate requires frontend/app/{tiles_bin,aerial_pages}; refusing partial/no-asset run' >&2
@@ -19,9 +20,12 @@ server=$!
 trap 'kill "$server" 2>/dev/null || true' EXIT
 sleep 1
 for trial in 1 2 3; do
-  python3 scripts/run_bench.py "${BASE_URL}/?bench=orbit&benchDuration=${BENCH_DURATION}" "$OUT/orbit-${trial}.json" --timeout 150
+  # A fresh Chrome profile makes each orbit startup a cold trial. The same
+  # three reports therefore gate cold ready/TTFTF and active p95/p99 without a
+  # redundant second set of browser launches.
+  python3 scripts/run_bench.py "${BASE_URL}/?bench=orbit&benchDuration=${BENCH_DURATION}" "$OUT/cold-orbit-${trial}.json" --timeout 150
 done
-python3 scripts/validate_perf_medians.py "$OUT"/orbit-{1,2,3}.json
+python3 scripts/validate_perf_medians.py "$OUT"/cold-orbit-{1,2,3}.json
 # AA-7 returning-visitor gate. Each pair uses a fresh profile internally, but
 # the cold and warm navigation inside a pair share one tab/profile. Three
 # independent pairs keep Chrome startup and filesystem noise out of the verdict.
@@ -46,6 +50,7 @@ python3 scripts/validate_capability_matrix.py "$OUT/capability-matrix.json"
 python3 scripts/run_fault_recovery_gate.py \
   "${BASE_URL}/?bench=1&fault-gate=1" "$OUT/fault-recovery.json" \
   --full-assets --screenshot "$OUT/fault-recovery.png" --timeout 150
+python3 scripts/validate_fault_recovery_gate.py "$OUT/fault-recovery.json"
 # Inspection artifacts, not pixel-goldens: GPU rasterization and terrain data vary by runner.
 for width in 320 390 768 1280; do
   python3 scripts/run_bench.py "${BASE_URL}/?bench=coldload&benchDuration=${BENCH_DURATION}" "$OUT/viewport-${width}.json" --screenshot "$OUT/viewport-${width}.png" --viewport "${width},900" --timeout 150
@@ -54,3 +59,9 @@ python3 scripts/validate_viewport_audits.py "$OUT"/viewport-*.json
 # AA-12/13/15/16: real search long-task, truthful control, persistence,
 # keyboard shell/reduced-motion and axe serious/critical acceptance.
 python3 scripts/run_ux_browser_gate.py "${BASE_URL}/" "$OUT/ux-browser.json"
+python3 scripts/validate_ux_browser_gate.py "$OUT/ux-browser.json"
+# AA-3/AA-20: normal beta mode, not ?bench, with GC-normalized retained-memory
+# samples. Release CI is faithful to 30 minutes; SOAK_SECONDS is only for local
+# harness development and the validator receives the same explicit minimum.
+python3 scripts/run_profiler_soak.py "${BASE_URL}/" "$OUT/profiler-soak.json" "$SOAK_SECONDS"
+python3 scripts/validate_profiler_soak.py "$OUT/profiler-soak.json" --min-duration-seconds "$SOAK_SECONDS"

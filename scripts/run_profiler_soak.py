@@ -14,6 +14,7 @@ import os
 import signal
 import shutil
 import subprocess
+import argparse
 import sys
 import tempfile
 import time
@@ -28,11 +29,14 @@ from run_bench import CDP, CHROME, EXT_PROBE, free_debugging_port
 SNAPSHOT = """JSON.stringify((() => {
   const profiler = window.pistonViewer?.profiler;
   const report = profiler?.getReport?.();
+  const serialized = report ? JSON.stringify(report) : '';
   const memory = performance.memory || null;
   return {
     profilerPresent: !!profiler,
     profilerMode: profiler?.mode || null,
     report,
+    profilerSerializedBytes: new TextEncoder().encode(serialized).byteLength,
+    profilerSampleCount: report?.samples?.length ?? null,
     heap: memory ? {usedJSHeapSize: memory.usedJSHeapSize,
       totalJSHeapSize: memory.totalJSHeapSize, jsHeapSizeLimit: memory.jsHeapSizeLimit} : null,
     timestampMs: performance.now(),
@@ -40,7 +44,20 @@ SNAPSHOT = """JSON.stringify((() => {
 })())"""
 
 
-async def soak(url: str, output: Path, seconds: int) -> None:
+async def capture(cdp: CDP, elapsed_seconds: float) -> dict:
+    # GC before each heap point makes the slope about retained memory instead
+    # of arbitrary young-generation timing. Unsupported CDP implementations
+    # still emit a sample; the validator records that limitation via null heap.
+    try:
+        await cdp.call("HeapProfiler.collectGarbage")
+    except RuntimeError:
+        pass
+    snapshot = json.loads(await cdp.js(SNAPSHOT))
+    snapshot["elapsedSeconds"] = round(elapsed_seconds, 3)
+    return snapshot
+
+
+async def soak(url: str, output: Path, seconds: int, sample_interval: int) -> None:
     profile = tempfile.mkdtemp(prefix="hexagons-beta-soak-")
     debug_port = free_debugging_port()
     target_host = urlsplit(url).hostname
@@ -87,32 +104,28 @@ async def soak(url: str, output: Path, seconds: int) -> None:
                 raise RuntimeError(f"expected bounded-recovery, got {start['profilerMode']!r}")
             gl = json.loads(await cdp.js(EXT_PROBE))
             print(f"[soak] started mode={start['profilerMode']} gl={gl}", flush=True)
+            started = time.monotonic()
+            samples = [await capture(cdp, 0)]
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
-                await asyncio.sleep(min(60, deadline - time.monotonic()))
+                await asyncio.sleep(min(sample_interval, deadline - time.monotonic()))
                 elapsed = seconds - max(0, deadline - time.monotonic())
                 print(f"[soak] {elapsed:.0f}/{seconds}s", flush=True)
-            end = json.loads(await cdp.js(SNAPSHOT))
+                samples.append(await capture(cdp, time.monotonic() - started))
+            end = samples[-1]
             payload = {
                 "kind": "aa3-stubai-beta-profiler-soak",
                 "url": url,
                 "requestedDurationSeconds": seconds,
+                "sampleIntervalSeconds": sample_interval,
                 "headlessGL": gl,
-                "start": start,
+                "start": samples[0],
                 "end": end,
-                "verdict": {
-                    "boundedRecovery": end["profilerMode"] == "bounded-recovery",
-                    "sampleCap": len(end["report"]["samples"]) <= 180,
-                    "noContextLoss": end["report"]["memory"]["contextLostCount"] == 0,
-                    "noGlOutOfMemory": end["report"]["memory"]["glOutOfMemoryCount"] == 0,
-                },
+                "samples": samples,
             }
-            payload["verdict"]["passed"] = all(payload["verdict"].values())
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(payload, indent=2) + "\n")
-            if not payload["verdict"]["passed"]:
-                raise RuntimeError(f"AA-3 soak failed: {payload['verdict']}")
-            print(f"[soak] PASS -> {output}", flush=True)
+            print(f"[soak] captured {len(samples)} retained-memory points -> {output}", flush=True)
     finally:
         try:
             os.killpg(proc.pid, signal.SIGTERM)
@@ -130,9 +143,15 @@ async def soak(url: str, output: Path, seconds: int) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit(f"usage: {Path(sys.argv[0]).name} URL OUT.json SECONDS")
-    asyncio.run(soak(sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("url")
+    parser.add_argument("output", type=Path)
+    parser.add_argument("seconds", type=int)
+    parser.add_argument("--sample-interval-seconds", type=int, default=60)
+    args = parser.parse_args()
+    if args.seconds <= 0 or args.sample_interval_seconds <= 0:
+        parser.error("duration and sample interval must be positive")
+    asyncio.run(soak(args.url, args.output, args.seconds, args.sample_interval_seconds))
 
 
 if __name__ == "__main__":

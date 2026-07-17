@@ -3,6 +3,7 @@
 import asyncio, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
 import websockets
+from validate_ux_browser_gate import evaluate
 
 CHROME = os.environ.get('CHROME_BIN') or '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 PORT = 9444
@@ -66,9 +67,11 @@ async def main(url, output):
             axe = Path('frontend/app/node_modules/axe-core/axe.min.js').read_text()
             await cdp.js(axe, False)
             report['axe'] = json.loads(await cdp.js("axe.run(document).then(r=>JSON.stringify({seriousCritical:r.violations.filter(v=>['serious','critical'].includes(v.impact)).map(v=>v.id),violations:r.violations.length}))"))
-            if search['results'] < 1 or search['maxLongTaskMs'] > 50 or controls['after'] != 0 or not navigation['moved'] or not navigation['urlUpdated'] or not navigation['inputIsolated'] or not persistence['stored'] or not report['reload']['stored'] or not reduced['matches'] or report['axe']['seriousCritical']:
-                raise RuntimeError('UX acceptance failure: '+json.dumps(report))
+            report['checks'] = evaluate(report)
+            report['passed'] = all(row['passed'] for row in report['checks'])
             Path(output).write_text(json.dumps(report, indent=2)); print(json.dumps(report, indent=2))
+            if not report['passed']:
+                raise RuntimeError('UX acceptance failure: '+json.dumps(report))
     finally:
         proc.terminate();
         try: proc.wait(timeout=5)
