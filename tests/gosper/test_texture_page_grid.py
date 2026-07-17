@@ -210,7 +210,7 @@ class TexturePageGridTests(unittest.TestCase):
         )
         self.assertEqual(
             waffle.texture_page_cache_version(True),
-            "4.1.0+codec-production+tattoo-2",
+            "4.1.0+codec-production+tattoo-3",
         )
 
     def test_page_coverage_validator_checks_only_samples_owned_by_page(self):

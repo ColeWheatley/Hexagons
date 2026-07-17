@@ -227,8 +227,8 @@ assert.equal(take(movedQueue, globalStates, {
 }).tier, TIER.LOW);
 
 // The existing mini-bake contract remains a complete-fixture pin. Its outside
-// low and pinned medium survive queue reconciliation, and the global low floor
-// continues to gate that medium request.
+// The selector still supports an explicit legacy whole-corpus barrier, but the
+// runtime no longer enables it for Stubai beta.
 const miniStates = new Map([['mini-a', state('mini-a')], ['mini-b', state('mini-b')]]);
 const miniQueue = [
     { key: 'mini-a', tier: TIER.LOW, priority: -1000 },
@@ -246,14 +246,14 @@ assert.equal(take(retainedMiniQueue, miniStates, {
     lowCoverageIncludesOutside: true,
 }).tier, TIER.LOW);
 
-// Production integration: the worker dispatcher must invoke this exact pure
-// selector with a frustum-scoped barrier and prune the queue on every demand
-// pass. Mini-bakes are the sole whole-corpus exception.
+// Runtime integration: bootstrap gates only the same page. Visible pages may
+// jump directly to high; outside pages are demand-scoped even in Stubai beta,
+// with conservative visible-consumer pages promoted to medium guard demand.
 const mainSource = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');
 assert.match(mainSource, /selectTextureDispatchTaskIndex\(\s*this\.textureQueue,\s*this\.textureStates,/s);
-assert.match(mainSource, /lowCoverageFirst:\s*true/);
-assert.match(mainSource, /lowCoverageIncludesOutside:\s*this\.isMiniBake/);
+assert.match(mainSource, /lowCoverageFirst:\s*false/);
 assert.match(mainSource, /pruneTextureDispatchQueue\(\s*this\.textureQueue,\s*residency\.states,/s);
-assert.match(mainSource, /textureStateHasDemand\(state, \{ includeOutside: this\.isMiniBake \}\)/);
+assert.match(mainSource, /promoteVisibleConsumerPages\(residency\.states,\s*visibleConsumerPages\)/s);
+assert.match(mainSource, /textureStateHasDemand\(state, \{ includeOutside: false \}\)/);
 
-console.log('texture dispatch frustum-scoped low-tier barrier: ok');
+console.log('texture dispatch direct ladder and demand scope: ok');

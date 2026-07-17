@@ -122,7 +122,7 @@
 <div class="item checked" data-id="p1">
   <div class="title-line"><input type="checkbox" id="p1" checked><label for="p1">P1 — Rebake the map so the code and the data match again</label></div>
   <div class="meta"><span>Backend</span><span class="gain-vh">Gain: unblocks everything</span><span class="solver-cheap">✓ Closed 2026-07-17</span></div>
-  <p>The app's code and manifest expect the new Gosper-format geometry files and <code>aerial_pages/</code> texture folders, but the checkout contained only the previous generation's data — so a fresh clone literally cannot render. Root cause found during this session: <code>hex_backend/aerial_tifs</code> (the source aerial photos the baker reads) had been replaced by a symlink pointing at itself, so the baker saw zero photos, skipped everything, and even overwrote the manifest with an empty one. The authoritative Tirol source set has now been restored locally from Rechner and verified.</p>
+  <p>The app's code and manifest expect the new Gosper-format geometry files and <code>aerial_pages/</code> texture folders, but the checkout contained only the previous generation's data — so a fresh clone literally cannot render. Root cause found during this session: <code>hex_backend/aerial_tifs</code> (the source aerial photos the baker reads) had been replaced by a symlink pointing at itself, so the baker saw zero photos, skipped everything, and even overwrote the manifest with an empty one. The authoritative Tirol source set has now been restored locally from Rechner: all 3,486 files / 26,417,719,175 bytes are present, with zero missing or size-mismatched files and matching sample hashes.</p>
   <div class="done-when"><b>Verified:</b> the current manifest and asset tree contain 197 Gosper islands and 149 low, medium, and high texture pages; the cold-load run streamed textured terrain.</div>
 </div>
 
@@ -151,11 +151,11 @@
   <div class="done-when"><b>Done when:</b> a deliberately interrupted upload leaves the old release working; a tattooed manifest is rejected; every published URL passes the automated check.</div>
 </div>
 
-<div class="item" data-id="aa2">
-  <div class="title-line"><input type="checkbox" id="aa2"><label for="aa2">AA-2 — Make failures finite and recoverable (fetches, workers, GPU resets)</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (reliability)</span><span class="solver-std">🔵 Standard</span><span>Integrated; live fault-injection gate remains</span></div>
+<div class="item checked" data-id="aa2">
+  <div class="title-line"><input type="checkbox" id="aa2" checked><label for="aa2">AA-2 — Make failures finite and recoverable (fetches, workers, GPU resets)</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-vh">Gain: very high (reliability)</span><span class="solver-std">✓ Live fault/recovery gate passed</span></div>
   <p>Right now, a failed terrain download silently never appears (no retry); a failed manifest leaves the loading screen spinning forever; and if the GPU resets (which happens — laptops on battery, driver hiccups, memory pressure) the app goes permanently blank because nothing listens for the "context restored" event. Add: bounded retries with increasing delays for every network fetch, an explicit user-visible error state with a Retry button instead of an infinite spinner, a rebuild path after GPU context loss, and a friendly "this device isn't supported" screen instead of a silent console exception.</p>
-  <div class="done-when"><b>Done when:</b> under a fault-injection proxy that drops 10% of requests, all terrain eventually appears; a forced GPU context loss recovers within 5 s; no failure leaves the spinner up more than 10 s; no resource is retried more than 3 times.</div>
+  <div class="done-when"><b>Verified:</b> the integrated full-corpus gate dropped 2/23 terrain and 4/40 texture first attempts; every resource succeeded on attempt two, visible terrain painted with no final errors/spinner hang, and a forced WebGL loss restored and repainted in 161 ms.</div>
 </div>
 
 <div class="item" data-id="aa3">
@@ -181,9 +181,9 @@
 
 <div class="item" data-id="aa22">
   <div class="title-line"><input type="checkbox" id="aa22"><label for="aa22">AA-22 — Promote first-view pages directly from WebP to high texture</label></div>
-  <div class="meta"><span>Frontend + backend</span><span class="gain-vh">Gain: very high (faster perceived detail)</span><span class="solver-frontier">🟣 Implemented; visual review remains</span></div>
+  <div class="meta"><span>Frontend + backend</span><span class="gain-vh">Gain: very high (faster perceived detail)</span><span class="solver-frontier">🟣 Code/live trace passed; rebaked visual review remains</span></div>
   <p>Approved ladder: the yellow 32 px WebP is the immediate whole-page floor. A page initially visible and above the existing perceptual high threshold requests <b>WebP → high</b> directly; it must not spend network, decoder, or replacement work on low/medium first. Medium is reserved for farther, guard-ring, and out-of-frustum pages. Low remains legacy compatibility only, not a prerequisite. Requests stay coarse 1024 m page blocks; bootstrap residency is capped at 1 MB and released as soon as a real KTX2 tier wins.</p>
-  <div class="done-when"><b>Done when:</b> deterministic transition matrix proves near-visible <code>[bootstrap32, high4096]</code> and guard/outside <code>[bootstrap32, medium256]</code>; no near page requests low/medium before high; decoded bootstrap dimensions stay 32×32, bootstrap VRAM ≤1 MB, and a cold trace shows an earlier high arrival. Yellow mark / half-thickness linework still need screenshot review.</div>
+  <div class="done-when"><b>Verified in code/live trace:</b> near-visible plans <code>[bootstrap32, high4096]</code>; guard and visible-consumer edge pages plan <code>[bootstrap32, medium256]</code>; unrelated outside pages request nothing; low is never a prerequisite; WebPs remain 32×32 per 1,024 m block with a 1 MB decoded-residency cap. The integrated cold run painted bootstrap coverage in 208 ms and installed first high at 541 ms with zero serialization warnings. Still open: rebake the new yellow/half-thickness diagnostics, inspect them, and record an apples-to-apples old-vs-new high-arrival comparison.</div>
 </div>
 
 <div class="item checked" data-id="aa6">
@@ -221,11 +221,11 @@
   <div class="done-when"><b>Done when:</b> frame-time p95 improves on a DPR&gt;2 profile; bench screenshots still work; a screenshot diff at DPR 2 vs native shows no meaningful quality loss; cap/skirt meshes reference the same static attributes and GPU buffer/upload counts fall with geometry parity.</div>
 </div>
 
-<div class="item" data-id="aa11">
-  <div class="title-line"><input type="checkbox" id="aa11"><label for="aa11">AA-11 — Adapt budgets to the visitor's device and connection</label></div>
-  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (low-end devices)</span><span class="solver-std">Code/matrix contracts integrated; real device matrix remains</span></div>
+<div class="item checked" data-id="aa11">
+  <div class="title-line"><input type="checkbox" id="aa11" checked><label for="aa11">AA-11 — Adapt budgets to the visitor's device and connection</label></div>
+  <div class="meta"><span>Frontend</span><span class="gain-h">Gain: high (low-end devices)</span><span class="solver-std">✓ Live five-profile Chrome matrix passed</span></div>
   <p>A 4 GB Android phone on hotel Wi-Fi gets the same worker count, texture budgets, and prefetch appetite as an M1 Max on fiber. The browser exposes enough signals to do better: device memory, CPU core count, the user's data-saver preference, effective connection type, and the app's own history of GPU context losses. Use them to scale worker count, texture cache size, prefetch radius, and quality demand. (Comments in the code explicitly rejected "device profiling" — this is not per-device hacks, it's responding to standard signals.)</p>
-  <div class="done-when"><b>Done when:</b> a low/mid/high device test matrix stays within explicit memory budgets with zero GPU context losses; data-saver mode measurably transfers fewer bytes; high-end quality is unchanged.</div>
+  <div class="done-when"><b>Verified:</b> low/mid/high select 2/3/6 workers and 64/128/256 MiB budgets; Save-Data and 3g transfer 98.5% fewer texture bytes than high in the integrated matrix; constrained profiles request zero high pages; high retains a full 4096 px upload; all five runs report zero context loss/OOM.</div>
 </div>
 
 <div class="item" data-id="aa12">
@@ -443,9 +443,9 @@
 <h2>Suggested firing order</h2>
 <div class="callout">
 <p><b>Wave 0 (closed 2026-07-17):</b> P1 + P2 + P3 — fresh 197-island/149-page bake, headless ANGLE Metal benchmark, and 490.1 ms localhost TTFTF baseline verified.</p>
-<p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–5 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, texture residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, material churn, and the first A*-2 lifecycle milestone. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
-<p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The final three-run median is <b>237 ms (57% faster)</b>; first bootstrap paint is 42–68 ms. The 60-second orbit is 119.9 FPS with 9.5 ms p95, one frame over 33 ms, zero context loss/OOM, zero texture-serialization warnings, and a 7.3 MB peak ledger. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
-<p><b>Still objectively open:</b> AA-22 needs its screenshot review and cold high-arrival trace. AA-1/2/3/10/11/12/13/15/16/20 and A*-3 have integrated implementations but retain the live, soak, device, human-visual, or before/after gates written on their cards. A*-2 has only milestone 1. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source.</p>
+<p><b>Integrated agent waves (2026-07-17):</b> the isolated Wave 1–6 branches were reviewed and consolidated on <code>codex/integration-wave1</code>. Objective contracts pass for the production bundle, retries/recovery, release modes, direct texture ladder/residency, worker lanes, idle scheduling, search, persistence, accessibility DOM, touch allocation, atomic publishing, viewport audits, material churn, adaptive capability budgets, and the first A*-2 lifecycle milestone. AA-13 received its required frontier-model acceptance review at <code>40e201c</code>.</p>
+<p><b>Measured wins:</b> rechecked pre-upgrade localhost TTFTF was 551 ms. The WebP three-run median is <b>237 ms (57% faster)</b>; the final integrated cold trace is 208 ms profiler-relative, with first high installed at 541 ms and zero serialization warnings. Warm good-LTE TTFTF improves 87.1%. The 60-second orbit is 119.9 FPS with 9.5 ms p95. Fault recovery repaints in 161 ms; Save-Data/3g transfer 98.5% fewer texture bytes than high. The live AA-8 gate records zero settled/hidden viewer ticks and renders, then one recovery render.</p>
+<p><b>Still objectively open:</b> AA-22 needs its rebaked yellow/half-thickness screenshot review and an apples-to-apples old-vs-new high-arrival comparison. AA-1/3/10/12/13/15/16/20 and A*-3 have integrated implementations but retain the live, soak, human-visual, or before/after gates written on their cards. A*-2 has only milestone 1. AA-18 stays Cole-owned; AA-21 waits for the selected production boundary; A*-1 waits for a viable sub-2 m terrain and higher-resolution imagery source.</p>
 <p><b>Meanwhile, Cole:</b> the five decisions that unblock the AV queue — H-1 (rotation), H-2 (slope wording), H-4 (voice/hierarchy), H-8 (texture point), and a yes/no on H-3 (offline). Each is a coffee-length decision, and together they unblock all nine AV items.</p>
 </div>
 

@@ -244,7 +244,11 @@ residency.finishDemandPass();
 assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
 residency.beginDemandPass();
 residency.finishDemandPass();
-assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.LOW);
+assert.equal(
+    residency.state('0_0').desiredTier,
+    PAGE_TEXTURE_TIER.MEDIUM,
+    'outside pages retain medium as their next guard target but are not demand-planned',
+);
 
 // Infinity is also the conservative projection result when the camera is
 // inside a page footprint. An Infinity policy threshold means high is
