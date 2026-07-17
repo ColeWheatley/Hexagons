@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import { readFile } from 'node:fs/promises';
+
+const source = await readFile(
+    new URL('../texture_page_residency.js', import.meta.url),
+    'utf8',
+);
+const {
     PAGE_TEXTURE_TIER,
     BOOTSTRAP_GPU_BYTES_PER_PAGE,
     BOOTSTRAP_MAX_RESIDENT_BYTES,
     TexturePageResidency,
     textureTierRequestPlan,
-} from '../texture_page_residency.mjs';
+    textureStateHasDemand,
+} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 function stateFor({ classification, projectedDiameterPx }) {
     const residency = new TexturePageResidency({
@@ -36,11 +43,10 @@ test('bootstrap contract is an ultralow whole-page request with bounded residenc
     assert.equal(BOOTSTRAP_MAX_RESIDENT_BYTES / BOOTSTRAP_GPU_BYTES_PER_PAGE, 256);
 });
 
-test('guard, out-of-frustum, and below-threshold pages reserve medium256', () => {
+test('guard and below-threshold pages reserve medium256', () => {
     for (const scenario of [
         { classification: 'visible', projectedDiameterPx: 300 },
         { classification: 'guard', projectedDiameterPx: 700 },
-        { classification: 'outside', projectedDiameterPx: 0 },
     ]) {
         const state = stateFor(scenario);
         assert.equal(state.desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
@@ -49,6 +55,16 @@ test('guard, out-of-frustum, and below-threshold pages reserve medium256', () =>
             PAGE_TEXTURE_TIER.MEDIUM,
         ]);
     }
+});
+
+test('outside corpus pages are not demand-planned, including beta', () => {
+    const state = stateFor({ classification: 'outside', projectedDiameterPx: 0 });
+    assert.equal(textureStateHasDemand(state, { includeOutside: false }), false);
+    // Outside retains the medium target solely so it receives medium on entry
+    // to the predictive guard set; it must have no queued request meanwhile.
+    assert.equal(state.desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
+    assert.equal(state.queued.size, 0);
+    assert.equal(state.loading.size, 0);
 });
 
 test('a resident WebP only permits the direct high request; low is never prerequisite', () => {

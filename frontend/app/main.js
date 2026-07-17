@@ -48,13 +48,13 @@ import { TexturePageGrid } from './texture_page_grid.js';
 import {
     PAGE_TEXTURE_RANK,
     PAGE_TEXTURE_TIER,
-    BOOTSTRAP_MAX_RESIDENT_BYTES,
     TexturePageResidency,
     pruneTextureDispatchQueue,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
     textureTierRequestPlan,
-} from './texture_page_residency.mjs';
+    BOOTSTRAP_MAX_RESIDENT_BYTES,
+} from './texture_page_residency.js';
 import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
@@ -2909,14 +2909,13 @@ class PistonViewer {
         if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
         }
-        if (!this.isMiniBake && state.classification === 'outside' &&
-            state.assets.has(TEXTURE_TIER.MEDIUM) && state.assets.has(TEXTURE_TIER.LOW)) {
-            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
+        if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.MEDIUM)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM, false, true);
         }
-        if (!this.isMiniBake && state.classification === 'outside' && state.assets.has(TEXTURE_TIER.LOW)) {
+        if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.LOW)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.LOW, false, true);
         }
-        if (!this.isMiniBake && state.classification === 'outside' && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
+        if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP, false, true);
         }
     }
@@ -3220,7 +3219,9 @@ class PistonViewer {
         this.textureQueue = pruneTextureDispatchQueue(
             this.textureQueue,
             residency.states,
-            { includeOutside: this.isMiniBake },
+            // Beta is geographically smaller, not a license to eagerly load
+            // every page. Demand is visible + guard in every release profile.
+            { includeOutside: false },
         );
 
         for (const state of residency.states.values()) {
@@ -3232,7 +3233,7 @@ class PistonViewer {
                     this._textureLedgerLocation(state.page),
                 );
             }
-            if (!textureStateHasDemand(state, { includeOutside: this.isMiniBake })) {
+            if (!textureStateHasDemand(state, { includeOutside: false })) {
                 this.cacheManager.updatePriority(state.key, 0);
                 this._reconcileTextureState(state);
                 continue;
