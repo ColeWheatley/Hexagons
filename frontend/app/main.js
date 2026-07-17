@@ -5,6 +5,11 @@ import { HexSearch } from './search.js';
 import { setDisclosure, setPanelMinimized, setPressedButton, toggleDisclosure } from './ui_accessibility.js';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
+import {
+    detectCapabilityProfile,
+    persistContextLoss,
+    readPersistedContextLosses,
+} from './capability_profile.js';
 import { PerfProfiler } from './perf_profiler.js';
 import { createProfilerForReleaseMode, resolveReleaseMode } from './release_mode.js';
 import { initBenchmark } from './benchmark.js';
@@ -421,6 +426,7 @@ class PistonViewer {
 
         // WORKER SYSTEM
         this.workers = [];
+        this.capabilityProfile = detectCapabilityProfile();
         this.nextWorkerIdx = 0;
         this.pendingJobs = new Map(); // ID -> {resolve, reject}
         this.jobIdCounter = 0;
@@ -448,7 +454,7 @@ class PistonViewer {
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
-        this.cacheManager = new CacheManager();
+        this.cacheManager = new CacheManager(this.capabilityProfile.textureBudgetBytes);
 
         this.initTouchMomentumTracking();
         this.initWorld();
@@ -702,8 +708,7 @@ class PistonViewer {
     }
 
     initWorkers() {
-        // Create a pool based on concurrency (clamped to 4-6)
-        const count = Math.min(6, Math.max(2, navigator.hardwareConcurrency || 4));
+        const count = this.capabilityProfile.workerCount;
         // Workers initialized silently
 
         // Capability handshake: detect compressed-texture extension support once
@@ -965,6 +970,7 @@ class PistonViewer {
         this.contextRecovery.active = true;
         this.contextRecovery.wasLoaderHidden = this.loaderHidden;
         this.failureStats.contextLost++;
+        persistContextLoss(localStorage, readPersistedContextLosses(localStorage));
         this.log('Graphics context lost; waiting for browser restore.', 'error');
         this._showLoadingState('Restoring graphics context.', 'Waiting for WebGL to recover...');
         this.contextRecovery.timer = setTimeout(() => {
@@ -1197,7 +1203,7 @@ class PistonViewer {
         this.activeTextureJobs = 0;
         this.activeWorkerCount = 0;
         this.vramLedger = new VRAMLedger();
-        this.cacheManager = new CacheManager();
+        this.cacheManager = new CacheManager(this.capabilityProfile.textureBudgetBytes);
         this.appStartTime = performance.now();
         this.fatalState = null;
         this.needsLODUpdate = true;
@@ -1672,6 +1678,7 @@ class PistonViewer {
             this.profiler?.setMeta({
                 releaseProfile: this.releaseMode.profile,
                 releaseMode: this.releaseMode.mode,
+                capabilityProfile: this.capabilityProfile.name,
             });
             const textureContract = this.manifest.texture_pages;
             this.profiler?.milestone('manifestLoaded');
@@ -2580,7 +2587,7 @@ class PistonViewer {
         if (classification === 'outside') return TEXTURE_TIER.LOW;
 
         const previous = state.desiredTier || TEXTURE_TIER.LOW;
-        const highEnter = this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx;
+        const highEnter = this._effectiveHighTextureEnterPx();
         const highExit = highEnter * 0.75;
 
         // High is useful only for pixels that can actually reach the viewport.
@@ -2598,6 +2605,13 @@ class PistonViewer {
         }
         if (projectedDiameterPx >= TEXTURE_CONFIG.mediumEnterPx) return TEXTURE_TIER.MEDIUM;
         return TEXTURE_TIER.LOW;
+    }
+
+    _effectiveHighTextureEnterPx() {
+        return Math.max(
+            this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
+            this.capabilityProfile.highTextureEnterPx,
+        );
     }
 
     _queueTextureTier(textureResource, tier, priority = 0) {
@@ -2888,7 +2902,7 @@ class PistonViewer {
 
     _dispatchTextureJobs(maxConcurrent) {
         while (this.activeWorkerCount < maxConcurrent &&
-            this.activeTextureJobs < TEXTURE_CONFIG.maxTextureJobs &&
+            this.activeTextureJobs < this.capabilityProfile.maxTextureJobs &&
             this.textureQueue.length > 0) {
             const index = selectTextureDispatchTaskIndex(
                 this.textureQueue,
@@ -3039,7 +3053,7 @@ class PistonViewer {
         consume(plan.guard, 'guard');
         consume(plan.visible, 'visible');
         residency.finishDemandPass({
-            highEnterPx: this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
+            highEnterPx: this._effectiveHighTextureEnterPx(),
         });
 
         // Camera motion can leave old lows and refinements in the queue. On a
@@ -3097,7 +3111,10 @@ class PistonViewer {
             (this.camera.position.y - previous.y) * 4,
             (this.camera.position.z - previous.z) * 4,
         ];
-        const guardMarginMeters = Math.max(300, Math.min(5000, Math.abs(this.camera.position.y) * 0.25));
+        const guardMarginMeters = Math.max(
+            300,
+            Math.min(5000, Math.abs(this.camera.position.y) * this.capabilityProfile.guardMarginScale),
+        );
         const guardFrustum = expandFrustumPlanes(visibleFrustum, {
             marginMeters: guardMarginMeters,
             predictedTranslation: motion,
@@ -4221,6 +4238,14 @@ class PistonViewer {
             phase,
             timestamp: performance.now(),
             engineState: this.engineState,
+            capability: {
+                profile: this.capabilityProfile.name,
+                workers: this.capabilityProfile.workerCount,
+                textureBudgetBytes: this.capabilityProfile.textureBudgetBytes,
+                maxTextureJobs: this.capabilityProfile.maxTextureJobs,
+                highTextureEnterPx: this._effectiveHighTextureEnterPx(),
+                guardMarginScale: this.capabilityProfile.guardMarginScale,
+            },
             activeTileCount: this.tiles.size,
             tileClassification: {
                 visible: { count: visCount, full: visFull, low: visLow, vram: fmt(visBytes), bytes: visBytes },
@@ -4295,8 +4320,8 @@ class PistonViewer {
                 thresholdsPx: {
                     mediumEnter: TEXTURE_CONFIG.mediumEnterPx,
                     mediumExit: TEXTURE_CONFIG.mediumExitPx,
-                    highEnter: this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
-                    highExit: (this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx) * 0.75,
+                    highEnter: this._effectiveHighTextureEnterPx(),
+                    highExit: this._effectiveHighTextureEnterPx() * 0.75,
                 },
                 maxTextureSize: this.texStats.maxTextureSize,
                 highSourceSize: this.texStats.highSourceSize,
