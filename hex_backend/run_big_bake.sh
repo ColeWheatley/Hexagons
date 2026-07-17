@@ -6,7 +6,7 @@
 cd "$(dirname "$0")/.."
 
 echo "--------------------------------------------------"
-echo "🚀 Starting PowFinder selected-Tirol bake & S3 sync"
+echo "🚀 Starting PowFinder selected-Tirol bake & verified atomic release"
 echo "Bucket: wheatley.cloud"
 echo "Time: $(date)"
 echo "--------------------------------------------------"
