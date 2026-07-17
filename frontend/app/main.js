@@ -2425,7 +2425,10 @@ class PistonViewer {
             if (t.mesh) operational++;
         }
 
-        if (operational >= 1) this.hideLoader();
+        if (operational >= 1) {
+            this.profiler?.milestone('firstTileOperational');
+            this.hideLoader();
+        }
     }
 
     _suppressHighTextureWorkForMotion() {
