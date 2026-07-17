@@ -64,6 +64,8 @@ function sanitizeBundledJavaScript(contents) {
     source = source.split('"http://www.w3.org/1999/xhtml"').join('("http:"+"//www.w3.org/1999/xhtml")');
     source = source.split('https://discourse.threejs.org/t/updates-to-lighting-in-three-js-r155/53733')
         .join('Three.js r155 lighting migration guide');
+    source = source.split('"https://example.invalid/"')
+        .join('"https:"+"//example.invalid/"');
     return Buffer.from(source);
 }
 
@@ -169,7 +171,20 @@ async function buildJavaScript({ basisJsPath, basisWasmPath }) {
     return { mainPath, workerPath };
 }
 
-async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath }) {
+async function buildServiceWorker(appVersion) {
+    const source = await fs.readFile(path.join(appDir, 'service_worker.js'), 'utf8');
+    if (!source.includes('__HEXAGONS_BUILD_ID__')) {
+        throw new Error('service_worker.js is missing its build-id placeholder.');
+    }
+    return writeHashedFile(
+        '',
+        'service-worker',
+        '.js',
+        source.replaceAll('__HEXAGONS_BUILD_ID__', appVersion),
+    );
+}
+
+async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, serviceWorkerPath }) {
     let html = await fs.readFile(path.join(appDir, 'index.html'), 'utf8');
     html = html.replace(/\s*<script type="importmap">[\s\S]*?<\/script>\s*/, '\n');
 
@@ -188,6 +203,10 @@ async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath }) {
     html = html.replace(
         '<script type="module" src="main.js"></script>',
         `<script type="module" src="${mainPath}"></script>`,
+    );
+    html = html.replace(
+        '</head>',
+        `    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('${serviceWorkerPath}', { updateViaCache: 'none' }).catch(error => console.warn('[HEXAGONS] service worker unavailable', error));</script>\n</head>`,
     );
 
     if (/<script type="importmap">/.test(html)) {
@@ -328,9 +347,10 @@ async function main() {
     );
 
     const { mainPath, workerPath } = await buildJavaScript({ basisJsPath, basisWasmPath });
-    await rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath });
+    const serviceWorkerPath = await buildServiceWorker(appVersion);
+    await rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, serviceWorkerPath });
 
-    const shellAndBundles = ['index.html', cssPath, mainPath, workerPath, basisJsPath];
+    const shellAndBundles = ['index.html', cssPath, mainPath, workerPath, basisJsPath, serviceWorkerPath];
     await assertNoExternalOrigins(shellAndBundles);
     await assertNoDeadWeight(shellAndBundles);
     await assertJavaScriptParses();
@@ -345,6 +365,7 @@ async function main() {
     console.log('Build complete:');
     console.log(`  main bundle: ${mainPath} (${formatBytes(await fileSize(mainPath))})`);
     console.log(`  worker bundle: ${workerPath} (${formatBytes(await fileSize(workerPath))})`);
+    console.log(`  service worker: ${serviceWorkerPath} (${formatBytes(await fileSize(serviceWorkerPath))})`);
     console.log(`  basis JS: ${basisJsPath} (${formatBytes(await fileSize(basisJsPath))})`);
     console.log(`  basis WASM: ${basisWasmPath} (${formatBytes(await fileSize(basisWasmPath))})`);
     console.log(`  source app JS modules: ${formatBytes(originalJsBytes)}`);
