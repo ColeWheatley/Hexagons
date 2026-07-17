@@ -63,7 +63,7 @@ export class ShareableViewState {
             const url = this.replaceUrl();
             let copied = false;
             try {
-                await navigator.clipboard.writeText(url);
+                await this.viewer.writeClipboardText(url);
                 copied = true;
             } catch (_) {
                 // Clipboard permission can be unavailable in embedded browsers;
@@ -92,9 +92,12 @@ export class ShareableViewState {
 
     gpsToScene(point) {
         const world = latLonToWorld(point.lat, point.lon);
+        // URL points use `sceneY`; the persisted public envelope deliberately
+        // names the same value `sceneY_m`. Accept both at this shared boundary.
+        const sceneY = point.sceneY ?? point.sceneY_m;
         return {
             x: world.x - this.viewer.worldOrigin.x,
-            y: point.sceneY,
+            y: sceneY,
             z: -(world.y - this.viewer.worldOrigin.y),
         };
     }
@@ -208,7 +211,7 @@ export class ShareableViewState {
 
     async copyLink() {
         const url = this.replaceUrl();
-        await navigator.clipboard.writeText(url);
+        await this.viewer.writeClipboardText(url);
         return url;
     }
 

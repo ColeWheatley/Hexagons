@@ -2684,7 +2684,11 @@ class PistonViewer {
         if (!this.fpsEl) return;
         const dist = this.camera.position.distanceTo(this.controls.target);
 
-        if (!willRender && this.engineState === ENGINE_STATES.STATIC) {
+        // STATIC means the camera and refinement state are settled even when a
+        // one-off maintenance render was requested. Reporting that sparse
+        // maintenance cadence as active FPS is misleading, so STATIC is
+        // always truthfully idle.
+        if (this.engineState === ENGINE_STATES.STATIC) {
             this.fpsEl.textContent = `FPS: IDLE | Zoom: ${dist.toFixed(0)}`;
             this.fpsState.frames = 0;
             this.fpsState.activeElapsed = 0;

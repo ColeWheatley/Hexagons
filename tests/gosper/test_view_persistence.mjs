@@ -56,6 +56,10 @@ assert.equal(sanitizeStoredEnvelope({ ...envelope, view: { ...view, camera: { ..
 const main = await fs.readFile(path.join(ROOT, 'frontend/app/main.js'), 'utf8');
 const search = await fs.readFile(path.join(ROOT, 'frontend/app/search.js'), 'utf8');
 const state = await fs.readFile(path.join(ROOT, 'frontend/app/view_state.js'), 'utf8');
+assert.match(state, /point\.sceneY\s*\?\?\s*point\.sceneY_m/,
+    'the shared GPS conversion must accept both URL and persisted vertical field names');
+assert.match(state, /copyButton\?\.addEventListener\('click'[\s\S]*?viewer\.writeClipboardText\(url\)/,
+    'COPY LINK must use the viewer clipboard abstraction for fallback and automation paths');
 assert.match(state, /controls\.addEventListener\('end'[\s\S]*?commitViewChange\(\)/,
     'MapControls mouse/wheel/keyboard end commits share state');
 assert.match(main, /handleTwoFingerGesture[\s\S]*?viewState\?\.commitViewChange\(\)/,
