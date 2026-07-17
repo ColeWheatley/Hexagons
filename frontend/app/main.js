@@ -50,6 +50,7 @@ import {
     TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
     collectTextureTierResidency,
+    countUnpaintedVisibleTiles,
 } from './texture_hud_telemetry.js?v=pageonly1';
 import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js?v=pageonly1';
 import {
@@ -355,6 +356,7 @@ class PistonViewer {
             highSourceSize: null,
             highSkippedTopMips: 0,
         };
+        this._textureMilestonesDone = false;
         this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
@@ -951,6 +953,7 @@ class PistonViewer {
                     throw new Error(`Manifest texture tier ${name} must be ${size}px`);
                 }
             }
+            this.profiler?.milestone('manifestLoaded');
             this.textureContract = textureContract;
             this.binaryContract = this.manifest.binary || {};
             const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
@@ -2433,7 +2436,10 @@ class PistonViewer {
             if (t.mesh) operational++;
         }
 
-        if (operational >= 1) this.hideLoader();
+        if (operational >= 1) {
+            this.profiler?.milestone('firstTileOperational');
+            this.hideLoader();
+        }
     }
 
     _suppressHighTextureWorkForMotion() {
@@ -2856,6 +2862,22 @@ class PistonViewer {
         }
 
         const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
+        const hasDisplayedPage = TEXTURE_HUD_ROWS.some(({ tier }) => displayed[tier].size > 0);
+        if (!this._textureMilestonesDone && hasDisplayedPage) {
+            this.profiler?.milestone('firstTexture');
+            const bootGeometryDrained = (
+                (this.loadQueue?.length ?? 0) === 0 &&
+                (this.instantiateQueue?.length ?? 0) === 0
+            );
+            if (bootGeometryDrained && countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
+                this.profiler?.milestone('visibleTexturedCoverage');
+            }
+            const milestones = this.profiler?.milestones || {};
+            this._textureMilestonesDone = (
+                milestones.firstTexture !== undefined &&
+                milestones.visibleTexturedCoverage !== undefined
+            );
+        }
         const residency = collectTextureTierResidency(this.textureStates);
         const snapshot = TEXTURE_HUD_ROWS.map(({ tier }) => ({
             tier,
@@ -3161,6 +3183,7 @@ class PistonViewer {
         }
 
         this.loaderHidden = true;
+        this.profiler?.milestone('loaderHidden');
         console.log(`[HEXAGONS] ${APP_VERSION} — ready in ${(elapsed / 1000).toFixed(1)}s (${this.tiles.size} tiles)`);
         const loader = document.getElementById('loader');
         if (loader) {

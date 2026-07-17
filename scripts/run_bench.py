@@ -133,9 +133,12 @@ async def run(url, out_json, screenshot=None, timeout=300):
                         with open(screenshot, "wb") as f:
                             f.write(base64.b64decode(shot["data"]))
                     m, fr = report.get("meta", {}), report.get("frames", {})
+                    milestones = report.get("milestones", {})
                     print(f"  DONE scenario={m.get('scenario')} pipeline={m.get('texturePipeline')} "
                           f"dur={m.get('duration_s')}s fps={fr.get('fps_avg_active')} "
-                          f"p95={fr.get('p95_ms')}ms over33={fr.get('over33')} -> {out_json}", flush=True)
+                          f"p95={fr.get('p95_ms')}ms over33={fr.get('over33')} "
+                          f"ttftf={milestones.get('visibleTexturedCoverage')} "
+                          f"ready={milestones.get('loaderHidden')} -> {out_json}", flush=True)
                     return 0
                 if time.time() - last_note > 15:
                     print(f"  ... {st}", flush=True)
