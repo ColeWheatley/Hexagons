@@ -466,6 +466,11 @@ async def run(url, out_json, screenshot=None, timeout=300, viewport="1440,900", 
                     "uploadThroughput": -1,
                     "connectionType": "none",
                 })
+                # Do not let Chrome's HTTP cache masquerade as the service-
+                # worker result. Cache Storage remains intact; clearing only
+                # the browser cache makes the warm provenance/timing check
+                # deterministic and proves latency emulation is gone.
+                await cdp.call("Network.clearBrowserCache")
                 cdp.events.clear()
                 await cdp.call("Page.navigate", {"url": url})
                 warm = await wait_for_report(
