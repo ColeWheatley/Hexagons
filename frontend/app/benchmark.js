@@ -243,6 +243,8 @@ function waitForReady(viewer, timeoutMs = 45000) {
 function finishScenario(viewer, hud, name, duration, appVersion) {
     updateHud(hud, name, duration, duration, true);
     console.log(`[BENCHMARK] Scenario "${name}" complete.`);
+    window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__ = { scenario: name, duration, counters: viewer.getMaterialChurnStats?.() || null };
+    console.log('[MATERIAL_CHURN] ' + JSON.stringify(window.__HEXAGONS_MATERIAL_CHURN_BENCHMARK__));
     // The runtime contract is KTX2-only. Missing telemetry means the
     // pipeline has not produced a sample yet; it is not a WebP fallback.
     const texturePipeline = 'ktx2';
@@ -299,6 +301,7 @@ function runScenario(viewer, name, scenario, appVersion) {
     if (name === 'stress') ctx.locations = pickStressLocations(viewer);
 
     const t0 = performance.now();
+    if (viewer.materialChurn) for (const key of Object.keys(viewer.materialChurn)) viewer.materialChurn[key] = 0;
 
     const finish = () => finishScenario(viewer, hud, name, scenario.duration, appVersion);
 

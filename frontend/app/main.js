@@ -106,6 +106,7 @@ import {
     watchDevicePixelRatio,
 } from './render_policy.js';
 import { IdleRenderScheduler } from './idle_render_scheduler.js';
+import { createMaterialChurnStats, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
 import './gosper_core.js';
 
 const G = window.GosperCore;
@@ -362,6 +363,7 @@ class PistonViewer {
         this.fatalState = null;
         this.appStartTime = performance.now();
         this.materialsToUpdate = new Set(); // Changed to Set
+        this.materialChurn = createMaterialChurnStats();
 
         this.gradientMode = 1.0;
         this.highTextureEnterPx = TEXTURE_CONFIG.highEnterPx;
@@ -1065,7 +1067,9 @@ class PistonViewer {
         // WebGLTextures upload paths recreate the GPU buffers/textures on the
         // next compile/render, without refetching asset files.
         this.renderer.resetState();
+        this.materialChurn.traversalCalls++;
         this.scene.traverse(object => {
+            this.materialChurn.traversedObjects++;
             this._markGeometryForReupload(object.geometry);
             const materials = object.material
                 ? (Array.isArray(object.material) ? object.material : [object.material])
@@ -1084,6 +1088,7 @@ class PistonViewer {
                 this._markTextureForReupload(asset.texture);
             }
         }
+        this.materialChurn.compileCalls++;
         this.renderer.compile(this.scene, this.camera);
         this.needsRender = true;
     }
@@ -1160,7 +1165,9 @@ class PistonViewer {
         if (!root) return;
         root.parent?.remove(root);
         const disposedMaterials = new Set();
+        this.materialChurn.traversalCalls++;
         root.traverse(object => {
+            this.materialChurn.traversedObjects++;
             if (object.isMesh) object.geometry?.dispose();
             const materials = object.material
                 ? (Array.isArray(object.material) ? object.material : [object.material])
@@ -1605,6 +1612,7 @@ class PistonViewer {
     }
 
     onResize() {
+        this.materialChurn.resizeEvents++;
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderPixelRatio = applyRenderResolution(this.renderer, {
@@ -2159,6 +2167,7 @@ class PistonViewer {
     }
 
     setupMaterialShader(material) {
+        this.materialChurn.materialShaderSetups++;
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
@@ -3359,6 +3368,7 @@ class PistonViewer {
 
     notifyCameraMotion(now = performance.now()) {
         const entered = this.cameraMotion.enterMotion(now, this.isMovingView);
+        if (entered) this.materialChurn.motionEvents++;
         this.needsRender = true;
         this.needsLODUpdate = true;
         this.frameScheduler?.wake('camera-input');
@@ -3548,6 +3558,8 @@ class PistonViewer {
                 geometryAwaitingFinal: false,
             };
             this._markFinestBuilt(stagedTile);
+            this.materialChurn.compileCalls++;
+            this.materialChurn.materialReplacements++;
             this.renderer.compile(replacement, this.camera);
             this._applyTileLevelVisibility(stagedTile, this.heightFactor);
 
@@ -3555,7 +3567,9 @@ class PistonViewer {
             tile.container.add(replacement);
             tile.container.remove(oldMesh);
             const disposedMaterials = new Set();
+            this.materialChurn.traversalCalls++;
             oldMesh.traverse(object => {
+                this.materialChurn.traversedObjects++;
                 if (!object.isMesh) return;
                 disposeGeometryWithSharedStaticBuffers(object.geometry);
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -3584,7 +3598,9 @@ class PistonViewer {
             });
             this.needsRender = true;
         } catch (error) {
+            this.materialChurn.traversalCalls++;
             replacement.traverse(object => {
+                this.materialChurn.traversedObjects++;
                 if (object.isMesh) disposeGeometryWithSharedStaticBuffers(object.geometry);
             });
             for (const material of replacementMaterials) {
@@ -3969,6 +3985,7 @@ class PistonViewer {
             this.scene.add(containerGroup);
             // Force GPU Upload/Compile of geometry and shaders
             // This prevents the "Stutter on 3D Switch" by paying the cost now, 1 tile per frame.
+            this.materialChurn.compileCalls++;
             this.renderer.compile(containerGroup, this.camera);
 
             containerGroup.visible = true;
@@ -3982,7 +3999,9 @@ class PistonViewer {
 
             // GATHER MATERIALS for cleanup/tracking
             const gatheredMaterials = [];
+            this.materialChurn.traversalCalls++;
             containerGroup.traverse((child) => {
+                this.materialChurn.traversedObjects++;
                 if (child.isMesh && child.material) gatheredMaterials.push(child.material);
             });
 
@@ -4044,7 +4063,9 @@ class PistonViewer {
     // shader draws all the way to the camera) until finer levels exist.
     _markFinestBuilt(tile) {
         if (!tile.mesh) return;
+        this.materialChurn.traversalCalls++;
         tile.mesh.traverse(obj => {
+            this.materialChurn.traversedObjects++;
             if (obj.isMesh && obj.material?.userData) {
                 const ud = obj.material.userData;
                 ud.isFinest = (ud.lodIdx === tile.finestBuilt);
@@ -4083,7 +4104,9 @@ class PistonViewer {
         // 2. Deep-traverse all 3D meshes — dispose geometry and materials. Maps
         // are detached but never disposed here: textureStates owns them.
         if (tile.mesh) {
+            this.materialChurn.traversalCalls++;
             tile.mesh.traverse(obj => {
+                this.materialChurn.traversedObjects++;
                 if (obj.isMesh) {
                     if (obj.geometry) {
                         disposeGeometryWithSharedStaticBuffers(obj.geometry);
@@ -4285,9 +4308,11 @@ class PistonViewer {
 
     updateFloorUniforms() {
         for (const m of this.materialsToUpdate) {
-            if (m.userData.shader) m.userData.shader.uniforms.uFloorOffset.value = this.floorState.value;
+            if (m.userData.shader) writeUniformIfChanged(m.userData.shader.uniforms.uFloorOffset, this.floorState.value, this.materialChurn);
         }
     }
+
+    getMaterialChurnStats() { return snapshotMaterialChurnStats(this.materialChurn); }
 
     // --- ENGINE STATE DERIVATION ---
     deriveEngineState(flat) {
@@ -4632,34 +4657,35 @@ class PistonViewer {
         this.computeLodRadii();
         this.updateLevelVisibility(h);
         this._updateTexBadge();
+        this.materialChurn.uniformPasses++;
         let needsUpdateCount = 0;
         for (const m of this.materialsToUpdate) {
             if (m.needsUpdate) needsUpdateCount++;
             if (m.userData.shader) {
-                m.userData.shader.uniforms.uHeightFactor.value = h;
-                m.userData.shader.uniforms.uFloorOffset.value = this.floorState.value;
+                writeUniformIfChanged(m.userData.shader.uniforms.uHeightFactor, h, this.materialChurn);
+                writeUniformIfChanged(m.userData.shader.uniforms.uFloorOffset, this.floorState.value, this.materialChurn);
                 const uCam = m.userData.shader.uniforms.uCameraPos;
-                if (uCam?.value?.copy) uCam.value.copy(this.camera.position);
+                writeUniformIfChanged(uCam, this.camera.position, this.materialChurn);
 
                 if (m.userData.isHorizon) continue; // horizon has no LOD/gradient uniforms
 
-                m.userData.shader.uniforms.uGradientMode.value = this.gradientMode;
+                writeUniformIfChanged(m.userData.shader.uniforms.uGradientMode, this.gradientMode, this.materialChurn);
 
                 if (m.userData.lodIdx !== undefined) {
                     const k = m.userData.lodIdx;
                     if (m.userData.forceMovingMode && k === this.movingLevel) {
                         // Uniform panning level: force the cut fully open so
                         // every instance of this level draws at all distances.
-                        m.userData.shader.uniforms.uLodRadii.value.set(0.0, 1e12);
-                        m.userData.shader.uniforms.uFinestBuilt.value = 1.0;
+                        writeUniformIfChanged(m.userData.shader.uniforms.uLodRadii, { x: 0.0, y: 1e12 }, this.materialChurn);
+                        writeUniformIfChanged(m.userData.shader.uniforms.uFinestBuilt, 1.0, this.materialChurn);
                     } else {
                         // Gosper level k: band = (R(k-1), R(k)], parent checked
                         // against R(k). The finest BUILT level ignores the near
                         // edge so coverage holds while an exact frontier builds.
                         const minD = (k <= 0) ? 0.0 : this.lodRadii[k - 1];
                         const maxD = this.lodRadii[k];
-                        m.userData.shader.uniforms.uLodRadii.value.set(minD, maxD);
-                        m.userData.shader.uniforms.uFinestBuilt.value = m.userData.isFinest ? 1.0 : 0.0;
+                        writeUniformIfChanged(m.userData.shader.uniforms.uLodRadii, { x: minD, y: maxD }, this.materialChurn);
+                        writeUniformIfChanged(m.userData.shader.uniforms.uFinestBuilt, m.userData.isFinest ? 1.0 : 0.0, this.materialChurn);
                     }
                 }
             }
