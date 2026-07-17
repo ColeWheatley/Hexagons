@@ -5,6 +5,7 @@ import { HexSearch } from './search.js?v=pageonly1';
 import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
 import { CacheManager } from './cache_manager.js?v=pageonly1';
 import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
+import { createProfilerForReleaseMode, resolveReleaseMode } from './release_mode.js?v=release-mode1';
 import { initBenchmark } from './benchmark.js?v=pageonly1';
 import { ShareableViewState } from './view_state.js?v=pageonly1';
 import {
@@ -362,7 +363,6 @@ class PistonViewer {
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
         this.cacheManager = new CacheManager();
-        this.profiler = new PerfProfiler(this);
 
         this.initTouchMomentumTracking();
         this.initWorld();
@@ -923,6 +923,12 @@ class PistonViewer {
             if (this.manifest.type !== 'gosper_l5') {
                 throw new Error(`Manifest type '${this.manifest.type}' is not gosper_l5 — re-run the baker`);
             }
+            this.releaseMode = resolveReleaseMode(this.manifest.release, window.location.search);
+            this.profiler = createProfilerForReleaseMode(this, this.releaseMode, PerfProfiler);
+            this.profiler?.setMeta({
+                releaseProfile: this.releaseMode.profile,
+                releaseMode: this.releaseMode.mode,
+            });
             const textureContract = this.manifest.texture_pages;
             const supportedTextureCodecs = new Set([
                 'xuastc-ldr-4x4',
@@ -957,11 +963,8 @@ class PistonViewer {
             this.textureContract = textureContract;
             this.binaryContract = this.manifest.binary || {};
             const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
-            const mapSpan = Math.max(
-                this.manifest.bounds.max_x - this.manifest.bounds.min_x,
-                this.manifest.bounds.max_y - this.manifest.bounds.min_y,
-            );
-            this.isMiniBake = mapSpan <= 30000;
+            // This is release configuration, not a geographic heuristic.
+            this.isMiniBake = this.releaseMode.profile === 'beta-stubai';
             const hazeControl = document.getElementById('haze-distance-control');
             if (hazeControl) hazeControl.hidden = this.isMiniBake;
             this.updateFogAndClip();

@@ -1,13 +1,12 @@
 #!/bin/bash
-# @atlas: Orchestration script for the 'Overnight Super-Bake'. Executes the full geographic expansion via waffle_iron.py and synchronizes the resulting baked binary tiles and textures to the live S3 bucket (wheatley.cloud).
-# 🧇 Waffle Iron Overnight Super-Bake & S3 Sync
-# This script runs the full geographic expansion and uploads tiles live to wheatley.cloud
+# @atlas: Orchestration script for an explicitly approved selected-Tirol bake.
+# A full-Tirol bake is intentionally not a release mode.
 
 # Ensure we are in the project root
 cd "$(dirname "$0")/.."
 
 echo "--------------------------------------------------"
-echo "🚀 Starting PowFinder Global Bake & S3 Sync"
+echo "🚀 Starting PowFinder selected-Tirol bake & S3 sync"
 echo "Bucket: wheatley.cloud"
 echo "Time: $(date)"
 echo "--------------------------------------------------"
@@ -18,9 +17,17 @@ if ! command -v aws &> /dev/null; then
     exit 1
 fi
 
+# The production boundary is a product decision. Keeping it external makes an
+# accidental all-Tirol bake impossible while still making an approved run
+# repeatable from the deploy environment.
+: "${PRODUCTION_COVERAGE_BOUNDS:?Set min_x,min_y,max_x,max_y for the approved production boundary}"
+
 # Run the bake
 # We use stdbuf to ensure python output isn't buffered so we can tail the log
-python3 -u hex_backend/waffle_iron.py --full 2>&1 | tee bake_log_$(date +%Y%m%d_%H%M%S).log
+python3 -u hex_backend/waffle_iron.py \
+  --release-profile production-selected-tirol \
+  --coverage-bounds "$PRODUCTION_COVERAGE_BOUNDS" \
+  2>&1 | tee bake_log_$(date +%Y%m%d_%H%M%S).log
 
 echo "--------------------------------------------------"
 echo "✅ Bake Complete."

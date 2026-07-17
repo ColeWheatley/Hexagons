@@ -7,6 +7,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import coordinate_utility as coord_util
+from release_profiles import manifest_release_descriptor
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_PAGE_RECIPE_VERSION,
@@ -178,6 +179,12 @@ def generate_manifest():
         min_x = max_x = min_y = max_y = 0.0
 
     bake_metadata = _read_bake_metadata()
+    release_profile = bake_metadata.get("release_profile")
+    if not isinstance(release_profile, str):
+        raise ValueError(
+            "Bake metadata is missing explicit release_profile; choose beta-stubai "
+            "or production-selected-tirol before generating a manifest"
+        )
     texture_page_recipe = bake_metadata.get("texture_page_version", TEXTURE_PAGE_RECIPE_VERSION)
     texture_encoding_profile = bake_metadata.get(
         "texture_encoding_profile", DEFAULT_TEXTURE_ENCODING_PROFILE
@@ -211,6 +218,7 @@ def generate_manifest():
             "unit_record_bytes": 14,
             "extent_quantum_m": 0.1,
         },
+        "release": manifest_release_descriptor(release_profile),
         # Geometry-independent absolute imagery pages are the only texture
         # identity. Geometry contributes coverage bounds, never asset ownership.
         "texture_pages": manifest_texture_page_contract(

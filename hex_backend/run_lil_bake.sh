@@ -26,7 +26,7 @@ echo "--------------------------------------------------"
 
 # Run inside the pinned project environment. pipefail prevents a failed bake
 # from being hidden by tee and falsely reported as complete.
-pixi run python -u hex_backend/waffle_iron.py --fast-texture-encode "$@" 2>&1 | tee "lil_bake_$(date +%Y%m%d_%H%M%S).log"
+pixi run python -u hex_backend/waffle_iron.py --release-profile beta-stubai --fast-texture-encode "$@" 2>&1 | tee "lil_bake_$(date +%Y%m%d_%H%M%S).log"
 
 echo "--------------------------------------------------"
 echo "✅ Mini-Bake Complete."
