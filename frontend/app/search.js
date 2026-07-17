@@ -1,5 +1,6 @@
-// @atlas: The 'HexSearch' module. A UI component that lazy-loads GeoJSON data for Tirol peaks and ski resorts, providing an interactive search interface. It translates geographic coordinates to local PistonViewer space and safely rejects flights to destinations lying outside the currently baked map bounds.
+// @atlas: Search UI backed by a generated compact peak/resort index. It translates geographic coordinates to local PistonViewer space and safely rejects flights to destinations lying outside the currently baked map bounds.
 import { initProjection, latLonToWorld, worldToGosperTile } from './coordinate_utility.js';
+import { normalizeSearchText, rankSearchItems } from './search_index.js';
 
 export class HexSearch {
     constructor() {
@@ -184,34 +185,26 @@ export class HexSearch {
             // Lazy load projection + data
             await initProjection();
 
-            const [peaksRes, skiRes] = await Promise.all([
-                fetch('assets/tirol_peaks.geojson'),
-                fetch('assets/skigebiete.json')
-            ]);
-
-            if (!peaksRes.ok || !skiRes.ok) {
-                throw new Error(`HTTP ${peaksRes.status}/${skiRes.status}`);
+            const indexRes = await fetch('assets/search_index.json');
+            if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
+            const index = await indexRes.json();
+            if (index.version !== 1 || !Array.isArray(index.items)) {
+                throw new Error('Unsupported search index format');
             }
 
-            const peaksData = await peaksRes.json();
-            const skiData = await skiRes.json();
-
-            this.peaks = peaksData.features.map(f => ({
-                name: f.properties.name,
-                ele: f.properties.ele,
-                lat: f.geometry.coordinates[1],
-                lon: f.geometry.coordinates[0],
-                type: 'peak'
-            })).filter(p => p.name);
-
-            this.skiAreas = skiData.ski_areas.map(a => ({
-                name: a.name,
-                lat: a.gps.lat,
-                lon: a.gps.lon,
-                x: a.epsg_31254?.x,
-                y: a.epsg_31254?.y,
-                type: 'ski'
+            const items = index.items.map(row => ({
+                name: row[0],
+                terms: row[1],
+                ele: row[2],
+                lat: row[3],
+                lon: row[4],
+                type: row[5] === 's' ? 'ski' : 'peak',
+                available: row[6] === 1,
+                x: row[7],
+                y: row[8],
             }));
+            this.peaks = items.filter(item => item.type === 'peak');
+            this.skiAreas = items.filter(item => item.type === 'ski');
 
             this.loaded = true;
             console.log(`Loaded ${this.peaks.length} peaks and ${this.skiAreas.length} ski areas.`);
@@ -261,7 +254,11 @@ export class HexSearch {
     getAvailability(item) {
         const viewer = window.pistonViewer;
         const manifest = viewer?.manifest;
-        if (!manifest) return { available: true, label: '', sectorKey: '' };
+        if (!manifest) {
+            return item.available === false
+                ? { available: false, label: 'Outside bake', sectorKey: '' }
+                : { available: true, label: '', sectorKey: '' };
+        }
 
         const worldPos = this.getWorldPosition(item);
         const tile = worldToGosperTile(worldPos.x, worldPos.y);
@@ -284,7 +281,7 @@ export class HexSearch {
     }
 
     async handleInput(e) {
-        const query = e.target.value.toLowerCase().trim();
+        const query = normalizeSearchText(e.target.value);
         if (query.length < 2) {
             this.resultsBox.classList.remove('visible');
             this.currentResults = [];
@@ -296,7 +293,7 @@ export class HexSearch {
             this.renderMessage("Loading search index...", "loading");
             await this.loadData();
 
-            const latestQuery = this.input.value.toLowerCase().trim();
+            const latestQuery = normalizeSearchText(this.input.value);
             if (latestQuery !== query) {
                 this.handleInput({ target: this.input });
                 return;
@@ -305,14 +302,11 @@ export class HexSearch {
             if (!this.loaded) return;
         }
 
-        const skiMatches = this.skiAreas
-            .filter(i => i.name.toLowerCase().includes(query))
-            .slice(0, 5)
+        const isAvailable = item => this.getAvailability(item).available;
+        const skiMatches = rankSearchItems(this.skiAreas, query, 5, isAvailable)
             .map(i => ({ ...i, category: 'Ski Areas' }));
 
-        const peakMatches = this.peaks
-            .filter(i => i.name.toLowerCase().includes(query))
-            .slice(0, 10)
+        const peakMatches = rankSearchItems(this.peaks, query, 10, isAvailable)
             .map(i => ({ ...i, category: 'Peaks' }));
 
         this.currentResults = [...skiMatches, ...peakMatches]

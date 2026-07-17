@@ -26,3 +26,4 @@ texture-stack = "python ktx2_nonrect_texture_test/scripts/check_texture_stack.py
 texture-build-basisu-v2 = "bash ktx2_nonrect_texture_test/scripts/build_basisu_v2.sh"
 texture-toy-assets = "python ktx2_nonrect_texture_test/scripts/generate_assets.py"
 texture-zoom-assets = "python ktx2_nonrect_texture_test/production_zoom/scripts/generate_production_zoom_assets.py"
+search-index = "python scripts/generate_search_index.py"

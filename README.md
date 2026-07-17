@@ -24,7 +24,7 @@ A browser-based 3D terrain viewer that renders the Austrian Tirol using a hexago
 │   │   ├── style.css
 │   │   ├── tiles_bin/      # Baked .bin sectors (git-ignored)
 │   │   ├── aerial_pages/   # Global 1024m XUASTC KTX2 pages (git-ignored)
-│   │   └── assets/         # Static data (skigebiete.json, peaks geojson)
+│   │   └── assets/         # Static data + generated compact peak/resort search index
 │   └── landing/            # Marketing landing page
 │
 └── hive_assets/            # Dev tooling & test harnesses
