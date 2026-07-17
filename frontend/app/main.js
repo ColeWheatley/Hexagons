@@ -949,6 +949,7 @@ class PistonViewer {
                     throw new Error(`Manifest texture tier ${name} must be ${size}px`);
                 }
             }
+            this.profiler?.milestone('manifestLoaded');
             this.textureContract = textureContract;
             this.binaryContract = this.manifest.binary || {};
             const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
