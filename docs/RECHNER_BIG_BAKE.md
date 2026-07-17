@@ -37,7 +37,31 @@ directory or symlink at that path is ignored safely. The full corpus preflight
 expects substantially more than 1,000 files / 20 GiB (the known set is 3,486
 files / 26,417,719,175 bytes) and validates every header plus a tiny pixel read,
 CRS, 0.2 m pixel size, bounds, duplicates, overlaps, zero-byte/corrupt files,
-aggregate coverage, holes/components, and representative first-4-MiB hashes.
+aggregate coverage, and holes/components. The tracked
+`hex_backend/aerial_source_inventory.tsv` is the authoritative identity
+recovered from the original Rechner corpus before deletion: every filename and
+byte count must match, and preflight compares full SHA-256 for deterministic
+representatives. The restorer validates the full SHA-256 of every downloaded
+file.
+
+If the local corpus must be rebuilt from the public Land Tirol endpoint, use
+the transactional restorer. Stable `.part` files resume HTTP ranges, completed
+files are atomically renamed, existing/seed files are accepted only after full
+digest verification, and the JSON report makes another invocation idempotent:
+
+```bash
+pixi run python -u hex_backend/aerial_downloader/restore_corpus.py \
+  --destination /home/cole/data/Hexagons/aerial_tifs \
+  --seed /home/cole/dev/Hexagons/hex_backend/stubai \
+  --workers 8 \
+  --report /home/cole/data/Hexagons/aerial-restore-report.json
+```
+
+On Rechner this recovery is run durably as the user unit
+`hexagons-aerial-restore.service`, with its log at
+`/home/cole/data/Hexagons/logs/aerial-restore.log`. Keep the ignored local
+`hex_backend/aerial_tifs` symlink pointed at the stable data directory, not a
+path inside another Git checkout.
 
 AWS CLI v2 is pinned by Pixi. Credentials must work non-interactively:
 

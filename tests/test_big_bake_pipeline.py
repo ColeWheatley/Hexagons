@@ -26,6 +26,7 @@ import publish_site
 import release_publish
 import texture_page_grid
 import waffle_iron
+from aerial_downloader import restore_corpus
 
 
 def inventory_fixture(root: Path):
@@ -253,6 +254,42 @@ class PreflightTests(unittest.TestCase):
         big = bake_preflight.estimate_output(500, 800, 3, {"width": 100, "height": 100})
         self.assertGreater(big["final_bytes"], small["final_bytes"] * 50)
         self.assertGreater(big["temporary_peak_bytes"], small["temporary_peak_bytes"])
+
+    def test_audited_source_inventory_has_exact_identity(self):
+        inventory_path = BACKEND / "aerial_source_inventory.tsv"
+        known = bake_preflight.load_known_source_inventory(inventory_path)
+        restored = restore_corpus.load_inventory(inventory_path)
+        self.assertEqual(len(known), bake_preflight.EXPECTED_FULL_CORPUS_FILES)
+        self.assertEqual(
+            sum(item["bytes"] for item in known.values()),
+            bake_preflight.EXPECTED_FULL_CORPUS_BYTES,
+        )
+        self.assertEqual(
+            [(item.name, item.size, item.sha256) for item in restored],
+            [
+                (name, item["bytes"], item["sha256"])
+                for name, item in known.items()
+            ],
+        )
+
+    def test_source_restorer_validates_seed_before_atomic_publish(self):
+        payload = b"audited source payload"
+        import hashlib
+
+        asset = restore_corpus.SourceAsset(
+            "dop_0000-00_2023.tif", len(payload), hashlib.sha256(payload).hexdigest()
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            seed = root / "seed"
+            destination = root / "destination"
+            seed.mkdir()
+            destination.mkdir()
+            (seed / asset.name).write_bytes(payload)
+            target = destination / asset.name
+            self.assertTrue(restore_corpus.seed_asset(asset, target, [seed]))
+            self.assertTrue(restore_corpus.valid_asset(target, asset))
+            self.assertFalse(any(path.name.endswith(".tmp") for path in destination.iterdir()))
 
 
 if __name__ == "__main__":

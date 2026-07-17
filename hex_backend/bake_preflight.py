@@ -59,6 +59,82 @@ def run_text(args: list[str], *, cwd: Path | None = None) -> str:
     return (result.stdout or result.stderr).strip()
 
 
+def load_known_source_inventory(path: Path) -> dict[str, dict[str, Any]]:
+    """Load the audited filename/size/full-digest source identity."""
+    result: dict[str, dict[str, Any]] = {}
+    for line_number, raw in enumerate(path.read_text().splitlines(), 1):
+        parts = raw.split("\t")
+        if len(parts) != 3:
+            raise ValueError(f"{path}:{line_number}: expected name, bytes, sha256")
+        name, size_text, digest = parts
+        if name in result:
+            raise ValueError(f"{path}:{line_number}: duplicate filename {name}")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise ValueError(f"{path}:{line_number}: invalid SHA-256")
+        result[name] = {"bytes": int(size_text), "sha256": digest}
+    if (
+        len(result) != EXPECTED_FULL_CORPUS_FILES
+        or sum(item["bytes"] for item in result.values()) != EXPECTED_FULL_CORPUS_BYTES
+    ):
+        raise ValueError(
+            "source inventory identity mismatch: expected "
+            f"{EXPECTED_FULL_CORPUS_FILES} files / {EXPECTED_FULL_CORPUS_BYTES} bytes"
+        )
+    return result
+
+
+def sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(4 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compare_known_source_inventory(
+    inventory_path: Path, valid_sources: list[dict[str, Any]], *, verify_hashes: bool,
+) -> dict[str, Any]:
+    expected = load_known_source_inventory(inventory_path)
+    actual = {Path(item["path"]).name: item for item in valid_sources}
+    missing = sorted(set(expected) - set(actual))
+    unexpected = sorted(set(actual) - set(expected))
+    size_mismatches = [
+        {
+            "name": name,
+            "expected_bytes": expected[name]["bytes"],
+            "actual_bytes": actual[name]["bytes"],
+        }
+        for name in sorted(set(expected) & set(actual))
+        if expected[name]["bytes"] != actual[name]["bytes"]
+    ]
+    representative_hashes: dict[str, dict[str, Any]] = {}
+    hash_mismatches = []
+    if verify_hashes and not missing and not size_mismatches:
+        names = sorted(expected)
+        for name in (names[0], names[len(names) // 2], names[-1]):
+            digest = sha256_path(Path(actual[name]["path"]))
+            matches = digest == expected[name]["sha256"]
+            representative_hashes[name] = {
+                "algorithm": "sha256",
+                "expected": expected[name]["sha256"],
+                "actual": digest,
+                "matches": matches,
+            }
+            if not matches:
+                hash_mismatches.append(name)
+    return {
+        "path": str(inventory_path.resolve()),
+        "expected_files": len(expected),
+        "expected_bytes": sum(item["bytes"] for item in expected.values()),
+        "missing": missing,
+        "unexpected": unexpected,
+        "size_mismatches": size_mismatches,
+        "representative_full_hashes": representative_hashes,
+        "hash_mismatches": hash_mismatches,
+        "matches": not (missing or unexpected or size_mismatches or hash_mismatches),
+    }
+
+
 def git_state(repo: Path) -> dict[str, Any]:
     status = run_text(["git", "status", "--porcelain=v1"], cwd=repo)
     return {
@@ -365,6 +441,7 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
 
     aerial_paths = [Path(path) for path in sorted(glob.glob(str(args.aerial_dir / "*.tif")))]
     aerial, valid_sources, coverage = inspect_aerial_sources(aerial_paths)
+    known_source_inventory = None
     if not aerial_paths:
         failures.append(f"source TIFs are absent from {args.aerial_dir}")
     if aerial["invalid_count"]:
@@ -392,6 +469,20 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
             f"(expected {EXPECTED_FULL_CORPUS_FILES} files / {EXPECTED_FULL_CORPUS_BYTES} bytes; "
             f"found {aerial['valid_count']} / {aerial['total_bytes']})"
         )
+    if profile.require_full_corpus:
+        if not args.source_inventory.is_file():
+            failures.append(f"audited source inventory is absent: {args.source_inventory}")
+        else:
+            try:
+                known_source_inventory = compare_known_source_inventory(
+                    args.source_inventory, valid_sources, verify_hashes=True
+                )
+                if not known_source_inventory["matches"]:
+                    failures.append(
+                        "source corpus does not match the audited filename/size/hash inventory"
+                    )
+            except Exception as exc:
+                failures.append(f"audited source inventory is invalid: {exc}")
 
     dem = None
     if not args.dem.is_file():
@@ -466,7 +557,7 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
             "user_systemd": systemd_state,
         },
         "filesystems": {"output": output_fs, "temporary": temp_fs},
-        "aerial": aerial, "dem": dem,
+        "aerial": aerial, "known_source_inventory": known_source_inventory, "dem": dem,
         "expected_intersection_bounds": (
             [float(value) for value in expected_intersection.bounds]
             if expected_intersection is not None and not expected_intersection.is_empty else None
@@ -529,6 +620,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release-profile", default="production-tirol")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--aerial-dir", type=Path, default=repo / "hex_backend/aerial_tifs")
+    parser.add_argument(
+        "--source-inventory", type=Path,
+        default=repo / "hex_backend/aerial_source_inventory.tsv",
+    )
     parser.add_argument("--dem", type=Path, default=repo / "hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif")
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--temp-dir", type=Path, default=Path(os.environ.get("TMPDIR", "/tmp")))
