@@ -66,6 +66,10 @@ import {
     ResourceRetryScheduler,
     ResweepScheduler,
 } from './fetch_retry.js?v=resilience1';
+import {
+    WORKER_JOB_TIMEOUT_MS,
+    WorkerWatchdogBookkeeper,
+} from './worker_watchdog.js?v=resilience1';
 import './gosper_core.js?v=pageonly1';
 
 const G = window.GosperCore;
@@ -344,11 +348,15 @@ class PistonViewer {
             recoverableSweepsRun: 0,
             globalErrors: 0,
             unhandledRejections: 0,
+            workerTimeouts: 0,
+            workerRespawns: 0,
+            workerFailedJobs: 0,
         };
         this.resourceRetries = new ResourceRetryScheduler();
         this.recoverableResweeps = new ResweepScheduler({
             onSchedule: () => { this.failureStats.recoverableSweepsScheduled++; },
         });
+        this.failedWorkerJobs = new Set();
 
         // Frametime Graph
         this.frametimeCanvas = document.getElementById('frametime-graph');
@@ -371,6 +379,9 @@ class PistonViewer {
         this.nextWorkerIdx = 0;
         this.pendingJobs = new Map(); // ID -> {resolve, reject}
         this.jobIdCounter = 0;
+        this.workerScriptUrl = './tile_worker.js?v=codecprofiles1';
+        this.workerWatchdog = new WorkerWatchdogBookkeeper();
+        this.workerWatchdogTimer = null;
         this.textureSupport = null; // set by initWorkers() from renderer.extensions
         this.initWorkers();
 
@@ -569,14 +580,28 @@ class PistonViewer {
         };
 
         for (let i = 0; i < count; i++) {
-            const w = new Worker('./tile_worker.js?v=codecprofiles1');
-            w.onmessage = (e) => this.handleWorkerMessage(e);
-            // Worker does not reply to INIT — fire and forget.
-            // NB: must use the same {type, data} envelope as every other worker
-            // message — the worker destructures e.data.data.
-            w.postMessage({ type: 'INIT', data: { support: this.textureSupport } });
-            this.workers.push(w);
+            this.workers.push(this._createWorker(i));
         }
+    }
+
+    _createWorker(index) {
+        const worker = new Worker(this.workerScriptUrl);
+        worker.onmessage = (e) => this.handleWorkerMessage(e);
+        worker.onerror = (e) => {
+            console.warn(`[WORKER_ERROR] ${index}: ${e.message || 'unknown worker error'}`);
+        };
+        // Worker does not reply to INIT — fire and forget.
+        // NB: must use the same {type, data} envelope as every other worker
+        // message — the worker destructures e.data.data.
+        worker.postMessage({ type: 'INIT', data: { support: this.textureSupport } });
+        return worker;
+    }
+
+    _restartWorker(index, reason) {
+        this.workers[index]?.terminate();
+        this.workers[index] = this._createWorker(index);
+        this.failureStats.workerRespawns++;
+        this.log(`Worker ${index} restarted: ${reason}`, 'error');
     }
 
     handleWorkerMessage(e) {
@@ -585,21 +610,111 @@ class PistonViewer {
         if (!job) return;
 
         this.pendingJobs.delete(id);
+        this.workerWatchdog.complete(id);
 
         if (status === 'success') job.resolve(result);
         else job.reject(new Error(error));
+        this._scheduleWorkerWatchdog();
     }
 
     postWorkerJob(type, data, transferables = []) {
         return new Promise((resolve, reject) => {
             const id = this.jobIdCounter++;
-            this.pendingJobs.set(id, { resolve, reject });
+            const job = {
+                id,
+                type,
+                data,
+                transferables,
+                resolve,
+                reject,
+                resourceKey: this._workerJobResourceKey(type, data),
+                workerIndex: null,
+            };
+            this.pendingJobs.set(id, job);
 
-            const w = this.workers[this.nextWorkerIdx];
+            const workerIndex = this.nextWorkerIdx;
             this.nextWorkerIdx = (this.nextWorkerIdx + 1) % this.workers.length;
 
-            w.postMessage({ id, type, data }, transferables);
+            this._postPendingWorkerJob(job, workerIndex);
         });
+    }
+
+    _workerJobResourceKey(type, data) {
+        if (type === 'LOAD_TILE' || type === 'BUILD_GEOMETRY') return `${data.yq}_${data.yr}`;
+        if (type === 'LOAD_TEXTURE') return (data.urls || []).join(',');
+        return type;
+    }
+
+    _postPendingWorkerJob(job, workerIndex, { scheduleWatchdog = true } = {}) {
+        job.workerIndex = workerIndex;
+        this.workerWatchdog.track(job.id, workerIndex, {
+            type: job.type,
+            resourceKey: job.resourceKey,
+        });
+        this.workers[workerIndex].postMessage(
+            { id: job.id, type: job.type, data: job.data },
+            job.transferables,
+        );
+        if (scheduleWatchdog) this._scheduleWorkerWatchdog();
+    }
+
+    _scheduleWorkerWatchdog() {
+        if (this.workerWatchdogTimer) return;
+        if (this.pendingJobs.size === 0) return;
+        const delay = this.workerWatchdog.timeUntilNextDeadline() ?? WORKER_JOB_TIMEOUT_MS;
+        this.workerWatchdogTimer = setTimeout(
+            () => this._runWorkerWatchdog(),
+            Math.max(0, delay),
+        );
+    }
+
+    _failWorkerJob(job, error) {
+        this.pendingJobs.delete(job.id);
+        this.workerWatchdog.complete(job.id);
+        this.failedWorkerJobs.add(`${job.type}:${job.resourceKey}`);
+        this.failureStats.workerFailedJobs++;
+        job.reject(error);
+    }
+
+    _runWorkerWatchdog() {
+        this.workerWatchdogTimer = null;
+        const expired = this.workerWatchdog.expired();
+        if (expired.length === 0) {
+            this._scheduleWorkerWatchdog();
+            return;
+        }
+
+        const restartedWorkers = new Set();
+        const failedJobs = new Map();
+        for (const expiredJob of expired) {
+            const job = this.pendingJobs.get(expiredJob.id);
+            if (!job) continue;
+            const timeout = this.workerWatchdog.recordTimeout(job.id);
+            if (!timeout) continue;
+            this.failureStats.workerTimeouts++;
+            restartedWorkers.add(job.workerIndex);
+            if (timeout.shouldFail) {
+                failedJobs.set(job.id, new Error(
+                    `${job.type} ${job.resourceKey} timed out twice after ${WORKER_JOB_TIMEOUT_MS}ms`,
+                ));
+            }
+        }
+
+        for (const workerIndex of restartedWorkers) {
+            this._restartWorker(workerIndex, 'watchdog timeout');
+        }
+
+        for (const job of Array.from(this.pendingJobs.values())) {
+            if (!restartedWorkers.has(job.workerIndex)) continue;
+            const failure = failedJobs.get(job.id);
+            if (failure) {
+                this._failWorkerJob(job, failure);
+            } else {
+                this._postPendingWorkerJob(job, job.workerIndex, { scheduleWatchdog: false });
+            }
+        }
+
+        this._scheduleWorkerWatchdog();
     }
 
     log(msg, type = "info") {
@@ -3793,6 +3908,13 @@ class PistonViewer {
                     pending: Array.from(this.recoverableResweeps.pending),
                     scheduled: this.failureStats.recoverableSweepsScheduled,
                     run: this.failureStats.recoverableSweepsRun,
+                },
+                workers: {
+                    pendingJobs: this.pendingJobs.size,
+                    watchdogTimeouts: this.failureStats.workerTimeouts,
+                    respawns: this.failureStats.workerRespawns,
+                    failedJobs: this.failedWorkerJobs.size,
+                    finalFailures: this.failureStats.workerFailedJobs,
                 },
                 globalErrors: this.failureStats.globalErrors,
                 unhandledRejections: this.failureStats.unhandledRejections,
