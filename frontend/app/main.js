@@ -58,7 +58,7 @@ import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.
 import {
     applyTwoFingerGesture,
     createTouchGestureScratch,
-} from './touch_gesture.js?v=touchalloc1';
+} from './touch_gesture.js';
 import {
     commitIfChanged,
     normalizedWheelPixels,
