@@ -72,6 +72,9 @@ export class HexSearch {
                 transform: translateY(0);
                 pointer-events: auto;
             }
+            #hex-search-results[hidden] {
+                display: none;
+            }
             .result-section {
                 padding: 8px 15px;
                 font-size: 0.7rem;
@@ -131,6 +134,10 @@ export class HexSearch {
             .result-item.ski {
                 border-left-color: #ff6b9d; /* Pink for Ski */
             }
+            .result-item[aria-selected="true"] {
+                background: rgba(116, 185, 255, 0.1);
+                border-left-color: #74b9ff;
+            }
             
             @media (max-width: 768px) {
                 #hex-search-container {
@@ -152,14 +159,18 @@ export class HexSearch {
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 </svg>
-                <input type="text" id="hex-search-input" placeholder="Search Peaks & Ski Areas..." autocomplete="off">
+                <input type="text" id="hex-search-input" placeholder="Search Peaks & Ski Areas..." autocomplete="off"
+                    role="combobox" aria-label="Search peaks and ski areas" aria-autocomplete="list"
+                    aria-controls="hex-search-results" aria-expanded="false">
             </div>
-            <div id="hex-search-results" class="hidden"></div>
+            <div id="hex-search-results" role="listbox" aria-label="Search results" hidden></div>
+            <div id="hex-search-status" class="sr-only" aria-live="polite" aria-atomic="true"></div>
         `;
         document.body.appendChild(container);
 
         this.input = document.getElementById('hex-search-input');
         this.resultsBox = document.getElementById('hex-search-results');
+        this.status = document.getElementById('hex-search-status');
 
         this.input.addEventListener('focus', () => {
             this.loadData()
@@ -172,9 +183,34 @@ export class HexSearch {
         // Hide on click outside
         document.addEventListener('click', (e) => {
             if (!container.contains(e.target)) {
-                this.resultsBox.classList.remove('visible');
+                this.hideResults();
             }
         });
+    }
+
+    announce(message) {
+        if (this.status) this.status.textContent = message;
+    }
+
+    showResults() {
+        this.resultsBox.hidden = false;
+        this.resultsBox.classList.add('visible');
+        this.input.setAttribute('aria-expanded', 'true');
+    }
+
+    hideResults() {
+        this.resultsBox.hidden = true;
+        this.resultsBox.classList.remove('visible');
+        this.input.setAttribute('aria-expanded', 'false');
+        this.input.removeAttribute('aria-activedescendant');
+    }
+
+    setActiveDescendant() {
+        if (this.activeIndex >= 0 && this.currentResults[this.activeIndex]?.availability?.available !== false) {
+            this.input.setAttribute('aria-activedescendant', `hex-search-option-${this.activeIndex}`);
+        } else {
+            this.input.removeAttribute('aria-activedescendant');
+        }
     }
 
     async loadData() {
@@ -231,8 +267,11 @@ export class HexSearch {
     }
 
     renderMessage(message, className = 'empty') {
-        this.resultsBox.innerHTML = `<div class="result-item ${className}"><span class="meta">${this.escapeHtml(message)}</span></div>`;
-        this.resultsBox.classList.add('visible');
+        this.resultsBox.innerHTML = `<div class="result-item ${className}" role="option" aria-disabled="true"><span class="meta">${this.escapeHtml(message)}</span></div>`;
+        this.activeIndex = -1;
+        this.showResults();
+        this.setActiveDescendant();
+        this.announce(message);
     }
 
     getWorldPosition(item) {
@@ -283,9 +322,10 @@ export class HexSearch {
     async handleInput(e) {
         const query = normalizeSearchText(e.target.value);
         if (query.length < 2) {
-            this.resultsBox.classList.remove('visible');
+            this.hideResults();
             this.currentResults = [];
             this.activeIndex = -1;
+            this.announce('Search cleared.');
             return;
         }
 
@@ -342,7 +382,9 @@ export class HexSearch {
             const meta = availability.available ? metaBase : `${metaBase} • ${availability.sectorKey}`;
 
             html += `
-                <div class="result-item ${res.type} ${activeClass} ${unavailableClass}" data-idx="${idx}">
+                <div class="result-item ${res.type} ${activeClass} ${unavailableClass}" id="hex-search-option-${idx}"
+                    data-idx="${idx}" role="option" aria-selected="${idx === this.activeIndex}"
+                    aria-disabled="${!availability.available}">
                     <span class="name">${this.escapeHtml(res.name)}${statusLabel}</span>
                     <span class="meta">${this.escapeHtml(meta)}</span>
                 </div>
@@ -350,7 +392,10 @@ export class HexSearch {
         });
 
         this.resultsBox.innerHTML = html;
-        this.resultsBox.classList.add('visible');
+        this.showResults();
+        this.setActiveDescendant();
+        const available = this.currentResults.filter(result => result.availability?.available !== false).length;
+        this.announce(`${available} available ${available === 1 ? 'result' : 'results'}. Use the up and down arrow keys to choose one.`);
 
         // Add click listeners
         this.resultsBox.querySelectorAll('.result-item[data-idx]').forEach(el => {
@@ -378,8 +423,9 @@ export class HexSearch {
             e.preventDefault();
             if (this.activeIndex >= 0) this.selectResult(this.activeIndex);
         } else if (e.key === 'Escape') {
-            this.resultsBox.classList.remove('visible');
-            this.input.blur();
+            e.preventDefault();
+            this.hideResults();
+            this.announce('Search results closed.');
         }
     }
 
@@ -413,6 +459,7 @@ export class HexSearch {
             if (window.pistonViewer?.log) {
                 window.pistonViewer.log(`"${item.name}" has no baked imagery in this map.`, "info");
             }
+            this.announce(`${item.name} is unavailable: ${availability.label}.`);
             return;
         }
 
@@ -446,8 +493,9 @@ export class HexSearch {
             }
         }
 
-        this.resultsBox.classList.remove('visible');
+        this.hideResults();
         this.input.value = item.name;
+        this.announce(`${item.name} selected.`);
     }
 }
 
