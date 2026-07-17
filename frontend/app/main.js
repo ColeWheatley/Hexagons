@@ -1,7 +1,7 @@
 // @atlas: PistonViewer orchestrator for GSP1/GSP2/current GSP3 Gosper islands. GSP2+ uses generic-frustum L3 range selection and deferred geometry; GSP3 supplies exact rendered subtree bounds while older versions remain safe migration paths.
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { HexSearch } from './search.js?v=pageonly1';
+import { HexSearch } from './search.js?v=aa12';
 import { VRAMLedger } from './vram_ledger.js?v=pageonly1';
 import { CacheManager } from './cache_manager.js?v=pageonly1';
 import { PerfProfiler } from './perf_profiler.js?v=pageonly1';
