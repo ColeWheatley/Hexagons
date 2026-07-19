@@ -154,18 +154,27 @@ in 54.82 s, then resumed in 0.46 s with all five geometry units and eight page
 transactions verified/skipped. Its strict manifest contained WebP plus all
 three KTX2 URLs for every page and every WebP decoded as exactly 32×32.
 
-## Current Rechner audit (2026-07-17)
+## Current Rechner audit (2026-07-19)
 
 Hardware passes: Ryzen 9 5950X (16C/32T), 62 GiB RAM, RTX 3090 Ti with 23,028
-MiB VRAM, driver 580.167.08, CUDA runtime 13.0/toolkit 12.5, and 229 GiB free.
+MiB VRAM, driver 580.167.08, CUDA runtime 13.0/toolkit 12.5, and 204 GiB free.
 Basis Universal 2.10.0 exposes the required 8×6 flag. User systemd is running.
 
-Production preflight currently fails safely for two external prerequisites:
+The durable source restore completed in 779.7 seconds: all 3,486 files / exactly
+26,417,719,175 bytes passed their original full SHA-256 identities, including
+eight resumed partials and 81 verified Stubai seed files, with zero failures.
+The stable source path is `/home/cole/data/Hexagons/aerial_tifs`.
 
-1. Rechner has only the 81-file Stubai subset (814,479,189 bytes), not the full
-   Tirol corpus. The tracked Mac absolute symlink was removed.
-2. AWS CLI is installed, but no non-interactive credentials are configured.
+Full-corpus preflight run `20260719T153440Z-c09db6f9fabf` validates all TIFF
+headers and pixels, exact audited names/sizes, representative full hashes,
+EPSG:31254 at 0.2 m, five legal coverage components, three internal holes, no
+invalid files, duplicate bounds, positive-area overlaps, missing files, or
+unexpected files. The source/DEM intersection is
+`[-16250, 200000, 101250, 270000]`; it selects 8,172 geometry islands and 5,330
+texture pages. Estimated final output is 37.10 GB, temporary peak 26.69 GB, and
+the safety-margin requirement is 95.67 GB against 219.01 GB free.
 
-No production inventory is written and no service is launched while either
-condition remains. Restore the corpus and credentials, rerun `preflight`, then
-`start`; do not hand-edit coverage bounds or copy stale output into the run.
+The sole remaining preflight failure is that AWS CLI has no non-interactive
+credentials. No production inventory or bake service is created until
+`pixi run aws login` succeeds. After login, rerun `preflight`, then `start`;
+do not hand-edit coverage bounds or copy stale output into the run.
