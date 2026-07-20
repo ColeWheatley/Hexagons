@@ -70,6 +70,11 @@ class TexturePageGridTests(unittest.TestCase):
 
     def test_current_mini_corpus_exact_render_union_is_149_pages(self):
         manifest = json.loads((REPO_ROOT / "frontend/app/tile_manifest.json").read_text())
+        first = manifest["tiles"][0]
+        if not (
+            REPO_ROOT / "frontend/app/tiles_bin" / f"gosper_{first['yq']}_{first['yr']}.bin"
+        ).is_file():
+            self.skipTest("ignored 197-island GSP fixture is not installed in this worktree")
         valid = {
             (tile["yq"], tile["yr"]): gsp_binary.read_unit_valid(
                 REPO_ROOT / "frontend/app/tiles_bin" / f"gosper_{tile['yq']}_{tile['yr']}.bin"
@@ -112,6 +117,8 @@ class TexturePageGridTests(unittest.TestCase):
         from shapely.geometry import Polygon, box
 
         manifest = json.loads((REPO_ROOT / "frontend/app/tile_manifest.json").read_text())
+        if not (REPO_ROOT / "frontend/app/tiles_bin/gosper_271_-237.bin").is_file():
+            self.skipTest("ignored 197-island GSP fixture is not installed in this worktree")
         tile = next(t for t in manifest["tiles"] if (t["yq"], t["yr"]) == (271, -237))
         valid = gsp_binary.read_unit_valid(
             REPO_ROOT / "frontend/app/tiles_bin/gosper_271_-237.bin"

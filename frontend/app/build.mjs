@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
-const distDir = path.join(appDir, 'dist');
+const distDir = process.env.HEXAGONS_DIST_DIR
+    ? path.resolve(process.env.HEXAGONS_DIST_DIR)
+    : path.join(appDir, 'dist');
 const textExtensions = new Set(['.html', '.css', '.js', '.json', '.geojson']);
 const hashLength = 12;
 
@@ -217,7 +219,12 @@ async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, servi
 }
 
 async function copyStaticAssets() {
-    await copyFile('tile_manifest.json');
+    const manifestOverride = process.env.HEXAGONS_MANIFEST_PATH;
+    if (manifestOverride) {
+        await writeFile('tile_manifest.json', await fs.readFile(path.resolve(manifestOverride)));
+    } else {
+        await copyFile('tile_manifest.json');
+    }
     await copyFile('assets/skigebiete.json');
     await copyFile('assets/search_index.json');
     await copyFile('assets/tirol_peaks.geojson');

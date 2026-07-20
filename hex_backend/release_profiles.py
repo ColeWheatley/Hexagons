@@ -21,6 +21,12 @@ RELEASE_PROFILES = {
         "mode": "production",
         "coverage_profile": "selected-tirol",
     },
+    # Rechner production coverage is not a hand-drawn rectangle.  The durable
+    # run inventory records the validated orthophoto/DEM intersection.
+    "production-tirol": {
+        "mode": "production",
+        "coverage_profile": "validated-tif-dem-intersection",
+    },
 }
 
 

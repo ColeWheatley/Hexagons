@@ -18,7 +18,7 @@ local_data/
 frontend/app/tiles_bin/
 frontend/app/aerial_pages/
 hex_backend/baked_sectors/
-hex_backend/aerial_tifs/
+hex_backend/aerial_tifs
 hex_backend/TIFS/
 hex_backend/stubai/
 
