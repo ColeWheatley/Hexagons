@@ -10,11 +10,11 @@ from pathlib import Path
 
 MIB = 1024 * 1024
 EXPECTED = {
-    "low-device": ("low", 2, 64 * MIB, 1, None, 0.12),
-    "mid-device": ("mid", 3, 128 * MIB, 1, 768, 0.18),
-    "high-device": ("high", 6, 256 * MIB, 2, 512, 0.25),
-    "save-data": ("low", 2, 64 * MIB, 1, None, 0.12),
-    "constrained-network": ("low", 2, 64 * MIB, 1, None, 0.12),
+    "low-device": ("low", 2, 64 * MIB, 1, 0, 0.12),
+    "mid-device": ("mid", 3, 128 * MIB, 1, 1500, 0.18),
+    "high-device": ("high", 6, 256 * MIB, 2, 2000, 0.25),
+    "save-data": ("low", 2, 64 * MIB, 1, 0, 0.12),
+    "constrained-network": ("low", 2, 64 * MIB, 1, 0, 0.12),
 }
 
 
@@ -29,7 +29,7 @@ def _check_case(row: dict) -> tuple[list[str], dict]:
     problems = []
     if name not in EXPECTED:
         return [f"unexpected matrix row {name!r}"], {}
-    profile, workers, cache_bytes, texture_jobs, high_enter, guard_scale = EXPECTED[name]
+    profile, workers, cache_bytes, texture_jobs, high_distance, guard_scale = EXPECTED[name]
     injected = row.get("injected", {})
     observed = row.get("observed", {})
     for signal in ("deviceMemory", "hardwareConcurrency", "effectiveType", "saveData"):
@@ -61,7 +61,7 @@ def _check_case(row: dict) -> tuple[list[str], dict]:
         "workers": capability.get("workers"),
         "textureBudgetBytes": capability.get("textureBudgetBytes"),
         "maxTextureJobs": capability.get("maxTextureJobs"),
-        "highTextureEnterPx": capability.get("highTextureEnterPx"),
+        "highTextureDistanceM": capability.get("highTextureDistanceM"),
         "guardMarginScale": capability.get("guardMarginScale"),
     }
     expected = {
@@ -69,8 +69,7 @@ def _check_case(row: dict) -> tuple[list[str], dict]:
         "workers": workers,
         "textureBudgetBytes": cache_bytes,
         "maxTextureJobs": texture_jobs,
-        # JSON.stringify represents Infinity as null for constrained profiles.
-        "highTextureEnterPx": high_enter,
+        "highTextureDistanceM": high_distance,
         "guardMarginScale": guard_scale,
     }
     for field, value in expected.items():

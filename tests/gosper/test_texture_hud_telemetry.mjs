@@ -49,7 +49,7 @@ function group(materials, { visible = true, count = 1 } = {}) {
 
 const sharedLow = binding('52_199', 'low128');
 const tiles = new Map([
-    ['visible-a', tile([group([material(sharedLow, binding('53_199', 'medium256'), binding('53_198', 'bootstrap32'))])])],
+    ['visible-a', tile([group([material(sharedLow, binding('53_199', 'medium256'), binding('53_198', 'bootstrap64'))])])],
     // The same page on another rendered geometry tile remains one displayed page.
     ['visible-b', tile([group([material(sharedLow, binding('53_200', 'high4096'))])])],
     // Guard geometry is resident, but not displayed in the viewport.
@@ -70,7 +70,7 @@ const visibility = new Map([
 ]);
 
 const displayed = collectDisplayedTexturePages(tiles, visibility);
-assert.deepEqual([...displayed.bootstrap32], ['53_198']);
+assert.deepEqual([...displayed.bootstrap64], ['53_198']);
 assert.deepEqual([...displayed.low128], ['52_199']);
 assert.deepEqual([...displayed.medium256], ['53_199']);
 assert.deepEqual([...displayed.high4096], ['53_200']);
@@ -78,15 +78,11 @@ assert.deepEqual([...displayed.high4096], ['53_200']);
 const states = new Map([
     ['a', {
         assets: new Map([['low128', {}], ['medium256', {}]]),
-        queued: new Set(['high4096']),
-        loading: new Set(['high4096']), // queued+loading counts this page once
-        failed: new Set(),
+        tierStates: new Map([['high4096', 'loading']]),
     }],
     ['b', {
         assets: new Map([['low128', {}]]),
-        queued: new Set(['medium256']),
-        loading: new Set(),
-        failed: new Set(['high4096']),
+        tierStates: new Map([['medium256', 'queued'], ['high4096', 'failed']]),
     }],
 ]);
 const residency = collectTextureTierResidency(states);

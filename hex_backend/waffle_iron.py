@@ -65,6 +65,9 @@ from execution_profiles import EXECUTION_PROFILES, execution_profile
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_ENCODING_PROFILES,
+    TEXTURE_BOOTSTRAP_SIZE,
+    TEXTURE_BOOTSTRAP_WEBP_METHOD,
+    TEXTURE_BOOTSTRAP_WEBP_QUALITY,
     TEXTURE_PAGE_RECIPE_VERSION,
     TEXTURE_TIERS,
     TEXTURE_TIER_SIZES,
@@ -105,7 +108,7 @@ STUBAI_LON = 11.119477646985764
 
 BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
 TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
-TEXTURE_TATTOO_VERSION = "3"  # includes the yellow 32px WebP bootstrap mark
+TEXTURE_TATTOO_VERSION = "3"  # includes the yellow WebP bootstrap mark
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
 # world metres, so overlapping island textures paint the same strokes at the
@@ -113,7 +116,7 @@ TEXTURE_TATTOO_VERSION = "3"  # includes the yellow 32px WebP bootstrap mark
 # weight: visible enough to identify the delivered tier without obscuring
 # aerial detail.
 TEXTURE_TATTOO_COLORS = {
-    "bootstrap": (255, 220, 0), # yellow, transient 32px WebP first paint
+    "bootstrap": (255, 220, 0), # yellow, transient 64px WebP first paint
     "low": (0, 255, 48),       # very vibrant green postage tier
     "medium": (0, 96, 255),    # electric blue medium tier
     "high": (255, 0, 170),     # hot pink high tier
@@ -978,11 +981,19 @@ def encode_texture_tiers(
         # Build bootstrap from the clean high canvas, not the green low tier.
         # It is a separate diagnostic tier: yellow must never inherit low's
         # tattoo through a second resize.
-        bootstrap = canvas.resize((32, 32), Image.Resampling.LANCZOS)
+        bootstrap = canvas.resize(
+            (TEXTURE_BOOTSTRAP_SIZE, TEXTURE_BOOTSTRAP_SIZE),
+            Image.Resampling.LANCZOS,
+        )
         if texture_tattoos:
             apply_texture_tattoo(bootstrap, bounds, "bootstrap")
         stage_started = time.perf_counter()
-        bootstrap.save(bootstrap_path, "WEBP", quality=45, method=4)
+        bootstrap.save(
+            bootstrap_path,
+            "WEBP",
+            quality=TEXTURE_BOOTSTRAP_WEBP_QUALITY,
+            method=TEXTURE_BOOTSTRAP_WEBP_METHOD,
+        )
         timings["webp"] = time.perf_counter() - stage_started
         bootstrap.close()
 

@@ -35,7 +35,7 @@ export const LOADER_QUIPS = Object.freeze([
     'Herding pixels into place…',
 ]);
 
-// Tier names come from PAGE_TEXTURE_TIER ('bootstrap32' vs the KTX2 tiers);
+// Tier names come from PAGE_TEXTURE_TIER ('bootstrap64' vs the KTX2 tiers);
 // matched by prefix so this module stays dependency-free and node-testable.
 function textureClassForTier(tier) {
     return String(tier).startsWith('bootstrap') ? 'bootstrap' : 'ktx2';

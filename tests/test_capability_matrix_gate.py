@@ -14,7 +14,7 @@ SIGNALS = {
 
 def fixture():
     rows = []
-    for name, (profile, workers, budget, jobs, high_enter, guard) in EXPECTED.items():
+    for name, (profile, workers, budget, jobs, high_distance, guard) in EXPECTED.items():
         texture_bytes = 100_000_000 if name == "high-device" else 20_000_000
         rows.append(
             {
@@ -35,7 +35,7 @@ def fixture():
                         "workers": workers,
                         "textureBudgetBytes": budget,
                         "maxTextureJobs": jobs,
-                        "highTextureEnterPx": high_enter,
+                        "highTextureDistanceM": high_distance,
                         "guardMarginScale": guard,
                     },
                     "vram": {

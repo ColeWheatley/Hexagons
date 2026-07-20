@@ -231,15 +231,16 @@ assert.deepEqual(lifetimeEvents, [
 ]);
 
 residency.beginDemandPass();
-residency.contribute('0_0', { classification: 'visible', projectedDiameterPx: 600, perceptibility: 9 });
+residency.contribute('0_0', { classification: 'visible', distanceMeters: 1900, projectedDiameterPx: 1, perceptibility: 9 });
 residency.finishDemandPass();
 assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.HIGH);
 residency.beginDemandPass();
-residency.contribute('0_0', { classification: 'visible', projectedDiameterPx: 400, perceptibility: 4 });
+residency.contribute('0_0', { classification: 'outside', distanceMeters: 2400, projectedDiameterPx: Infinity, perceptibility: 4 });
 residency.finishDemandPass();
-assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.HIGH, 'high hysteresis retains quality');
+assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.HIGH,
+    'distance hysteresis retains quality independent of projection/frustum');
 residency.beginDemandPass();
-residency.contribute('0_0', { classification: 'visible', projectedDiameterPx: 300, perceptibility: 3 });
+residency.contribute('0_0', { classification: 'visible', distanceMeters: 2600, projectedDiameterPx: Infinity, perceptibility: 3 });
 residency.finishDemandPass();
 assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
 residency.beginDemandPass();
@@ -250,14 +251,13 @@ assert.equal(
     'outside pages retain medium as their next guard target but are not demand-planned',
 );
 
-// Infinity is also the conservative projection result when the camera is
-// inside a page footprint. An Infinity policy threshold means high is
-// disabled; it must not accidentally pass via `Infinity >= Infinity`.
+// A zero distance cap disables pink without projected-size sentinels leaking
+// into the decision.
 residency.beginDemandPass();
 residency.contribute('0_0', {
-    classification: 'visible', projectedDiameterPx: Infinity, perceptibility: 10,
+    classification: 'visible', distanceMeters: 0, projectedDiameterPx: Infinity, perceptibility: 10,
 });
-residency.finishDemandPass({ highEnterPx: Infinity });
+residency.finishDemandPass({ highEnterDistanceM: 0, highExitDistanceM: 0 });
 assert.equal(residency.state('0_0').desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
 
 // The generic grid module is an explicit geometry-translation boundary.

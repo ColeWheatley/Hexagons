@@ -13,6 +13,10 @@ export class CacheManager {
         this.budget = budget;
         this.highEntries = new Map(); // key -> { bytes, lastUsed, priority }
         this.highBytes = 0;
+        // Monotonic signal used by temporarily rejected arrivals. A change to
+        // resident membership or distance priority means admission should be
+        // reconsidered without retrying the same doomed upload every frame.
+        this.revision = 0;
 
         // Browser-observable lifetime telemetry.
         this.evictionCount = 0;
@@ -34,10 +38,14 @@ export class CacheManager {
         if (entry) entry.lastUsed = now;
     }
 
-    /** Update screen-space value without perturbing LRU recency. */
+    /** Update camera-distance value without perturbing LRU recency. */
     updatePriority(key, priority) {
         const entry = this.highEntries.get(key);
-        if (entry) entry.priority = Number.isFinite(priority) ? priority : 0;
+        if (!entry) return;
+        const next = Number.isFinite(priority) ? priority : 0;
+        if (entry.priority === next) return;
+        entry.priority = next;
+        this.revision++;
     }
 
     /**
@@ -95,6 +103,7 @@ export class CacheManager {
             priority: incomingPriority,
         });
         this.highBytes += bytes;
+        this.revision++;
         if (this.evictedHistory.has(key)) this.redownloadCount++;
         return true;
     }
@@ -104,6 +113,7 @@ export class CacheManager {
         if (!entry) return;
         this.highEntries.delete(key);
         this.highBytes -= entry.bytes;
+        this.revision++;
         // The caller owns actual texture disposal/ledger removal; this manager
         // tracks only the high-tier safety pool.
     }
