@@ -118,6 +118,22 @@ def mark_unit(
     raise KeyError(f"{collection} unit {key} is not in the run inventory")
 
 
+def exclude_empty_geometry(
+    inventory: dict[str, Any], key: tuple[int, int], *, reason: str
+) -> None:
+    """Remove a source-selected island proven empty by exact DEM sampling."""
+    for index, item in enumerate(inventory["geometry"]):
+        if (int(item["yq"]), int(item["yr"])) != key:
+            continue
+        excluded = dict(item)
+        excluded.update({"status": "excluded", "last_error": reason})
+        inventory.setdefault("excluded_geometry", []).append(excluded)
+        del inventory["geometry"][index]
+        refresh_progress(inventory)
+        return
+    raise KeyError(f"geometry unit {key} is not in the run inventory")
+
+
 def refresh_progress(inventory: dict[str, Any]) -> None:
     progress: dict[str, int] = {}
     for label, collection in (("geometry", "geometry"), ("pages", "texture_pages")):

@@ -158,7 +158,7 @@ def _geometry_is_current(output_dir: Path, key: tuple[int, int], recipe: str) ->
 
 def _run_geometry(
     inventory_path: Path, inventory: dict, dem_path: Path, gradient_path: Path,
-    output_dir: Path,
+    output_dir: Path, on_completed=None,
 ) -> None:
     profile = inventory["execution_profile"]
     recipe = inventory["geometry_recipe"]["version"]
@@ -197,11 +197,17 @@ def _run_geometry(
             try:
                 _key, wrote, timings = future.result()
                 if not wrote:
-                    raise RuntimeError("DEM window contains no valid unit samples")
+                    reason = "exact DEM unit sampling contains no valid samples"
+                    bake_inventory.exclude_empty_geometry(inventory, key, reason=reason)
+                    print(f"geometry {key[0]},{key[1]} excluded: {reason}")
+                    bake_inventory.write_json_atomic(inventory_path, inventory)
+                    continue
                 _write_marker(_geometry_marker(output_dir, key), recipe)
                 bake_inventory.mark_unit(
                     inventory, "geometry", key, "complete", timings=timings
                 )
+                if on_completed is not None:
+                    on_completed(key)
                 print(f"geometry {key[0]},{key[1]} complete in {timings['total']:.2f}s")
             except Exception as exc:
                 attempts[key] += 1
@@ -269,8 +275,6 @@ def run(inventory_path: Path) -> None:
     gradient = waffle.get_or_create_gradient_map(str(dem_path), str(gradient_path), upsample_factor=2)
     gradient.close()
 
-    _run_geometry(inventory_path, inventory, dem_path, gradient_path, binary_dir)
-    inventory = bake_inventory.load_inventory(inventory_path)
     publication = inventory.get("publication", {})
     uploader = None
     if publication.get("progressive_upload"):
@@ -279,16 +283,31 @@ def run(inventory_path: Path) -> None:
             output_root / "upload_spool", store, inventory["release_id"],
             workers=int(inventory["execution_profile"]["upload_workers"]),
         )
+        retried = uploader.retry_failed()
+        if retried:
+            print(f"upload: requeued {retried} durable failures")
+        uploader.start()
+
+    def geometry_completed(key):
+        if uploader is None:
+            return
+        filename = waffle.gosper_asset_name(key[0], key[1], "bin")
+        uploader.spool("geometry", key, [{
+            "local": str(binary_dir / filename),
+            "logical": f"tiles_bin/{filename}",
+        }])
+
+    _run_geometry(
+        inventory_path, inventory, dem_path, gradient_path, binary_dir,
+        on_completed=geometry_completed,
+    )
+    inventory = bake_inventory.load_inventory(inventory_path)
+    if uploader:
         for item in inventory["geometry"]:
             if item.get("status") != "complete" or item.get("uploaded"):
                 continue
             key = (int(item["yq"]), int(item["yr"]))
-            filename = waffle.gosper_asset_name(key[0], key[1], "bin")
-            uploader.spool("geometry", key, [{
-                "local": str(binary_dir / filename),
-                "logical": f"tiles_bin/{filename}",
-            }])
-        uploader.start()
+            geometry_completed(key)
     tiles, exact_pages = _exact_pages_and_tiles(inventory, binary_dir)
     bake_inventory.replace_texture_pages(inventory, exact_pages)
     recipe = inventory["texture_recipe"]["version"]

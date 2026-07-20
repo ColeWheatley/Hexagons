@@ -100,6 +100,16 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(resumed["geometry"][0]["timings"]["total"], 1.25)
             self.assertFalse(any(item.name.endswith(".tmp") for item in root.iterdir()))
 
+    def test_exact_dem_empty_geometry_is_durably_excluded(self):
+        payload = inventory_fixture(Path("/tmp/inventory-test"))
+        bake_inventory.refresh_progress(payload)
+        bake_inventory.exclude_empty_geometry(
+            payload, (1, 2), reason="exact DEM unit sampling contains no valid samples"
+        )
+        self.assertEqual(payload["geometry"], [])
+        self.assertEqual(payload["progress"]["geometry_total"], 0)
+        self.assertEqual(payload["excluded_geometry"][0]["status"], "excluded")
+
     def test_exact_page_replacement_preserves_only_current_inventory_keys(self):
         with tempfile.TemporaryDirectory() as temp:
             payload = inventory_fixture(Path(temp))
@@ -211,6 +221,27 @@ class ProgressiveUploadTests(unittest.TestCase):
                 "local": str(asset), "logical": completed["assets"][0]["logical"],
             }])
             self.assertEqual(resumed.status()["pending"], 0)
+
+    def test_explicit_resume_requeues_durable_upload_failures(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            spool = progressive_upload.ProgressiveUploadSpool(
+                root / "spool", release_publish.LocalStore(root / "s3"),
+                "release-test", workers=1,
+            )
+            task = {
+                "schema_version": 1, "task_id": "geometry-1-2",
+                "collection": "geometry", "key": [1, 2],
+                "release_id": "release-test", "assets": [],
+                "attempts": 3, "last_error": "transient",
+            }
+            bake_inventory.write_json_atomic(
+                spool.failed / "geometry-1-2.json", task
+            )
+            self.assertEqual(spool.retry_failed(), 1)
+            requeued = json.loads((spool.pending / "geometry-1-2.json").read_text())
+            self.assertEqual(requeued["attempts"], 0)
+            self.assertIsNone(requeued["last_error"])
 
     def test_public_shell_content_types_and_cache_policies(self):
         content_type, cache, encoding = publish_site.metadata(Path("index.html"))
