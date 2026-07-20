@@ -56,7 +56,7 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(tuple(sizes), ("low", "medium", "high"))
 
     def test_legacy_island_contract_is_not_exposed(self):
-        self.assertEqual(texture_contract.TEXTURE_PAGE_RECIPE_VERSION, "4.2.1")
+        self.assertEqual(texture_contract.TEXTURE_PAGE_RECIPE_VERSION, "4.2.2")
         self.assertFalse(hasattr(texture_contract, "TEXTURE_RECIPE_VERSION"))
         self.assertFalse(hasattr(texture_contract, "TEXTURE_URL_TEMPLATE"))
         self.assertFalse(hasattr(texture_contract, "manifest_texture_contract"))
@@ -117,7 +117,7 @@ class TextureContractTests(unittest.TestCase):
         self.assertEqual(command[command.index("-effort") + 1], "1")
         self.assertEqual(
             waffle.texture_page_cache_version(False, "balanced", 1),
-            "4.2.1+codec-balanced+effort-1",
+            "4.2.2+codec-balanced+effort-1",
         )
 
     def test_frontend_accepts_every_profile_astc_block_size(self):

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -30,6 +31,17 @@ import release_publish
 
 
 _GEOMETRY_CONTEXT = {}
+SOURCE_COVERAGE_RASTER_MARGIN_M = 0.5
+
+
+def source_coverage_for_bounds(aerial_bounds: list[list[float]]):
+    """Return source coverage inset enough to contain complete rendered L0 caps."""
+    return unary_union([box(*bounds) for bounds in aerial_bounds]).buffer(
+        -(
+            waffle.coord_util.UNIT_HEX_WIDTH_METERS / math.sqrt(3.0)
+            + SOURCE_COVERAGE_RASTER_MARGIN_M
+        )
+    )
 
 
 def _init_geometry_worker(
@@ -42,7 +54,11 @@ def _init_geometry_worker(
         "dem": rasterio.open(dem_path),
         "gradient": rasterio.open(gradient_path),
         "output_dir": output_dir,
-        "source_coverage": unary_union([box(*bounds) for bounds in aerial_bounds]),
+        # A leaf renders as a complete unit hex, not a point. Eroding the TIF
+        # union by its circumradius guarantees every retained L0 cap vertex has
+        # usable imagery; center-only clipping leaked a few metres of exterior
+        # terrain into boundary pages.
+        "source_coverage": source_coverage_for_bounds(aerial_bounds),
     }
 
 

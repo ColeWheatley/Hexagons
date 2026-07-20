@@ -128,7 +128,7 @@ class TextureTattooTests(unittest.TestCase):
             self.assertGreater(intersection / union, 0.40)
 
     def test_production_contract_is_three_versioned_xuastc_tiers(self):
-        self.assertEqual(waffle.TEXTURE_PAGE_VERSION, "4.2.1")
+        self.assertEqual(waffle.TEXTURE_PAGE_VERSION, "4.2.2")
         self.assertEqual(waffle.TEXTURE_TIER_SIZES, {
             "low": 128, "medium": 256, "high": 4096,
         })

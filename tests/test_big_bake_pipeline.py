@@ -43,7 +43,7 @@ def inventory_fixture(root: Path):
         "geometry_recipe": {"version": waffle_iron.BAKER_VERSION, "format": "GSP3"},
         "texture_recipe": {
             "version": waffle_iron.texture_page_cache_version(False, "production", None),
-            "contract_version": "4.2.1",
+            "contract_version": "4.2.2",
             "encoding_profile": "production",
             "encoding_effort": 4,
             "diagnostic_tattoos": False,
@@ -111,7 +111,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(payload["progress"]["geometry_total"], 0)
         self.assertEqual(payload["excluded_geometry"][0]["status"], "excluded")
 
-    def test_geometry_leaf_validity_is_clipped_to_aerial_coverage(self):
+    def test_geometry_leaf_validity_requires_full_cap_inside_aerial_coverage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             info = waffle_iron.gosper_island_info(1, 2)
@@ -133,7 +133,12 @@ class InventoryTests(unittest.TestCase):
                 target.write(np.zeros((2, height, width), dtype=np.float32))
 
             center_x = (bounds[0] + bounds[2]) / 2
-            coverage = box(bounds[0] - 1, bounds[1] - 1, center_x, bounds[3] + 1)
+            cap_radius = (
+                coordinate_utility.UNIT_HEX_WIDTH_METERS / np.sqrt(3.0)
+                + big_bake.SOURCE_COVERAGE_RASTER_MARGIN_M
+            )
+            raw_coverage = box(bounds[0] - 10, bounds[1] - 10, center_x, bounds[3] + 10)
+            coverage = big_bake.source_coverage_for_bounds([list(raw_coverage.bounds)])
             output = root / "tiles"
             with rasterio.open(dem_path) as dem, rasterio.open(grad_path) as gradient:
                 wrote = waffle_iron.bake_gosper_binary(
@@ -145,7 +150,7 @@ class InventoryTests(unittest.TestCase):
             unit_x = info["centerX"] + coordinate_utility.gosper_tile_geometry()["offx"]
             self.assertTrue(valid.any())
             self.assertTrue((~valid).any())
-            self.assertTrue(np.all(unit_x[valid] <= center_x))
+            self.assertTrue(np.all(unit_x[valid] <= center_x - cap_radius))
 
     def test_exact_page_replacement_preserves_only_current_inventory_keys(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -23,10 +23,12 @@ not a hand-selected rectangle and not old output files, defines coverage.
 - Geometry, coverage metadata, recipe markers, and all four page assets use
   same-filesystem temporary writes and atomic replacement/commit markers.
 - Production GSP leaf validity is clipped to the authoritative orthophoto
-  union as well as DEM validity. Partially covered boundary islands retain
-  their source-backed leaves; terrain with DEM but no usable imagery cannot
-  demand pages or enter the manifest. Aggregate LOD overdraw may use bounded
-  nearest-edge padding, while unit-cap imagery remains a hard requirement.
+  union as well as DEM validity. The union is inset by the complete unit-cap
+  circumradius plus a 0.5 m raster margin, so every retained L0 hex vertex has
+  usable imagery. Partially covered boundary islands retain their source-backed
+  leaves; terrain with DEM but no usable imagery cannot demand pages or enter
+  the manifest. Aggregate LOD overdraw may use bounded nearest-edge padding,
+  while unit-cap imagery remains a hard requirement.
 
 ## Rechner prerequisites
 
@@ -183,8 +185,10 @@ AWS CLI authentication is active. Run `20260720T152414Z-c70274835d20`
 validated the corpus, completed 8,148 exact-DEM geometry islands, progressively
 uploaded 1,493 immutable objects, and proved 64×64 WebP plus low/medium/high
 transactions. It was stopped safely after a deterministic exterior page
-exposed DEM-valid leaves outside the orthophoto union. GSP recipe 6.1.0 fixes
-that inventory leak by clipping leaf validity to source imagery; the formerly
-failing `texture_-17_204` then completed its full transaction. Resume from a
-new exact pushed revision so the new geometry recipe and release upload prefix
-cannot be confused with already uploaded 6.0.1 objects.
+exposed DEM-valid leaves outside the orthophoto union. Center clipping in GSP
+recipe 6.1.0 fixed that page but a full run proved some 6.4 m unit-cap vertices
+could still cross the source boundary. Recipe 6.1.1 therefore insets coverage
+by the complete cap radius plus raster margin. A full audit of 121,322,080
+retained leaves across 8,132 GSPs found zero of 727,932,480 cap vertices outside
+the TIF union. Resume from a new exact pushed revision so geometry and texture
+recipes cannot be confused with already uploaded prior-generation objects.

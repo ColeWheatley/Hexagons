@@ -107,7 +107,7 @@ DEBUG_MODE = False
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "6.1.0"  # GSP3 validity is clipped to authoritative source imagery
+BAKER_VERSION = "6.1.1"  # complete L0 cap footprints are clipped to source imagery
 TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
 TEXTURE_TATTOO_VERSION = "3"  # includes the yellow WebP bootstrap mark
 
