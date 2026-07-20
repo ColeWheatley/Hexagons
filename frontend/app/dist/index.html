@@ -11,11 +11,11 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PowFinder | Bestagon Viewer</title>
-    <link rel="preload" href="tile_manifest.json?v=v0.10.0-rc5" as="fetch" crossorigin="anonymous">
+    <link rel="preload" href="tile_manifest.json?v=v0.10.0-rc6" as="fetch" crossorigin="anonymous">
     <link rel="preload" href="assets/basis_transcoder.5046f5772520.wasm" as="fetch" type="application/wasm" crossorigin="anonymous">
-    <link rel="modulepreload" href="main.5012b83b18df.js">
+    <link rel="modulepreload" href="main.35ba989c054e.js">
     <link rel="stylesheet" href="style.7b42d4fd6a9c.css">
-    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.151601024bf1.js', { updateViaCache: 'none' }).catch(error => console.warn('[HEXAGONS] service worker unavailable', error));</script>
+    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.89deb86411af.js', { updateViaCache: 'none' }).catch(error => console.warn('[HEXAGONS] service worker unavailable', error));</script>
 </head>
 
 <body>
@@ -145,10 +145,10 @@
                             <!-- TEXTURE UPGRADE -->
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
-                                    <span id="tex-upgrade-label">HIGH TEXTURE FOOTPRINT</span>
-                                    <span class="value" id="tex-upgrade-val">512px</span>
+                                    <span id="tex-upgrade-label">PINK TEXTURE RANGE</span>
+                                    <span class="value" id="tex-upgrade-val">2km</span>
                                 </div>
-                                <input type="range" id="tex-upgrade-slider" min="128" max="2048" step="64" value="512"
+                                <input type="range" id="tex-upgrade-slider" min="0" max="5000" step="100" value="2000"
                                     aria-labelledby="tex-upgrade-label tex-upgrade-val"
                                     style="width: 100%;">
                             </div>
@@ -236,7 +236,7 @@
     </div>
     <div id="canvas-container"></div>
 
-    <script type="module" src="main.5012b83b18df.js"></script>
+    <script type="module" src="main.35ba989c054e.js"></script>
 </body>
 
 </html>

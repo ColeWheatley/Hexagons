@@ -42,11 +42,11 @@ def inventory_fixture(root: Path):
         "geometry_recipe": {"version": waffle_iron.BAKER_VERSION, "format": "GSP3"},
         "texture_recipe": {
             "version": waffle_iron.texture_page_cache_version(False, "production", None),
-            "contract_version": "4.1.0",
+            "contract_version": "4.2.0",
             "encoding_profile": "production",
             "encoding_effort": 4,
             "diagnostic_tattoos": False,
-            "bootstrap_px": 32,
+            "bootstrap_px": 64,
             "tiers": {"low": 128, "medium": 256, "high": 4096},
         },
         "geometry": [{

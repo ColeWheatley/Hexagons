@@ -86,8 +86,11 @@ def validate_runtime_inventory(inventory: dict) -> None:
             raise ValueError("production-tirol requires the sweep-verified production effort-4 recipe")
         if recipe.get("diagnostic_tattoos"):
             raise ValueError("production-tirol forbids diagnostic tattoos")
-        if recipe.get("bootstrap_px") != 32 or recipe.get("tiers") != required_tiers:
-            raise ValueError("production-tirol texture transaction must be WebP32 plus 128/256/4096 tiers")
+        if recipe.get("bootstrap_px") != waffle.TEXTURE_BOOTSTRAP_SIZE or recipe.get("tiers") != required_tiers:
+            raise ValueError(
+                f"production-tirol texture transaction must be WebP{waffle.TEXTURE_BOOTSTRAP_SIZE} "
+                "plus 128/256/4096 tiers"
+            )
         aerial = inventory["sources"]["aerial"]
         if (
             aerial.get("valid_count") != EXPECTED_FULL_CORPUS_FILES

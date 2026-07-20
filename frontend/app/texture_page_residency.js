@@ -3,7 +3,7 @@
 // tier transitions, and the many-geometry-to-one-page consumer graph.
 
 export const PAGE_TEXTURE_TIER = Object.freeze({
-    BOOTSTRAP: 'bootstrap32',
+    BOOTSTRAP: 'bootstrap64',
     LOW: 'low128',
     MEDIUM: 'medium256',
     HIGH: 'high4096',
@@ -11,7 +11,7 @@ export const PAGE_TEXTURE_TIER = Object.freeze({
 
 // Delivery contract for the transient, whole-page first-paint image. These
 // values are duplicated in the manifest and validated by main.js.
-export const BOOTSTRAP_PAGE_SIZE_PX = 32;
+export const BOOTSTRAP_PAGE_SIZE_PX = 64;
 export const BOOTSTRAP_GPU_BYTES_PER_PAGE = BOOTSTRAP_PAGE_SIZE_PX * BOOTSTRAP_PAGE_SIZE_PX * 4;
 export const BOOTSTRAP_MAX_RESIDENT_BYTES = 1024 * 1024;
 
@@ -99,7 +99,7 @@ export function tierLoadingExpired(state, tier, maxMs = 15000) {
     return ms !== null && ms > maxMs;
 }
 
-// The postage tier is the coverage floor: every page in the active demand
+// The green postage tier is the durable coverage floor: every page in the active demand
 // region reaches either resident or terminal-failure state before an upgrade
 // consumes a texture-worker slot. Mini fixtures may opt into whole-corpus
 // coverage. Keeping this decision pure makes the dispatch order deterministic
@@ -110,17 +110,9 @@ export function textureStateHasDemand(state, { includeOutside = false } = {}) {
 
 export function lowTextureCoveragePending(states, { includeOutside = true } = {}) {
     const values = states instanceof Map ? states.values() : (states || []);
-    const snapshot = Array.from(values);
-    const hasBootstrapWork = snapshot.some(state => (
-        state?.assets?.has(PAGE_TEXTURE_TIER.BOOTSTRAP)
-        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.QUEUED)
-        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)
-        || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.FAILED)
-    ));
-    const floorTier = hasBootstrapWork ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW;
-    for (const state of snapshot) {
+    for (const state of values) {
         if (!textureStateHasDemand(state, { includeOutside })) continue;
-        if (!tierIsTerminal(state, floorTier)) return true;
+        if (!tierIsTerminal(state, PAGE_TEXTURE_TIER.LOW)) return true;
     }
     return false;
 }
@@ -162,7 +154,6 @@ export function selectTextureDispatchTaskIndex(queue, states, {
     const lowBarrier = lowCoverageFirst && lowTextureCoveragePending(states, {
         includeOutside: lowCoverageIncludesOutside,
     });
-    const bootstrapQueued = (queue || []).some(task => task?.tier === PAGE_TEXTURE_TIER.BOOTSTRAP);
     let selectedIndex = -1;
     let selectedPriority = -Infinity;
     for (let index = 0; index < (queue || []).length; index++) {
@@ -175,9 +166,9 @@ export function selectTextureDispatchTaskIndex(queue, states, {
             || isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)
         ) && !tierIsTerminal(state, PAGE_TEXTURE_TIER.BOOTSTRAP);
         if (task.tier !== PAGE_TEXTURE_TIER.BOOTSTRAP && bootstrapPending) continue;
-        if (lowBarrier && task.tier !== (
-            bootstrapQueued ? PAGE_TEXTURE_TIER.BOOTSTRAP : PAGE_TEXTURE_TIER.LOW
-        )) continue;
+        if (lowBarrier
+            && task.tier !== PAGE_TEXTURE_TIER.BOOTSTRAP
+            && task.tier !== PAGE_TEXTURE_TIER.LOW) continue;
         const age = Number.isFinite(dispatchSequence)
             ? Math.max(0, dispatchSequence - (task.enqueuedSequence || 0))
             : 0;
@@ -193,41 +184,66 @@ export function selectTextureDispatchTaskIndex(queue, states, {
 
 const CLASS_RANK = Object.freeze({ outside: 0, guard: 1, visible: 2 });
 
-export function desiredTextureTier(state, projectedDiameterPx, classification, thresholds) {
-    // A request is always a whole 1024m texture page.  Once a page matters at
-    // all, 128px is a redundant wire/decode step: visible near pages jump from
-    // the 32px WebP directly to high; every other demanded page gets medium.
-    // Keep LOW in the rank table solely to read legacy resident assets.
-    if (classification === 'outside') return PAGE_TEXTURE_TIER.MEDIUM;
+export function desiredTextureTier(state, distanceMeters, _classification, thresholds) {
+    // Visibility scopes downloads; it does not decide image quality. Blue vs
+    // pink is exclusively the 3D camera-to-page-center distance, so viewport
+    // size, DPR, projection, and a simple camera rotation cannot flip tiers.
     const previous = state.desiredTier || PAGE_TEXTURE_TIER.MEDIUM;
-    const highEnabled = Number.isFinite(thresholds.highEnterPx);
-    const highExit = highEnabled ? thresholds.highEnterPx * thresholds.hysteresis : Infinity;
-    if (classification === 'visible' && highEnabled) {
-        if (previous === PAGE_TEXTURE_TIER.HIGH && projectedDiameterPx >= highExit) {
+    const highEnter = Number(thresholds.highEnterDistanceM);
+    const highExit = Number(thresholds.highExitDistanceM);
+    const highEnabled = Number.isFinite(highEnter) && highEnter > 0;
+    const distance = Number.isFinite(distanceMeters) ? distanceMeters : Infinity;
+    if (highEnabled) {
+        if (previous === PAGE_TEXTURE_TIER.HIGH && distance <= highExit) {
             return PAGE_TEXTURE_TIER.HIGH;
         }
-        if (projectedDiameterPx >= thresholds.highEnterPx) return PAGE_TEXTURE_TIER.HIGH;
+        if (distance <= highEnter) return PAGE_TEXTURE_TIER.HIGH;
     }
     return PAGE_TEXTURE_TIER.MEDIUM;
 }
 
 // Pure request matrix. This is deliberately independent of the worker queue:
-// tests can prove that the first near visible request has no low/medium
-// prerequisite, while callers still choose how to prioritise whole pages.
-export function textureTierRequestPlan(state, { isMoving = false } = {}) {
+// tests can prove the startup bridge plus durable green/blue ladder while
+// callers still choose how to prioritise whole pages.
+export function textureTierRequestPlan(state, {
+    isMoving = false,
+    allowBootstrap = true,
+} = {}) {
     const plan = [];
-    const needsBootstrap = state && state.assets?.size === 0
+    const needsBootstrap = allowBootstrap && state && state.assets?.size === 0
         && !isTier(state, PAGE_TEXTURE_TIER.BOOTSTRAP, TIER_STATE.FAILED);
     if (needsBootstrap) plan.push(PAGE_TEXTURE_TIER.BOOTSTRAP);
     if (!state) return plan;
-    if (state.desiredTier === PAGE_TEXTURE_TIER.HIGH) {
-        if (!isMoving) plan.push(PAGE_TEXTURE_TIER.HIGH);
-    } else if (state.desiredTier === PAGE_TEXTURE_TIER.MEDIUM) {
-        plan.push(PAGE_TEXTURE_TIER.MEDIUM);
-    } else {
-        plan.push(PAGE_TEXTURE_TIER.LOW);
+
+    const request = tier => {
+        if (!state.assets.has(tier) && !isTier(state, tier, TIER_STATE.FAILED)) plan.push(tier);
+    };
+    // Green and blue are durable session fallbacks. Pink is an optional
+    // distance-selected refinement, and new pink work may wait for motion to
+    // settle without suppressing either KTX2 fallback.
+    request(PAGE_TEXTURE_TIER.LOW);
+    if (PAGE_TEXTURE_RANK[state.desiredTier] >= PAGE_TEXTURE_RANK[PAGE_TEXTURE_TIER.MEDIUM]) {
+        request(PAGE_TEXTURE_TIER.MEDIUM);
+    }
+    if (state.desiredTier === PAGE_TEXTURE_TIER.HIGH
+        && !isMoving
+        && !state.highAdmissionBlocked) {
+        request(PAGE_TEXTURE_TIER.HIGH);
     }
     return plan;
+}
+
+// A rejected pink upload stays suppressed only while both the cache contents
+// and its distance rank are unchanged. This prevents stationary retry churn,
+// but lets a newly freed slot or a page moving closer trigger another attempt.
+export function highAdmissionRetryReady(state, cacheRevision, priority) {
+    if (!state?.highAdmissionBlocked) return true;
+    const revisionChanged = Number(cacheRevision) !== Number(state.highAdmissionBlockedRevision);
+    const rankImproved = Number.isFinite(priority)
+        && priority > (Number.isFinite(state.highAdmissionBlockedPriority)
+            ? state.highAdmissionBlockedPriority
+            : -Infinity);
+    return revisionChanged || rankImproved;
 }
 
 // The page frustum is exact while a terrain island carries a conservative
@@ -239,7 +255,6 @@ export function promoteVisibleConsumerPages(states, visiblePageKeys) {
     for (const state of states instanceof Map ? states.values() : (states || [])) {
         if (state?.classification !== 'outside' || !keys.has(state.key)) continue;
         state.classification = 'guard';
-        state.desiredTier = PAGE_TEXTURE_TIER.MEDIUM;
     }
 }
 
@@ -247,13 +262,11 @@ export class TexturePageResidency {
     constructor({
         pages,
         mini = false,
-        mediumEnterPx = 96,
-        mediumExitPx = 72,
-        highEnterPx = 512,
-        hysteresis = 0.75,
+        highEnterDistanceM = 2000,
+        highExitDistanceM = 2500,
     }) {
         this.mini = Boolean(mini);
-        this.thresholds = { mediumEnterPx, mediumExitPx, highEnterPx, hysteresis };
+        this.thresholds = { highEnterDistanceM, highExitDistanceM };
         this.states = new Map();
         this.consumerPages = new Map();
         for (const page of pages || []) {
@@ -270,9 +283,14 @@ export class TexturePageResidency {
                 activeTier: null,
                 classification: 'outside',
                 projectedDiameterPx: 0,
+                distanceMeters: Infinity,
                 perceptibility: 0,
+                highAdmissionBlocked: false,
+                highAdmissionBlockedRevision: -1,
+                highAdmissionBlockedPriority: -Infinity,
                 _nextClassification: 'outside',
                 _nextProjectedDiameterPx: 0,
+                _nextDistanceMeters: Infinity,
                 _nextPerceptibility: 0,
             });
         }
@@ -306,6 +324,7 @@ export class TexturePageResidency {
         for (const state of this.states.values()) {
             state._nextClassification = 'outside';
             state._nextProjectedDiameterPx = 0;
+            state._nextDistanceMeters = Infinity;
             state._nextPerceptibility = 0;
         }
     }
@@ -313,6 +332,7 @@ export class TexturePageResidency {
     contribute(pageOrKey, {
         classification = 'outside',
         projectedDiameterPx = 0,
+        distanceMeters = Infinity,
         perceptibility = 0,
     } = {}) {
         const state = this.state(pageOrKey);
@@ -325,6 +345,10 @@ export class TexturePageResidency {
             state._nextProjectedDiameterPx,
             Number.isFinite(projectedDiameterPx) ? projectedDiameterPx : Infinity,
         );
+        state._nextDistanceMeters = Math.min(
+            state._nextDistanceMeters,
+            Number.isFinite(distanceMeters) ? Math.max(0, distanceMeters) : Infinity,
+        );
         state._nextPerceptibility = Math.max(
             state._nextPerceptibility,
             Number.isFinite(perceptibility) ? perceptibility : 0,
@@ -332,20 +356,27 @@ export class TexturePageResidency {
         return state;
     }
 
-    finishDemandPass({ highEnterPx = null } = {}) {
-        const thresholds = highEnterPx === null
-            ? this.thresholds
-            : { ...this.thresholds, highEnterPx };
+    finishDemandPass({ highEnterDistanceM = null, highExitDistanceM = null } = {}) {
+        const thresholds = {
+            highEnterDistanceM: highEnterDistanceM ?? this.thresholds.highEnterDistanceM,
+            highExitDistanceM: highExitDistanceM ?? this.thresholds.highExitDistanceM,
+        };
         for (const state of this.states.values()) {
             state.classification = state._nextClassification;
             state.projectedDiameterPx = state._nextProjectedDiameterPx;
+            state.distanceMeters = state._nextDistanceMeters;
             state.perceptibility = state._nextPerceptibility;
             state.desiredTier = desiredTextureTier(
                 state,
-                state.projectedDiameterPx,
+                state.distanceMeters,
                 state.classification,
                 thresholds,
             );
+            if (state.desiredTier !== PAGE_TEXTURE_TIER.HIGH) {
+                state.highAdmissionBlocked = false;
+                state.highAdmissionBlockedRevision = -1;
+                state.highAdmissionBlockedPriority = -Infinity;
+            }
         }
         return this.states.values();
     }

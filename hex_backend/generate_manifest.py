@@ -13,6 +13,7 @@ import coordinate_utility as coord_util
 from release_profiles import manifest_release_descriptor
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
+    TEXTURE_BOOTSTRAP_SIZE,
     TEXTURE_PAGE_RECIPE_VERSION,
     manifest_texture_page_contract,
 )
@@ -173,8 +174,12 @@ def _validate_inventory_texture_assets(texture_page_dir, pages, recipe_version):
             raise ValueError(f"{page.asset_stem}: missing coverage transaction metadata")
         bootstrap = Path(texture_page_dir) / "bootstrap" / f"{page.asset_stem}.webp"
         with Image.open(bootstrap) as image:
-            if image.format != "WEBP" or image.size != (32, 32):
-                raise ValueError(f"{page.asset_stem}: bootstrap must be exactly 32x32 WebP")
+            expected_size = TEXTURE_BOOTSTRAP_SIZE
+            if image.format != "WEBP" or image.size != (expected_size, expected_size):
+                raise ValueError(
+                    f"{page.asset_stem}: bootstrap must be exactly "
+                    f"{expected_size}x{expected_size} WebP"
+                )
         for tier in ("low", "medium", "high"):
             payload = (Path(texture_page_dir) / tier / f"{page.asset_stem}.ktx2").read_bytes()[:12]
             if payload != b"\xabKTX 20\xbb\r\n\x1a\n":

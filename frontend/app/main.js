@@ -53,12 +53,16 @@ import {
     TexturePageResidency,
     isTier,
     setTierState,
+    desiredTextureTier,
     pruneTextureDispatchQueue,
     promoteVisibleConsumerPages,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
     textureTierRequestPlan,
+    highAdmissionRetryReady,
+    BOOTSTRAP_GPU_BYTES_PER_PAGE,
     BOOTSTRAP_MAX_RESIDENT_BYTES,
+    BOOTSTRAP_PAGE_SIZE_PX,
 } from './texture_page_residency.js';
 import {
     TEXTURE_HUD_ROWS,
@@ -126,7 +130,7 @@ const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
     : './tile_worker.js';
 
 // --- ENGINE STATE MACHINE & PERFORMANCE MONITORING ---
-const APP_VERSION = 'v0.10.0-rc5';
+const APP_VERSION = 'v0.10.0-rc6';
 const ENGINE_STATES = { MOVING_2D: 'MOVING_2D', MOVING_3D: 'MOVING_3D', SINTERING: 'SINTERING', STATIC: 'STATIC' };
 const MANIFEST_RETRY_KEY = 'manifest:tile_manifest.json';
 const RECOVERABLE_SWEEP_TILES = 'tiles';
@@ -156,18 +160,16 @@ const UNIT_HEX_WIDTH_METERS = UNIT_HEX_PX * METERS_PER_PIXEL; // 6.4m
 const TILE_LEVEL = 5;                       // streaming tile = level-5 gosper island
 const CAMERA_TERRAIN_CLEARANCE_METERS = 50;
 
-// Three deterministic imagery tiers. Quality is selected from projected screen
-// footprint, never a radial distance or inferred device class.
+// Three deterministic KTX2 imagery tiers. Green and blue are durable session
+// fallbacks; pink is selected only by 3D camera distance.
 const TEXTURE_TIER = PAGE_TEXTURE_TIER;
 const TEXTURE_RANK = PAGE_TEXTURE_RANK;
 const TEXTURE_CONFIG = Object.freeze({
-    mediumEnterPx: 96,
-    mediumExitPx: 72,  // 25% downgrade hysteresis
-    highEnterPx: 512,
-    highExitPx: 384,   // 25% downgrade hysteresis
+    highEnterDistanceM: 2000,
+    highExitDistanceM: 2500, // 25% outward downgrade hysteresis
     maxTextureJobs: 2,
     maxUploadsPerFrame: 1,
-    // 32px RGBA pages are only 4 KiB each. Keep a strict 1 MiB ceiling so a
+    // 64px RGBA pages are 16 KiB each. Keep a strict 1 MiB ceiling so a
     // larger production manifest cannot turn first-paint placeholders into a
     // stealth VRAM residency pool.
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
@@ -415,6 +417,7 @@ class PistonViewer {
             })),
         };
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
+        this.bootstrapPhaseActive = true;
         const faultParams = new URLSearchParams(window.location.search);
         this.faultGateEnabled = faultParams.get('bench') === '1' && faultParams.get('fault-gate') === '1';
         this.faultGateDiagnostics = {
@@ -424,7 +427,7 @@ class PistonViewer {
         this.faultGateSequences = { terrain: 0, texture: 0 };
 
         this.gradientMode = 1.0;
-        this.highTextureEnterPx = TEXTURE_CONFIG.highEnterPx;
+        this.highTextureDistanceM = TEXTURE_CONFIG.highEnterDistanceM;
         this.heightFactor = 0.0;
         this.transSettings = { flatThresh: 5.0, riseStart: 6.0, riseEnd: 25.0, curve: 1.0 };
         this.worldOrigin = { x: 0, y: 0 };
@@ -1368,6 +1371,9 @@ class PistonViewer {
         this._bootPlannedTerrain.clear();
         this._bootPlannedBootstrap.clear();
         this._bootPlannedKtx2.clear();
+        this.bootstrapPhaseActive = true;
+        this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
+        this._textureMilestonesDone = false;
         this.loadingScreen.reset();
         this.needsLODUpdate = true;
         this.needsRender = true;
@@ -1431,6 +1437,13 @@ class PistonViewer {
         );
     }
 
+    _formatTextureDistance(distanceM) {
+        if (!(distanceM > 0)) return 'OFF';
+        return distanceM >= 1000
+            ? `${(distanceM / 1000).toFixed(distanceM % 1000 === 0 ? 0 : 1)}km`
+            : `${distanceM}m`;
+    }
+
     initLODSliders() {
         // Non-mini fog/horizon transition; unrelated to residency.
         const rdSlider = document.getElementById('haze-distance-slider');
@@ -1446,21 +1459,21 @@ class PistonViewer {
             });
         }
 
-        // Projected high-texture threshold. This is intentionally one global
-        // quality knob rather than a device profile.
+        // Pink texture range. The runtime compares this only with full 3D
+        // camera-to-page-center distance; screen footprint is not an input.
         const texSlider = document.getElementById('tex-upgrade-slider');
         const texVal = document.getElementById('tex-upgrade-val');
         if (texSlider) {
-            texSlider.min = '128';
-            texSlider.max = '2048';
-            texSlider.step = '64';
-            texSlider.value = this.highTextureEnterPx;
-            if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
+            texSlider.min = '0';
+            texSlider.max = '5000';
+            texSlider.step = '100';
+            texSlider.value = this.highTextureDistanceM;
+            if (texVal) texVal.textContent = this._formatTextureDistance(this.highTextureDistanceM);
             texSlider.addEventListener('input', () => {
                 // Object.freeze protects defaults, so retain a deliberately
                 // tiny per-view override for manual tuning.
-                this.highTextureEnterPx = parseInt(texSlider.value, 10);
-                if (texVal) texVal.textContent = this.highTextureEnterPx + "px";
+                this.highTextureDistanceM = parseInt(texSlider.value, 10);
+                if (texVal) texVal.textContent = this._formatTextureDistance(this.highTextureDistanceM);
                 this.needsLODUpdate = true;
                 this.needsRender = true;
                 this.viewState?.commitSettingsChange();
@@ -1513,7 +1526,7 @@ class PistonViewer {
 
     applyPublicSettings(settings) {
         this.atmosphereSettings.hazeDistance = settings.hazeDistanceKm * 1000;
-        this.highTextureEnterPx = settings.highTextureEnterPx;
+        this.highTextureDistanceM = settings.highTextureDistanceM;
         this.gradientMode = settings.gradientMode;
         const hazeSlider = document.getElementById('haze-distance-slider');
         const hazeValue = document.getElementById('haze-distance-val');
@@ -1521,8 +1534,8 @@ class PistonViewer {
         if (hazeValue) hazeValue.textContent = `${settings.hazeDistanceKm}km`;
         const textureSlider = document.getElementById('tex-upgrade-slider');
         const textureValue = document.getElementById('tex-upgrade-val');
-        if (textureSlider) textureSlider.value = String(settings.highTextureEnterPx);
-        if (textureValue) textureValue.textContent = `${settings.highTextureEnterPx}px`;
+        if (textureSlider) textureSlider.value = String(settings.highTextureDistanceM);
+        if (textureValue) textureValue.textContent = this._formatTextureDistance(settings.highTextureDistanceM);
         const terrainBtn = document.getElementById('gradient-terrain');
         const gradientBtn = document.getElementById('gradient-slope');
         const terrain = settings.gradientMode === 0;
@@ -1861,9 +1874,9 @@ class PistonViewer {
             }
         }
         if (textureContract.bootstrap?.container !== 'webp' ||
-            textureContract.bootstrap?.size_px !== 32 ||
-            textureContract.bootstrap?.gpu_bytes !== 4096) {
-            throw new Error('Manifest needs the 32px transient WebP bootstrap tier');
+            textureContract.bootstrap?.size_px !== BOOTSTRAP_PAGE_SIZE_PX ||
+            textureContract.bootstrap?.gpu_bytes !== BOOTSTRAP_GPU_BYTES_PER_PAGE) {
+            throw new Error(`Manifest needs the ${BOOTSTRAP_PAGE_SIZE_PX}px transient WebP bootstrap tier`);
         }
     }
 
@@ -1936,9 +1949,8 @@ class PistonViewer {
             this.texturePageResidency = new TexturePageResidency({
                 pages: this.texturePageGrid.pages,
                 mini: this.isMiniBake,
-                mediumEnterPx: TEXTURE_CONFIG.mediumEnterPx,
-                mediumExitPx: TEXTURE_CONFIG.mediumExitPx,
-                highEnterPx: TEXTURE_CONFIG.highEnterPx,
+                highEnterDistanceM: TEXTURE_CONFIG.highEnterDistanceM,
+                highExitDistanceM: TEXTURE_CONFIG.highExitDistanceM,
             });
             this.textureStates = this.texturePageResidency.states;
             this.resourceLifecycles.settled('manifest', 'tile_manifest.json', { cause: 'world-contract-ready' });
@@ -2872,41 +2884,34 @@ class PistonViewer {
         this.log(`Retrying failed resources after camera settled (${tileCount} tiles, ${textureCount} textures).`, 'info');
     }
 
-    _desiredTextureTier(state, projectedDiameterPx, classification) {
-        if (classification === 'outside') return TEXTURE_TIER.LOW;
-
-        const previous = state.desiredTier || TEXTURE_TIER.LOW;
-        const highEnter = this._effectiveHighTextureEnterPx();
-        const highEnabled = Number.isFinite(highEnter);
-        const highExit = highEnabled ? highEnter * 0.75 : Infinity;
-
-        // High is useful only for pixels that can actually reach the viewport.
-        // Guard-only nodes still receive/preserve medium imagery for seamless
-        // entry, but cannot start an expensive high upgrade.
-        if (classification === 'visible' && highEnabled) {
-            if (previous === TEXTURE_TIER.HIGH && projectedDiameterPx >= highExit) {
-                return TEXTURE_TIER.HIGH;
-            }
-            if (projectedDiameterPx >= highEnter) return TEXTURE_TIER.HIGH;
-        }
-
-        if (previous !== TEXTURE_TIER.LOW && projectedDiameterPx >= TEXTURE_CONFIG.mediumExitPx) {
-            return TEXTURE_TIER.MEDIUM;
-        }
-        if (projectedDiameterPx >= TEXTURE_CONFIG.mediumEnterPx) return TEXTURE_TIER.MEDIUM;
-        return TEXTURE_TIER.LOW;
+    _desiredTextureTier(state, distanceMeters, classification) {
+        return desiredTextureTier(state, distanceMeters, classification, {
+            highEnterDistanceM: this._effectiveHighTextureDistanceM(),
+            highExitDistanceM: this._effectiveHighTextureExitDistanceM(),
+        });
     }
 
-    _effectiveHighTextureEnterPx() {
-        return Math.max(
-            this.highTextureEnterPx || TEXTURE_CONFIG.highEnterPx,
-            this.capabilityProfile.highTextureEnterPx,
+    _effectiveHighTextureDistanceM() {
+        return Math.min(
+            Math.max(0, this.highTextureDistanceM ?? TEXTURE_CONFIG.highEnterDistanceM),
+            Math.max(0, this.capabilityProfile.highTextureDistanceM),
         );
+    }
+
+    _effectiveHighTextureExitDistanceM() {
+        return this._effectiveHighTextureDistanceM() * (
+            TEXTURE_CONFIG.highExitDistanceM / TEXTURE_CONFIG.highEnterDistanceM
+        );
+    }
+
+    _highTextureCachePriority(state) {
+        return Number.isFinite(state?.distanceMeters) ? -state.distanceMeters : -Number.MAX_VALUE;
     }
 
     _queueTextureTier(textureResource, tier, priority = 0) {
         if (!textureResource) return;
         const state = this._textureState(textureResource);
+        if (tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) return;
         if (state.assets.has(tier) || isTier(state, tier, TIER_STATE.LOADING)) return;
         if (isTier(state, tier, TIER_STATE.QUEUED)) {
             // Mini mode seeds every medium at background priority. Promote
@@ -2949,6 +2954,7 @@ class PistonViewer {
         textureResource,
         classification,
         projectedDiameterPx,
+        distanceMeters,
         priority = 0,
         demandPreplanned = false,
     ) {
@@ -2956,21 +2962,35 @@ class PistonViewer {
         if (!demandPreplanned) {
             state.classification = classification;
             state.projectedDiameterPx = projectedDiameterPx;
+            state.distanceMeters = Number.isFinite(distanceMeters) ? distanceMeters : Infinity;
             state.perceptibility = Number.isFinite(priority) ? priority : 0;
-            state.desiredTier = this._desiredTextureTier(state, projectedDiameterPx, classification);
+            state.desiredTier = this._desiredTextureTier(state, state.distanceMeters, classification);
         }
-        this.cacheManager.updatePriority(state.key, state.perceptibility);
+        const highPriority = this._highTextureCachePriority(state);
+        this.cacheManager.updatePriority(state.key, highPriority);
+        if (state.highAdmissionBlocked && highAdmissionRetryReady(
+            state,
+            this.cacheManager.revision,
+            highPriority,
+        )) {
+            state.highAdmissionBlocked = false;
+            state.highAdmissionBlockedRevision = -1;
+            state.highAdmissionBlockedPriority = -Infinity;
+        }
 
-        // Near first-view imagery deliberately skips the legacy 128/256px
-        // rungs: WebP32 gives immediate coverage, then high4096 is the next
-        // network/decode job. Guard, off-frustum, and below-threshold pages
-        // receive medium256 only. Each request covers a full 1024m page, never
-        // individual terrain islands, which keeps HTTP overhead bounded.
-        const requestPlan = textureTierRequestPlan(state, { isMoving: this.isMovingView });
+        // Yellow is a one-way first-display bridge. Green then establishes the
+        // active coverage floor; blue remains a durable fallback underneath
+        // distance-selected pink.
+        const requestPlan = textureTierRequestPlan(state, {
+            isMoving: this.isMovingView,
+            allowBootstrap: this.bootstrapPhaseActive,
+        });
         for (const requestedTier of requestPlan) {
             const tierPriority = requestedTier === TEXTURE_TIER.BOOTSTRAP
                 ? priority + 1500
-                : (requestedTier === TEXTURE_TIER.HIGH ? priority : priority + 500);
+                : requestedTier === TEXTURE_TIER.LOW
+                ? priority + 1000
+                : (requestedTier === TEXTURE_TIER.MEDIUM ? priority + 500 : priority);
             this._queueTextureTier(textureResource, requestedTier, tierPriority);
         }
 
@@ -3101,14 +3121,13 @@ class PistonViewer {
         if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
         }
-        if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.MEDIUM)) {
-            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM, false, true);
-        }
-        if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.LOW)) {
-            this._dropTextureTier(state.key, TEXTURE_TIER.LOW, false, true);
-        }
         if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP, false, true);
+        }
+        if (state.desiredTier !== TEXTURE_TIER.HIGH) {
+            state.highAdmissionBlocked = false;
+            state.highAdmissionBlockedRevision = -1;
+            state.highAdmissionBlockedPriority = -Infinity;
         }
     }
 
@@ -3142,8 +3161,7 @@ class PistonViewer {
         let bytes = bootstrapEntries.reduce((sum, entry) => sum + entry.bytes, 0);
         if (bytes <= TEXTURE_CONFIG.bootstrapBudgetBytes) return true;
         // Never blank the current visible page to make room for another
-        // placeholder. Evict the least perceptible non-visible pages first;
-        // they can fetch their 32px block again if the camera returns.
+        // placeholder. Yellow is never fetched again after first display.
         const victims = bootstrapEntries
             .map(entry => this.textureStates.get(entry.key))
             .filter(state => state && state.key !== protectedKey && state.classification !== 'visible')
@@ -3157,6 +3175,39 @@ class PistonViewer {
             }
         }
         return bytes <= TEXTURE_CONFIG.bootstrapBudgetBytes;
+    }
+
+    _finishTextureBootstrapPhase() {
+        if (!this.bootstrapPhaseActive) return;
+        this.bootstrapPhaseActive = false;
+        this.textureQueue = this.textureQueue.filter(task => {
+            if (task.tier !== TEXTURE_TIER.BOOTSTRAP) return true;
+            const state = this.textureStates.get(task.key);
+            if (state) setTierState(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.ABSENT);
+            this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
+            this.workerLaneStats.texture.cancelledQueued++;
+            return false;
+        });
+        const retainedResults = [];
+        for (const item of this.textureResultQueue) {
+            if (item.task.tier !== TEXTURE_TIER.BOOTSTRAP) {
+                retainedResults.push(item);
+                continue;
+            }
+            item.result.imageBitmap?.close?.();
+            const state = this.textureStates.get(item.task.key);
+            if (state) setTierState(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.ABSENT);
+            this.resourceLifecycles.delete('texture', `${item.task.key}/${item.task.tier}`);
+        }
+        this.textureResultQueue = retainedResults;
+        for (const state of this.textureStates.values()) {
+            if (!isTier(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.LOADING)) continue;
+            // The worker fetch cannot be aborted, but it no longer owns page
+            // scheduling state; green may proceed immediately and the late
+            // ImageBitmap will be closed in processTextureResults().
+            setTierState(state, TEXTURE_TIER.BOOTSTRAP, TIER_STATE.ABSENT);
+            this.resourceLifecycles.delete('texture', `${state.key}/${TEXTURE_TIER.BOOTSTRAP}`);
+        }
     }
 
     _installTextureResult(task, result) {
@@ -3178,7 +3229,7 @@ class PistonViewer {
                 result.gpuBytes || 0,
                 victimKey => this._dropTextureTier(victimKey, TEXTURE_TIER.HIGH, true),
                 new Set(state.classification === 'visible' ? [state.key] : []),
-                state.perceptibility,
+                this._highTextureCachePriority(state),
                 victimKey => {
                     const victim = this.textureStates.get(victimKey);
                     return !!victim && (
@@ -3189,13 +3240,26 @@ class PistonViewer {
             );
             if (!admitted) {
                 texture.dispose();
-                state.desiredTier = TEXTURE_TIER.MEDIUM;
+                state.highAdmissionBlocked = true;
+                state.highAdmissionBlockedRevision = this.cacheManager.revision;
+                state.highAdmissionBlockedPriority = this._highTextureCachePriority(state);
                 this._reconcileTextureState(state);
+                this._scheduleTextureQuality(
+                    state.page,
+                    state.classification,
+                    state.projectedDiameterPx,
+                    state.distanceMeters,
+                    state.perceptibility,
+                    true,
+                );
                 this.resourceLifecycles.settled('texture', `${state.key}/${task.tier}`, {
                     cause: 'budget-rejected', tier: task.tier,
                 });
                 return;
             }
+            state.highAdmissionBlocked = false;
+            state.highAdmissionBlockedRevision = -1;
+            state.highAdmissionBlockedPriority = -Infinity;
             this.texStats.highUploadSize = result.width;
             this.texStats.highSourceSize = result.sourceWidth || result.width;
             this.texStats.highSkippedTopMips = result.skippedTopMips || 0;
@@ -3245,6 +3309,12 @@ class PistonViewer {
             if (index < 0) break;
             const { task, result } = this.textureResultQueue.splice(index, 1)[0];
             const state = this._textureState(task.textureResource);
+            if (task.tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) {
+                result.imageBitmap?.close?.();
+                setTierState(state, task.tier, TIER_STATE.ABSENT);
+                this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
+                continue;
+            }
             if (task.tier === TEXTURE_TIER.HIGH && state.desiredTier !== TEXTURE_TIER.HIGH) {
                 // Demand changed during transcode. These are still CPU-side
                 // bytes, so avoid a pointless GPU upload and immediate drop.
@@ -3268,10 +3338,10 @@ class PistonViewer {
                 this.textureStates,
                 {
                     isMoving: this.isMovingView,
-                    // Bootstrap only gates the same page's upgrade. There is
-                    // no whole-corpus low/medium barrier ahead of a visible
-                    // high request.
-                    lowCoverageFirst: false,
+                    // Active green coverage is the durable floor. Yellow may
+                    // race it only during the one-way startup phase.
+                    lowCoverageFirst: true,
+                    lowCoverageIncludesOutside: false,
                     dispatchSequence: this.textureDispatchSequence,
                 },
             );
@@ -3311,12 +3381,17 @@ class PistonViewer {
                 if (result.networkBytes) {
                     this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
                 }
+                if (task.tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) {
+                    result.imageBitmap?.close?.();
+                    return;
+                }
                 this.textureResultQueue.push({ task, result });
                 this.resourceLifecycles.ready('texture', `${task.key}/${task.tier}`, {
                     cause: 'decoded', tier: task.tier,
                 });
                 this.needsRender = true;
             }).catch(error => {
+                if (task.tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) return;
                 setTierState(state, task.tier, TIER_STATE.FAILED);
                 this._markTextureFailed(task.key, task.tier, error);
                 this._texErrorCount++;
@@ -3413,6 +3488,7 @@ class PistonViewer {
                 residency.contribute(page, {
                     classification,
                     projectedDiameterPx,
+                    distanceMeters,
                     perceptibility: priority,
                 });
             }
@@ -3421,12 +3497,13 @@ class PistonViewer {
         consume(plan.guard, 'guard');
         consume(plan.visible, 'visible');
         residency.finishDemandPass({
-            highEnterPx: this._effectiveHighTextureEnterPx(),
+            highEnterDistanceM: this._effectiveHighTextureDistanceM(),
+            highExitDistanceM: this._effectiveHighTextureExitDistanceM(),
         });
 
         // A visible island's conservative texture-page AABB can cross a page
         // frustum boundary. Promote only those actually bound adjacent pages
-        // to guard/medium; never revive beta's whole outside corpus preload.
+        // to guard demand; distance remains the sole blue/pink selector.
         const visibleConsumerPages = new Set();
         for (const [consumerKey, visibility] of this.visibilityByKey) {
             if (visibility?.classification !== 'visible') continue;
@@ -3459,7 +3536,7 @@ class PistonViewer {
                 );
             }
             if (!textureStateHasDemand(state, { includeOutside: false })) {
-                this.cacheManager.updatePriority(state.key, 0);
+                this.cacheManager.updatePriority(state.key, this._highTextureCachePriority(state));
                 this._reconcileTextureState(state);
                 continue;
             }
@@ -3467,6 +3544,7 @@ class PistonViewer {
                 state.page,
                 state.classification,
                 state.projectedDiameterPx,
+                state.distanceMeters,
                 state.perceptibility,
                 true,
             );
@@ -4197,6 +4275,7 @@ class PistonViewer {
 
         const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
         const hasDisplayedPage = Object.values(displayed).some(pages => pages.size > 0);
+        if (hasDisplayedPage) this._finishTextureBootstrapPhase();
         if (!this._textureMilestonesDone && hasDisplayedPage) {
             this.profiler?.milestone('firstTexture');
             // Do not wait for guard/background geometry to drain: that is not
@@ -4289,15 +4368,8 @@ class PistonViewer {
                 this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
             }
 
-            // Make the first operational geometry's imagery the next bootstrap
-            // work, even if page-level planning initially ranked another
-            // visible/guard cell ahead of it. This ties first paint to the tile
-            // the user can actually see instead of draining an arbitrary page
-            // prefix before a matching texture arrives.
-            for (const pageKey of t.texturePageKeys) {
-                const page = this.texturePageGrid?.pageByKey?.get(pageKey);
-                if (page) this._queueTextureTier(page, TEXTURE_TIER.BOOTSTRAP, 2e9);
-            }
+            // Page-level demand owns the one-way startup bridge. Instantiating
+            // geometry must never resurrect yellow or outrank queued KTX2.
             if (!this.bootstrapDiagnostics.firstConsumer) {
                 this.bootstrapDiagnostics.firstConsumer = {
                     tileKey: key,
@@ -4806,8 +4878,8 @@ class PistonViewer {
             }
         }
 
-        const residentTiers = { bootstrap32: 0, low128: 0, medium256: 0, high4096: 0 };
-        const activeTiers = { bootstrap32: 0, low128: 0, medium256: 0, high4096: 0, none: 0 };
+        const residentTiers = { bootstrap64: 0, low128: 0, medium256: 0, high4096: 0 };
+        const activeTiers = { bootstrap64: 0, low128: 0, medium256: 0, high4096: 0, none: 0 };
         const desiredTiers = { low128: 0, medium256: 0, high4096: 0 };
         for (const state of this.textureStates.values()) {
             for (const tier of state.assets.keys()) residentTiers[tier]++;
@@ -4828,7 +4900,7 @@ class PistonViewer {
                 workers: this.capabilityProfile.workerCount,
                 textureBudgetBytes: this.capabilityProfile.textureBudgetBytes,
                 maxTextureJobs: this.capabilityProfile.maxTextureJobs,
-                highTextureEnterPx: this._effectiveHighTextureEnterPx(),
+                highTextureDistanceM: this._effectiveHighTextureDistanceM(),
                 guardMarginScale: this.capabilityProfile.guardMarginScale,
             },
             activeTileCount: this.tiles.size,
@@ -4896,10 +4968,11 @@ class PistonViewer {
             textureResidency: {
                 identity: 'global-page',
                 bootstrapPolicy: {
-                    pageSizePx: 32,
-                    decodedBytesPerPage: 4096,
+                    active: this.bootstrapPhaseActive,
+                    pageSizePx: BOOTSTRAP_PAGE_SIZE_PX,
+                    decodedBytesPerPage: BOOTSTRAP_GPU_BYTES_PER_PAGE,
                     budgetBytes: TEXTURE_CONFIG.bootstrapBudgetBytes,
-                    residentPages: residentTiers.bootstrap32,
+                    residentPages: residentTiers[TEXTURE_TIER.BOOTSTRAP],
                     residentBytes: Array.from(this.vramLedger.textureEntries.values())
                         .filter(entry => entry.tier === TEXTURE_TIER.BOOTSTRAP)
                         .reduce((sum, entry) => sum + entry.bytes, 0),
@@ -4916,11 +4989,9 @@ class PistonViewer {
                     .reduce((sum, state) => sum + Array.from(state.tierStates.values()).filter(v => v === TIER_STATE.LOADING).length, 0),
                 queued: this.textureQueue.length,
                 resultQueue: this.textureResultQueue.length,
-                thresholdsPx: {
-                    mediumEnter: TEXTURE_CONFIG.mediumEnterPx,
-                    mediumExit: TEXTURE_CONFIG.mediumExitPx,
-                    highEnter: this._effectiveHighTextureEnterPx(),
-                    highExit: this._effectiveHighTextureEnterPx() * 0.75,
+                thresholdsDistanceM: {
+                    highEnter: this._effectiveHighTextureDistanceM(),
+                    highExit: this._effectiveHighTextureExitDistanceM(),
                 },
                 maxTextureSize: this.texStats.maxTextureSize,
                 highSourceSize: this.texStats.highSourceSize,

@@ -57,11 +57,11 @@ test('fraction never decreases when the plan grows after completions', () => {
 test('fraction never decreases when measured averages shrink the estimate', () => {
     const model = bootedModel();
     model.manifestLoaded(95_000);
-    model.texturePlanned(10, 'bootstrap32');
+    model.texturePlanned(10, 'bootstrap64');
     model.texturePlanned(2, 'high4096');
     // First high arrives far smaller than the seed average: pending estimate
     // shrinks, which could move the raw fraction either way — never down.
-    model.textureDone(2_000, 'bootstrap32');
+    model.textureDone(2_000, 'bootstrap64');
     const before = model.fraction();
     model.textureDone(50_000, 'high4096');
     assert.ok(model.fraction() >= before);
@@ -72,7 +72,7 @@ test('planned counts are max-seen, and texture classes split by tier', () => {
     model.terrainPlanned(5);
     model.terrainPlanned(3); // stale, lower snapshot must not shrink the plan
     assert.equal(model.classes.terrain.planned, 5);
-    model.texturePlanned(4, 'bootstrap32');
+    model.texturePlanned(4, 'bootstrap64');
     model.texturePlanned(4, 'medium256');
     assert.equal(model.classes.bootstrap.planned, 4);
     assert.equal(model.classes.ktx2.planned, 4);
@@ -86,7 +86,7 @@ test('bar stays indeterminate until the manifest and a terrain plan exist', () =
     assert.equal(model.determinate(), false);
     // Textures alone are not enough: a lone 3 KB bootstrap made the raw
     // ratio ~0.97 and the monotonic clamp pinned it (the live-boot bug).
-    model.texturePlanned(5, 'bootstrap32');
+    model.texturePlanned(5, 'bootstrap64');
     assert.equal(model.determinate(), false);
     model.terrainPlanned(1);
     assert.equal(model.determinate(), true);
@@ -100,11 +100,11 @@ test('phase lines tell the truth in priority order', () => {
     model.terrainPlanned(2);
     model.terrainDone(1_000);
     model.terrainDone(1_000);
-    model.texturePlanned(3, 'bootstrap32');
+    model.texturePlanned(3, 'bootstrap64');
     assert.equal(model.phaseLine(1000), 'Painting aerial photos…');
-    model.textureDone(100, 'bootstrap32');
-    model.textureDone(100, 'bootstrap32');
-    model.textureDone(100, 'bootstrap32');
+    model.textureDone(100, 'bootstrap64');
+    model.textureDone(100, 'bootstrap64');
+    model.textureDone(100, 'bootstrap64');
     assert.equal(model.phaseLine(1000), 'First ridge almost up…');
 });
 
@@ -170,8 +170,8 @@ test('counter line lists real counts and measured megabytes', () => {
     model.manifestLoaded(95_000);
     model.terrainPlanned(23);
     model.terrainDone(280_000);
-    model.texturePlanned(41, 'bootstrap32');
-    model.textureDone(3_000, 'bootstrap32');
+    model.texturePlanned(41, 'bootstrap64');
+    model.textureDone(3_000, 'bootstrap64');
     assert.equal(model.counterLine(), 'terrain 1/23 · textures 1/41 · 0.4 MB');
 });
 

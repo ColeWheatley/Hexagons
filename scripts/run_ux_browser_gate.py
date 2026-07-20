@@ -143,10 +143,10 @@ async def main(url, output):
                 haze.dispatchEvent(new Event('input',{bubbles:true}));const hazeScheduled=v.needsRender;await frame();
                 record('haze-distance-slider',v.atmosphereSettings.hazeDistance!==hazeBefore&&hazeScheduled,'value and render updated');
 
-                const texture=document.querySelector('#tex-upgrade-slider'), textureBefore=v.highTextureEnterPx;
+                const texture=document.querySelector('#tex-upgrade-slider'), textureBefore=v.highTextureDistanceM;
                 texture.value=String(Math.min(Number(texture.max),Number(texture.value)+Number(texture.step)));v.needsRender=false;
                 texture.dispatchEvent(new Event('input',{bubbles:true}));const textureScheduled=v.needsRender;await frame();
-                record('tex-upgrade-slider',v.highTextureEnterPx!==textureBefore&&textureScheduled,'value and render updated');
+                record('tex-upgrade-slider',v.highTextureDistanceM!==textureBefore&&textureScheduled,'value and render updated');
 
                 const slope=document.querySelector('#gradient-slope'),terrain=document.querySelector('#gradient-terrain');
                 v.needsRender=false;slope.click();const slopeScheduled=v.needsRender;await frame();

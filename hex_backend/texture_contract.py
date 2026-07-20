@@ -7,10 +7,12 @@ The global page contract has no geometry ownership. Runtime storage policy
 deliberately does not belong here.
 """
 
-TEXTURE_PAGE_RECIPE_VERSION = "4.1.0"  # demand-driven WebP bootstrap + KTX2 tiers
+TEXTURE_PAGE_RECIPE_VERSION = "4.2.0"  # 64px one-way WebP bootstrap + durable KTX2 tiers
 TEXTURE_CONTAINER = "ktx2"
 TEXTURE_PAGE_URL_TEMPLATE = "aerial_pages/{tier}/texture_{page_x}_{page_y}.ktx2"
-TEXTURE_BOOTSTRAP_SIZE = 32
+TEXTURE_BOOTSTRAP_SIZE = 64
+TEXTURE_BOOTSTRAP_WEBP_QUALITY = 45
+TEXTURE_BOOTSTRAP_WEBP_METHOD = 4
 TEXTURE_BOOTSTRAP_URL_TEMPLATE = "aerial_pages/bootstrap/texture_{page_x}_{page_y}.webp"
 
 # Ordered from cheapest/farthest to most detailed.  Each KTX2 contains a full

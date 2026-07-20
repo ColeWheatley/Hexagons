@@ -257,12 +257,22 @@ assert.equal(take(retainedMiniQueue, miniStates, {
     lowCoverageIncludesOutside: true,
 }).tier, TIER.LOW);
 
-// Runtime integration: bootstrap gates only the same page. Visible pages may
-// jump directly to high; outside pages are demand-scoped even in Stubai beta,
-// with conservative visible-consumer pages promoted to medium guard demand.
+// Runtime integration: green coverage gates refinement, yellow is permanently
+// disabled after first display, and outside pages remain demand-scoped.
 const mainSource = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');
 assert.match(mainSource, /selectTextureDispatchTaskIndex\(\s*this\.textureQueue,\s*this\.textureStates,/s);
-assert.match(mainSource, /lowCoverageFirst:\s*false/);
+assert.match(mainSource, /lowCoverageFirst:\s*true/);
+assert.match(mainSource, /allowBootstrap:\s*this\.bootstrapPhaseActive/);
+assert.match(mainSource, /if \(hasDisplayedPage\) this\._finishTextureBootstrapPhase\(\)/);
+assert.match(mainSource, /return Number\.isFinite\(state\?\.distanceMeters\) \? -state\.distanceMeters/);
+assert.match(mainSource, /this\._highTextureCachePriority\(state\),\s*victimKey =>/s);
+assert.doesNotMatch(mainSource, /_queueTextureTier\(page,\s*TEXTURE_TIER\.BOOTSTRAP,\s*2e9\)/);
+assert.doesNotMatch(mainSource, /state\.desiredTier\s*=\s*TEXTURE_TIER\.MEDIUM/,
+    'cache admission must not rewrite distance-derived quality intent');
+assert.match(mainSource, /state\.highAdmissionBlocked = true;[\s\S]*?this\._scheduleTextureQuality\(/);
+assert.doesNotMatch(mainSource,
+    /classification === 'outside' && state\.assets\.has\(TEXTURE_TIER\.(?:LOW|MEDIUM)\)/,
+    'ordinary frustum churn must preserve already-paid green and blue pages');
 assert.match(mainSource, /pruneTextureDispatchQueue\(\s*this\.textureQueue,\s*residency\.states,/s);
 assert.match(mainSource, /promoteVisibleConsumerPages\(residency\.states,\s*visibleConsumerPages\)/s);
 assert.match(mainSource, /textureStateHasDemand\(state, \{ includeOutside: false \}\)/);
