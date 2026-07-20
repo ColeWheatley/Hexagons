@@ -2352,7 +2352,7 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_global_pages_v4';
+        material.customProgramCacheKey = () => 'piston_hex_global_pages_v5_signed_skirts';
 
         const pageSize = this.texturePageGrid.pageSize;
         const sourceOrigin = this.worldOrigin;
@@ -2556,7 +2556,18 @@ class PistonViewer {
                          // below the DEM height this skirt was baked against.
                          // Up to 12 m of slack beyond 1.2 km seals those
                          // steps; near skirts stay exactly DEM-deep.
-                         dVal += clamp((vInstDist - 1200.0) / 3000.0, 0.0, 1.0) * 12.0;
+                         // dVal is signed (this cap height - neighbor height).
+                         // Extend beyond the neighbor in the same direction as
+                         // the encoded edge. Adding a positive margin to a
+                         // negative/uphill delta shortens the wall and opens a
+                         // hole through which farther terrain can pass depth.
+                         float skirtExtension = clamp(
+                             (vInstDist - 1200.0) / 3000.0,
+                             0.0,
+                             1.0
+                         ) * 12.0;
+                         float skirtDirection = dVal < 0.0 ? -1.0 : 1.0;
+                         dVal += skirtDirection * skirtExtension;
 
                          transformed.y = animH - (dVal * uHeightFactor);
                     }
