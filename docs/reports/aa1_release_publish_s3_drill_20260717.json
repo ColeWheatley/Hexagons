@@ -1,0 +1,61 @@
+{
+  "bucket": "wheatley.cloud",
+  "cleanup": "temporary prefix removed",
+  "completed_publish": {
+    "assets_verified": [
+      {
+        "cache_control": "public, max-age=31536000, immutable",
+        "content_type": "application/octet-stream",
+        "decode_sample": true,
+        "key": "releases/5a4b765e140c166be4b1/tiles_bin/gosper_1_2.bin",
+        "sha256": "d6eb0973cb3f60a721ee7c476b353338fe63e957e511ddb53f3abea0738480ee"
+      },
+      {
+        "cache_control": "public, max-age=31536000, immutable",
+        "content_type": "image/webp",
+        "decode_sample": true,
+        "key": "releases/5a4b765e140c166be4b1/aerial_pages/bootstrap/texture_1_2.webp",
+        "sha256": "3fe79651a92ea3850c3fc3dd9519a67c7f70b598fa238a3fd92042f6446e6452"
+      },
+      {
+        "cache_control": "public, max-age=31536000, immutable",
+        "content_type": "image/ktx2",
+        "decode_sample": true,
+        "key": "releases/5a4b765e140c166be4b1/aerial_pages/low/texture_1_2.ktx2",
+        "sha256": "c7542f50bfec2e80e2341172b01c9b2dfeb67a56529192917261b9cc48aaa164"
+      },
+      {
+        "cache_control": "public, max-age=31536000, immutable",
+        "content_type": "image/ktx2",
+        "decode_sample": true,
+        "key": "releases/5a4b765e140c166be4b1/aerial_pages/medium/texture_1_2.ktx2",
+        "sha256": "c7542f50bfec2e80e2341172b01c9b2dfeb67a56529192917261b9cc48aaa164"
+      },
+      {
+        "cache_control": "public, max-age=31536000, immutable",
+        "content_type": "image/ktx2",
+        "decode_sample": true,
+        "key": "releases/5a4b765e140c166be4b1/aerial_pages/high/texture_1_2.ktx2",
+        "sha256": "c7542f50bfec2e80e2341172b01c9b2dfeb67a56529192917261b9cc48aaa164"
+      }
+    ],
+    "pointer_cache_control": "no-cache, no-store, must-revalidate",
+    "pointer_flipped": true,
+    "pointer_sha256": "5705eb4e1241fe15d4d311b6877e8c77523a3841ff36f62fe2db9a50105f9154",
+    "release": "5a4b765e140c166be4b1",
+    "staged_manifest_cache_control": "public, max-age=31536000, immutable"
+  },
+  "interrupted_publish": {
+    "byte_identical": true,
+    "mutable_pointer_sha256_after": "a27c77af1ee7f78d42fbe4753e88e4db0d2c76ce53e4eb5061992fcdcbceff5b",
+    "mutable_pointer_sha256_before": "a27c77af1ee7f78d42fbe4753e88e4db0d2c76ce53e4eb5061992fcdcbceff5b",
+    "uploads_before_interrupt": 1
+  },
+  "live_beta_pointer_touched": false,
+  "prefix": "hexagons/beta-drills/aa1-20260717-205138",
+  "tattoo_policy": {
+    "production_mode_copy_rejected_with_flag": true,
+    "real_beta_stubai_accepted_with_explicit_flag": true,
+    "real_beta_stubai_rejected_without_flag": true
+  }
+}

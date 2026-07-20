@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "environment": "self-hosted Apple M1 Pro release matrix, 2026-07-17 r4",
+  "allowedRegressionPercent": 25,
+  "medians": {
+    "milestones.loaderHidden": 874.0,
+    "milestones.visibleTexturedCoverage": 240.0,
+    "frames.p95_ms": 10.0,
+    "frames.p99_ms": 16.3
+  }
+}

@@ -79,11 +79,11 @@
                     <!-- Basic Stats (Always Visible) -->
                     <div class="hud-item">
                         <span>FPS / ZOOM</span>
-                        <span class="value" id="fps-counter">--</span>
+                        <span class="value" id="fps-counter"></span>
                     </div>
                     <div class="hud-item">
                         <span>VISIBLE GEOMETRY</span>
-                        <span class="value" id="hex-count">-- VISIBLE</span>
+                        <span class="value" id="hex-count"></span>
                     </div>
 
                     <!-- Position & Debug (Collapsible) -->
@@ -95,31 +95,31 @@
                         <div class="collapsible-content" id="debug-content" hidden aria-hidden="true">
                             <div class="hud-item">
                                 <span>TRIANGLES</span>
-                                <span class="value" id="tri-count">--</span>
+                                <span class="value" id="tri-count"></span>
                             </div>
                             <div class="hud-item">
                                 <span>DRAW / GPU OBJECTS</span>
-                                <span class="value" id="draw-stats">Calls: -- | G:-- | T:--</span>
+                                <span class="value" id="draw-stats"></span>
                             </div>
                             <div class="hud-item">
                                 <span>SECTOR</span>
-                                <span class="value" id="sector-val">--</span>
+                                <span class="value" id="sector-val"></span>
                             </div>
                             <div class="hud-item">
                                 <span>HEX</span>
-                                <span class="value" id="hex-val">--</span>
+                                <span class="value" id="hex-val"></span>
                             </div>
                             <div class="hud-item" style="display: none;">
                                 <span>WORLD XY</span>
-                                <span class="value" id="world-val">--</span>
+                                <span class="value" id="world-val"></span>
                             </div>
                             <div class="hud-item">
                                 <span>TILE HEIGHT</span>
-                                <span class="value" id="tile-height">--m</span>
+                                <span class="value" id="tile-height"></span>
                             </div>
                             <div class="hud-item">
                                 <span>CAMERA HEIGHT</span>
-                                <span class="value" id="camera-height">--m</span>
+                                <span class="value" id="camera-height"></span>
                             </div>
                             <div class="hud-item">
                                 <span>VIEW URL</span>
@@ -162,7 +162,7 @@
                                 style="flex-direction: column; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>SETTLED NEAR BANDS</span>
-                                    <span class="value" id="near-lod-bands">--</span>
+                                    <span class="value" id="near-lod-bands"></span>
                                 </div>
                                 <div style="font-size: 10px; color: #aaa;">unit / L1 / L2</div>
                             </div>
@@ -170,10 +170,10 @@
                             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                                 <div style="display: flex; justify-content: space-between; width: 100%;">
                                     <span>FAR HIERARCHY</span>
-                                    <span class="value" id="far-lod-bands">--</span>
+                                    <span class="value" id="far-lod-bands"></span>
                                 </div>
-                                <div id="moving-lod-summary" style="font-size: 10px; color: #aaa;">moving: --</div>
-                                <div id="settled-lod-summary" style="font-size: 10px; color: #aaa;">settled: --</div>
+                                <div id="moving-lod-summary" style="font-size: 10px; color: #aaa;"></div>
+                                <div id="settled-lod-summary" style="font-size: 10px; color: #aaa;"></div>
                             </div>
                         </div>
                     </div>
@@ -213,16 +213,14 @@
                         <span>STATUS LOG</span>
                         <button id="copy-log-btn" class="console-btn">COPY</button>
                     </div>
-                    <div id="console-output" class="console-box" role="log" aria-live="polite" aria-relevant="additions">
-                        <div class="log-line">Waiting for system...</div>
-                    </div>
+                    <div id="console-output" class="console-box" role="log" aria-live="polite" aria-relevant="additions"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <aside class="navigation-overlay" aria-label="Map orientation and distance scale">
-        <div class="distance-scale" aria-live="polite"><span id="distance-scale-bar" class="distance-scale-bar"></span><span id="distance-scale-label">—</span></div>
+        <div class="distance-scale" aria-live="polite"><span id="distance-scale-bar" class="distance-scale-bar"></span><span id="distance-scale-label"></span></div>
         <div class="compass" aria-label="North orientation"><span id="compass-needle" class="compass-needle" aria-hidden="true">▲</span><span>N</span></div>
     </aside>
     <div class="legend glass-panel" aria-label="Slope legend">
