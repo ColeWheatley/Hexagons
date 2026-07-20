@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
+from shapely.geometry import box
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "hex_backend"
@@ -42,7 +43,7 @@ def inventory_fixture(root: Path):
         "geometry_recipe": {"version": waffle_iron.BAKER_VERSION, "format": "GSP3"},
         "texture_recipe": {
             "version": waffle_iron.texture_page_cache_version(False, "production", None),
-            "contract_version": "4.2.0",
+            "contract_version": "4.2.1",
             "encoding_profile": "production",
             "encoding_effort": 4,
             "diagnostic_tattoos": False,
@@ -109,6 +110,42 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(payload["geometry"], [])
         self.assertEqual(payload["progress"]["geometry_total"], 0)
         self.assertEqual(payload["excluded_geometry"][0]["status"], "excluded")
+
+    def test_geometry_leaf_validity_is_clipped_to_aerial_coverage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            info = waffle_iron.gosper_island_info(1, 2)
+            bounds = info["bounds"]
+            transform = from_origin(bounds[0] - 50, bounds[3] + 50, 5, 5)
+            width = max(1, int((bounds[2] - bounds[0] + 100) / 5) + 1)
+            height = max(1, int((bounds[3] - bounds[1] + 100) / 5) + 1)
+            profile = {
+                "driver": "GTiff", "width": width, "height": height,
+                "count": 1, "dtype": "float32", "crs": "EPSG:31254",
+                "transform": transform, "nodata": -9999.0,
+            }
+            dem_path = root / "dem.tif"
+            grad_path = root / "gradient.tif"
+            with rasterio.open(dem_path, "w", **profile) as target:
+                target.write(np.full((height, width), 1500, dtype=np.float32), 1)
+            gradient_profile = dict(profile, count=2)
+            with rasterio.open(grad_path, "w", **gradient_profile) as target:
+                target.write(np.zeros((2, height, width), dtype=np.float32))
+
+            center_x = (bounds[0] + bounds[2]) / 2
+            coverage = box(bounds[0] - 1, bounds[1] - 1, center_x, bounds[3] + 1)
+            output = root / "tiles"
+            with rasterio.open(dem_path) as dem, rasterio.open(grad_path) as gradient:
+                wrote = waffle_iron.bake_gosper_binary(
+                    1, 2, dem, gradient, output_dir=str(output),
+                    source_coverage=coverage,
+                )
+            self.assertTrue(wrote)
+            valid = waffle_iron.read_gsp_unit_valid(output / "gosper_1_2.bin")
+            unit_x = info["centerX"] + coordinate_utility.gosper_tile_geometry()["offx"]
+            self.assertTrue(valid.any())
+            self.assertTrue((~valid).any())
+            self.assertTrue(np.all(unit_x[valid] <= center_x))
 
     def test_exact_page_replacement_preserves_only_current_inventory_keys(self):
         with tempfile.TemporaryDirectory() as temp:

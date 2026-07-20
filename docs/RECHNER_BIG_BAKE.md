@@ -13,7 +13,7 @@ not a hand-selected rectangle and not old output files, defines coverage.
   page workers, and four independent upload workers.
 - CUDA is optional. The measured sample was dominated by CPU BasisU encoding;
   no GPU path is enabled or claimed faster.
-- Production is clean 8×6 XUASTC, quality 90, effort 4, with exactly one 32×32
+- Production is clean 8×6 XUASTC, quality 90, effort 4, with exactly one 64×64
   WebP and low 128 / medium 256 / high 4096 KTX2 per texture page. Production
   tattoos are rejected. Low and medium remain independent tiers, never a
   prerequisite for a visible page to jump from WebP to high.
@@ -22,6 +22,11 @@ not a hand-selected rectangle and not old output files, defines coverage.
   rejects unexpected, missing, stale-recipe, incomplete, or malformed assets.
 - Geometry, coverage metadata, recipe markers, and all four page assets use
   same-filesystem temporary writes and atomic replacement/commit markers.
+- Production GSP leaf validity is clipped to the authoritative orthophoto
+  union as well as DEM validity. Partially covered boundary islands retain
+  their source-backed leaves; terrain with DEM but no usable imagery cannot
+  demand pages or enter the manifest. Aggregate LOD overdraw may use bounded
+  nearest-edge padding, while unit-cap imagery remains a hard requirement.
 
 ## Rechner prerequisites
 
@@ -152,9 +157,9 @@ presented as an optimization result.
 The actual inventory runner completed the same five-island/eight-page sample
 in 54.82 s, then resumed in 0.46 s with all five geometry units and eight page
 transactions verified/skipped. Its strict manifest contained WebP plus all
-three KTX2 URLs for every page and every WebP decoded as exactly 32×32.
+three KTX2 URLs for every page. The current bootstrap contract is 64×64.
 
-## Current Rechner audit (2026-07-19)
+## Current Rechner audit (2026-07-20)
 
 Hardware passes: Ryzen 9 5950X (16C/32T), 62 GiB RAM, RTX 3090 Ti with 23,028
 MiB VRAM, driver 580.167.08, CUDA runtime 13.0/toolkit 12.5, and 204 GiB free.
@@ -174,7 +179,12 @@ unexpected files. The source/DEM intersection is
 texture pages. Estimated final output is 37.10 GB, temporary peak 26.69 GB, and
 the safety-margin requirement is 95.67 GB against 219.01 GB free.
 
-The sole remaining preflight failure is that AWS CLI has no non-interactive
-credentials. No production inventory or bake service is created until
-`pixi run aws login` succeeds. After login, rerun `preflight`, then `start`;
-do not hand-edit coverage bounds or copy stale output into the run.
+AWS CLI authentication is active. Run `20260720T152414Z-c70274835d20`
+validated the corpus, completed 8,148 exact-DEM geometry islands, progressively
+uploaded 1,493 immutable objects, and proved 64×64 WebP plus low/medium/high
+transactions. It was stopped safely after a deterministic exterior page
+exposed DEM-valid leaves outside the orthophoto union. GSP recipe 6.1.0 fixes
+that inventory leak by clipping leaf validity to source imagery; the formerly
+failing `texture_-17_204` then completed its full transaction. Resume from a
+new exact pushed revision so the new geometry recipe and release upload prefix
+cannot be confused with already uploaded 6.0.1 objects.

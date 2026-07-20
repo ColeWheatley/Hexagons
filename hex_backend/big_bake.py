@@ -14,6 +14,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import rasterio
+from shapely.geometry import box
+from shapely.ops import unary_union
 
 import bake_inventory
 import generate_manifest
@@ -30,13 +32,17 @@ import release_publish
 _GEOMETRY_CONTEXT = {}
 
 
-def _init_geometry_worker(dem_path: str, gradient_path: str, output_dir: str) -> None:
+def _init_geometry_worker(
+    dem_path: str, gradient_path: str, output_dir: str,
+    aerial_bounds: list[list[float]],
+) -> None:
     global _GEOMETRY_CONTEXT
     waffle.S3_ENABLED = False
     _GEOMETRY_CONTEXT = {
         "dem": rasterio.open(dem_path),
         "gradient": rasterio.open(gradient_path),
         "output_dir": output_dir,
+        "source_coverage": unary_union([box(*bounds) for bounds in aerial_bounds]),
     }
 
 
@@ -44,6 +50,7 @@ def _geometry_worker(key: tuple[int, int]) -> tuple[tuple[int, int], bool, dict[
     wrote, timings = waffle.bake_gosper_binary(
         key[0], key[1], _GEOMETRY_CONTEXT["dem"], _GEOMETRY_CONTEXT["gradient"],
         output_dir=_GEOMETRY_CONTEXT["output_dir"], return_timings=True,
+        source_coverage=_GEOMETRY_CONTEXT["source_coverage"],
     )
     return key, wrote, timings
 
@@ -182,12 +189,15 @@ def _run_geometry(
         return
 
     workers = min(int(profile["geometry_workers"]), len(pending))
+    aerial_bounds = [item["bounds"] for item in inventory["sources"]["aerial_files"]]
+    if not aerial_bounds:
+        raise RuntimeError("geometry bake requires authoritative aerial source bounds")
     print(f"geometry: {len(pending)} pending, {workers} persistent workers")
     attempts = {key: 0 for key in pending}
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_geometry_worker,
-        initargs=(str(dem_path), str(gradient_path), str(output_dir)),
+        initargs=(str(dem_path), str(gradient_path), str(output_dir), aerial_bounds),
     ) as executor:
         futures = {}
         for key in pending:
@@ -200,7 +210,7 @@ def _run_geometry(
             try:
                 _key, wrote, timings = future.result()
                 if not wrote:
-                    reason = "exact DEM unit sampling contains no valid samples"
+                    reason = "exact TIF/DEM unit intersection contains no valid samples"
                     bake_inventory.exclude_empty_geometry(inventory, key, reason=reason)
                     print(f"geometry {key[0]},{key[1]} excluded: {reason}")
                     bake_inventory.write_json_atomic(inventory_path, inventory)
