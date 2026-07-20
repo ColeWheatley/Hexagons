@@ -56,7 +56,7 @@ def upload_tree(bucket: str, prefix: str, root: Path, *, exclude: set[str] | Non
     count = 0
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
-        if relative in exclude:
+        if relative in exclude or any(part == ".DS_Store" for part in path.relative_to(root).parts):
             continue
         key = f"{prefix.strip('/')}/{relative}"
         content_type, cache, encoding = metadata(path)
