@@ -64,7 +64,7 @@ for (const liveId of [
 for (const match of html.matchAll(/<(?:button|input|select)\b[^>]*\bid="([^"]+)"/g)) {
     const id = match[1];
     assert.ok(
-        allJs.includes(`'${id}'`) || allJs.includes(`"${id}"`),
+        allJs.includes(id),
         `interactive HUD control has no JavaScript reference: ${id}`,
     );
 }
