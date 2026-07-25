@@ -39,3 +39,6 @@ artifacts/
 # Local bake transcripts
 lil_bake_*.log
 bake_log_*.log
+
+# Pixi environment (machine-local, never tracked)
+.pixi/
