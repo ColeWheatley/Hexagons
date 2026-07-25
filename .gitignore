@@ -22,6 +22,13 @@ hex_backend/aerial_tifs
 hex_backend/TIFS/
 hex_backend/stubai/
 
+# Generated sector images & LOD dirs
+hex_backend/high/
+hex_backend/low/
+hex_backend/med/
+hex_backend/compressed/
+hex_backend/sector_*.webp
+
 # Worktree sandboxes
 sandboxes/
 
