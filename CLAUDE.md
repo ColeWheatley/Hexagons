@@ -2,12 +2,17 @@
 
 ## Tasking OpenAI Codex agents
 
-This repo's owner is on a limited Claude plan; expensive/frontier-model work
-(investigation, architecture, verification) stays with Claude, but grindy or
-open-ended implementation work — tuning sweeps, test harnesses, mechanical
-merges, bench-gated perf iteration — should be delegated to **Codex** (its
-tokens are effectively free to him). Treat this as the default split, not an
-occasional trick.
+Expensive/frontier-model work (investigation, architecture, verification) stays
+with Claude, but grindy or open-ended implementation work — tuning sweeps, test
+harnesses, mechanical merges, bench-gated perf iteration — should be delegated
+to **Codex** (its tokens are effectively free to him). Treat this as the default
+split, not an occasional trick.
+
+> **Platform note:** everything below describes the **Mac**. On the Ubuntu box
+> (Rechner) `codex` is already on `PATH` at `~/.local/bin/codex`, `.git` is
+> writable, and `ps`/`pgrep` work normally — so the macOS-sandbox workarounds
+> (the `--add-dir` for `.git`, the process-introspection ban) do not apply
+> there. Verify rather than assume when working on Rechner.
 
 ### The binary is not on PATH
 
