@@ -1272,67 +1272,6 @@ def geometry_padding_masks(page, tile_sources, shape):
     return unit_required, allowed
 
 
-def fill_from_nearest_global_aerial(
-    pixels, query_coords, page, aerial_sources, permitted_distance_m
-):
-    """Fill page-exterior pixels from the nearest authoritative source edge.
-
-    Used only when the nearest source lies across a page seam and therefore is
-    absent from the page-local successful-pixel tree. Query batches remain
-    small; no global raster or distance-index tensor is allocated.
-    """
-    if not aerial_sources:
-        raise RuntimeError(f"{page.asset_stem}: no global aerial source available for padding")
-    min_x, min_y, max_x, max_y = page.bounds
-    height, width = pixels.shape[:2]
-    world_x = min_x + (query_coords[:, 1] + 0.5) * (max_x - min_x) / width
-    world_y = max_y - (query_coords[:, 0] + 0.5) * (max_y - min_y) / height
-    best_d2 = np.full(len(query_coords), np.inf, dtype=np.float64)
-    best_source = np.full(len(query_coords), -1, dtype=np.int32)
-    best_x = np.zeros(len(query_coords), dtype=np.float64)
-    best_y = np.zeros(len(query_coords), dtype=np.float64)
-
-    for source_index, source in enumerate(aerial_sources):
-        left, bottom, right, top = source["poly"].bounds
-        sample_x = np.clip(world_x, left, right)
-        sample_y = np.clip(world_y, bottom, top)
-        d2 = (world_x - sample_x) ** 2 + (world_y - sample_y) ** 2
-        better = d2 < best_d2
-        if np.any(better):
-            best_d2[better] = d2[better]
-            best_source[better] = source_index
-            best_x[better] = sample_x[better]
-            best_y[better] = sample_y[better]
-
-    distances_m = np.sqrt(best_d2)
-    too_far = distances_m > permitted_distance_m + max(
-        (max_x - min_x) / width, (max_y - min_y) / height
-    ) * math.sqrt(2.0)
-    if np.any(too_far):
-        raise RuntimeError(
-            f"{page.asset_stem}: nearest global source exceeds aggregate padding bound "
-            f"by {float(np.max(distances_m[too_far] - permitted_distance_m[too_far])):.2f}m"
-        )
-
-    for source_index in np.unique(best_source):
-        if source_index < 0:
-            raise RuntimeError(f"{page.asset_stem}: failed to resolve nearest global aerial source")
-        selected = best_source == source_index
-        source = aerial_sources[int(source_index)]
-        with rasterio.open(source["path"]) as dataset:
-            if dataset.count < 3:
-                raise RuntimeError(f"{source['path']}: nearest-edge source is not RGB")
-            epsilon_x = max(abs(dataset.transform.a) * 0.5, 1e-6)
-            epsilon_y = max(abs(dataset.transform.e) * 0.5, 1e-6)
-            xs = np.clip(best_x[selected], dataset.bounds.left + epsilon_x, dataset.bounds.right - epsilon_x)
-            ys = np.clip(best_y[selected], dataset.bounds.bottom + epsilon_y, dataset.bounds.top - epsilon_y)
-            values = np.asarray(list(dataset.sample(zip(xs, ys), indexes=(1, 2, 3))))
-            if values.shape != (int(np.count_nonzero(selected)), 3):
-                raise RuntimeError(f"{source['path']}: nearest-edge RGB sampling failed")
-            pixels[query_coords[selected, 0], query_coords[selected, 1]] = np.clip(
-                values, 0, 255
-            ).astype(np.uint8)
-    return distances_m
 
 
 def pad_aggregate_boundary_overdraw(
@@ -1344,19 +1283,17 @@ def pad_aggregate_boundary_overdraw(
     internal_holes=None,
     aerial_sources=None,
 ):
-    """Nearest-edge pad only exterior aggregate-cap overdraw.
+    """Resolve exterior aggregate-cap overdraw to black; never smear imagery.
 
-    Guardrails:
-      * valid unit-cap sample gaps fail before padding;
-      * enclosed/internal imagery holes fail;
-      * every filled pixel must be within a covering aggregate cap's radius;
-      * nearest covered source pixels are queried in bounded row chunks, not a
-        page-sized distance-transform/index tensor.
+    Guardrails (unchanged, all still hard failures):
+      * valid unit-cap (L0) sample gaps fail — missing real imagery is a bug;
+      * unread internal source coverage fails;
+      * enclosed/internal imagery holes fail.
+
+    Only exterior L1+ aggregate overdraw reaches the resolution step, and it is
+    left black. See the inline note below for why nearest-edge padding was
+    removed.
     """
-    from scipy import ndimage
-    from scipy.spatial import cKDTree
-    from PIL import Image
-
     coverage = np.asarray(coverage, dtype=bool)
     source_domain = np.asarray(source_domain, dtype=bool)
     if source_domain.shape != coverage.shape:
@@ -1400,60 +1337,38 @@ def pad_aggregate_boundary_overdraw(
         )
     del internal_hole_mask, internal_missing, failed_source
 
-    covered_boundary = coverage & ~ndimage.binary_erosion(coverage)
-    boundary_coords = np.argwhere(covered_boundary)
-    tree = cKDTree(boundary_coords) if boundary_coords.size else None
-    pixels = np.array(canvas, dtype=np.uint8, copy=True)
+    # Exterior aggregate-cap overdraw is left BLACK rather than smeared.
+    #
+    # This used to nearest-edge pad every such pixel from the rim of real
+    # imagery, which was the single most expensive stage in the whole bake:
+    # 62% of all texture time across the 2026-07-20 production run, and
+    # 92-97% of a single page on the boundary strip. Inspecting the output
+    # settled it — texture_-14_206 spent 914s of its 944s manufacturing a
+    # page containing no orthophoto content at all, just vertical streaks
+    # dragged up to 944 m from a one-pixel rim. Smeared pages also compressed
+    # to a third the size of real ones, confirming they carry almost no
+    # information. Black is both honest and free.
+    #
+    # The guardrails above are unchanged and still hard-fail the cases that
+    # matter: missing L0 unit-cap imagery, unread internal source coverage,
+    # and internal orthophoto holes. Only exterior aggregate overdraw — the
+    # far-field LOD caps that geometrically overhang the survey boundary —
+    # reaches this point.
     min_x, min_y, max_x, max_y = page.bounds
-    metres_per_pixel = max((max_x - min_x) / coverage.shape[1], (max_y - min_y) / coverage.shape[0])
-    padded_pixels = 0
-    max_distance_m = 0.0
-
-    # Row chunks cap query/output memory even when a coarse cap crosses a long
-    # ragged state boundary.
-    for row0 in range(0, coverage.shape[0], 128):
-        row1 = min(row0 + 128, coverage.shape[0])
-        local_coords = np.argwhere(missing[row0:row1])
-        if local_coords.size == 0:
-            continue
-        query_coords = local_coords.astype(np.int64, copy=False)
-        query_coords[:, 0] += row0
-        permitted = allowed_distance_m[query_coords[:, 0], query_coords[:, 1]]
-        if tree is None:
-            distances_m = fill_from_nearest_global_aerial(
-                pixels, query_coords, page, aerial_sources or [], permitted
-            )
-        else:
-            distances_px, nearest_indices = tree.query(query_coords, k=1, workers=1)
-            distances_m = distances_px * metres_per_pixel
-            too_far = distances_m > permitted + metres_per_pixel * math.sqrt(2.0)
-            if np.any(too_far):
-                # A closer source may sit just across this page's boundary.
-                distances_m[too_far] = fill_from_nearest_global_aerial(
-                    pixels, query_coords[too_far], page, aerial_sources or [], permitted[too_far]
-                )
-            local = ~too_far
-            if np.any(local):
-                source_coords = boundary_coords[
-                    np.asarray(nearest_indices[local], dtype=np.int64)
-                ]
-                pixels[query_coords[local, 0], query_coords[local, 1]] = pixels[
-                    source_coords[:, 0], source_coords[:, 1]
-                ]
-        coverage[query_coords[:, 0], query_coords[:, 1]] = True
-        padded_pixels += len(query_coords)
-        max_distance_m = max(max_distance_m, float(np.max(distances_m)))
-
-    canvas.close()
-    padded_canvas = Image.fromarray(pixels, "RGB")
+    blacked_pixels = int(np.count_nonzero(missing))
+    # Mark them resolved so the downstream strict coverage validation sees a
+    # decided page; the canvas itself keeps its black composite background.
+    coverage[missing] = True
     pixel_area_m2 = (
         (max_x - min_x) / coverage.shape[1]
         * (max_y - min_y) / coverage.shape[0]
     )
-    return padded_canvas, coverage, {
-        "padded_pixels": padded_pixels,
-        "padded_area_m2": round(padded_pixels * pixel_area_m2, 3),
-        "max_distance_m": round(max_distance_m, 3),
+    return canvas, coverage, {
+        "padded_pixels": 0,
+        "padded_area_m2": 0.0,
+        "max_distance_m": 0.0,
+        "blacked_pixels": blacked_pixels,
+        "blacked_area_m2": round(blacked_pixels * pixel_area_m2, 3),
     }
 
 
