@@ -128,7 +128,7 @@ class TextureTattooTests(unittest.TestCase):
             self.assertGreater(intersection / union, 0.40)
 
     def test_production_contract_is_three_versioned_xuastc_tiers(self):
-        self.assertEqual(waffle.TEXTURE_PAGE_VERSION, "4.1.0")
+        self.assertEqual(waffle.TEXTURE_PAGE_VERSION, "4.2.2")
         self.assertEqual(waffle.TEXTURE_TIER_SIZES, {
             "low": 128, "medium": 256, "high": 4096,
         })
@@ -142,13 +142,20 @@ class TextureTattooTests(unittest.TestCase):
         # The delivery asset is built independently from clean high imagery;
         # this guards against inheriting the green low-tier mark.
         source = Image.new("RGB", (1024, 1024), BASE_COLOR)
-        bootstrap = source.resize((32, 32), Image.Resampling.LANCZOS)
+        bootstrap = source.resize(
+            (waffle.TEXTURE_BOOTSTRAP_SIZE, waffle.TEXTURE_BOOTSTRAP_SIZE),
+            Image.Resampling.LANCZOS,
+        )
         waffle.apply_texture_tattoo(bootstrap, BOUNDS, "bootstrap")
         self.assertTrue(color_mask(bootstrap, waffle.TEXTURE_TATTOO_COLORS["bootstrap"]).any())
         self.assertFalse(color_mask(bootstrap, waffle.TEXTURE_TATTOO_COLORS["low"]).any())
 
     def test_invalid_bounds_and_resolution_kind_fail_loudly(self):
-        image = Image.new("RGB", (32, 32), BASE_COLOR)
+        image = Image.new(
+            "RGB",
+            (waffle.TEXTURE_BOOTSTRAP_SIZE, waffle.TEXTURE_BOOTSTRAP_SIZE),
+            BASE_COLOR,
+        )
         with self.assertRaisesRegex(ValueError, "resolution kind"):
             waffle.apply_texture_tattoo(image, BOUNDS, "ultra")
         with self.assertRaisesRegex(ValueError, "positive area"):

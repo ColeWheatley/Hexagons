@@ -45,6 +45,7 @@ import rasterio.features
 import rasterio.windows
 import gc
 import re
+from shapely import intersects_xy
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 import argparse
@@ -65,6 +66,9 @@ from execution_profiles import EXECUTION_PROFILES, execution_profile
 from texture_contract import (
     DEFAULT_TEXTURE_ENCODING_PROFILE,
     TEXTURE_ENCODING_PROFILES,
+    TEXTURE_BOOTSTRAP_SIZE,
+    TEXTURE_BOOTSTRAP_WEBP_METHOD,
+    TEXTURE_BOOTSTRAP_WEBP_QUALITY,
     TEXTURE_PAGE_RECIPE_VERSION,
     TEXTURE_TIERS,
     TEXTURE_TIER_SIZES,
@@ -103,9 +107,9 @@ DEBUG_MODE = False
 STUBAI_LAT = 46.996315457481984
 STUBAI_LON = 11.119477646985764
 
-BAKER_VERSION = "6.0.1"  # GSP3 splits terrain relief from exact rendered bounds
+BAKER_VERSION = "6.1.1"  # complete L0 cap footprints are clipped to source imagery
 TEXTURE_PAGE_VERSION = TEXTURE_PAGE_RECIPE_VERSION
-TEXTURE_TATTOO_VERSION = "3"  # includes the yellow 32px WebP bootstrap mark
+TEXTURE_TATTOO_VERSION = "3"  # includes the yellow WebP bootstrap mark
 
 # Mini-bake-only texture registration marks.  The motif is anchored in EPSG:31254
 # world metres, so overlapping island textures paint the same strokes at the
@@ -113,7 +117,7 @@ TEXTURE_TATTOO_VERSION = "3"  # includes the yellow 32px WebP bootstrap mark
 # weight: visible enough to identify the delivered tier without obscuring
 # aerial detail.
 TEXTURE_TATTOO_COLORS = {
-    "bootstrap": (255, 220, 0), # yellow, transient 32px WebP first paint
+    "bootstrap": (255, 220, 0), # yellow, transient 64px WebP first paint
     "low": (0, 255, 48),       # very vibrant green postage tier
     "medium": (0, 96, 255),    # electric blue medium tier
     "high": (255, 0, 170),     # hot pink high tier
@@ -978,11 +982,19 @@ def encode_texture_tiers(
         # Build bootstrap from the clean high canvas, not the green low tier.
         # It is a separate diagnostic tier: yellow must never inherit low's
         # tattoo through a second resize.
-        bootstrap = canvas.resize((32, 32), Image.Resampling.LANCZOS)
+        bootstrap = canvas.resize(
+            (TEXTURE_BOOTSTRAP_SIZE, TEXTURE_BOOTSTRAP_SIZE),
+            Image.Resampling.LANCZOS,
+        )
         if texture_tattoos:
             apply_texture_tattoo(bootstrap, bounds, "bootstrap")
         stage_started = time.perf_counter()
-        bootstrap.save(bootstrap_path, "WEBP", quality=45, method=4)
+        bootstrap.save(
+            bootstrap_path,
+            "WEBP",
+            quality=TEXTURE_BOOTSTRAP_WEBP_QUALITY,
+            method=TEXTURE_BOOTSTRAP_WEBP_METHOD,
+        )
         timings["webp"] = time.perf_counter() - stage_started
         bootstrap.close()
 
@@ -1246,7 +1258,12 @@ def geometry_padding_masks(page, tile_sources, shape):
         if cap_level == 0:
             unit_required |= mask
         else:
-            allowed[mask] = np.maximum(allowed[mask], np.float32(radius))
+            # A renderable parent is retained when any descendant is valid.
+            # Its center can therefore sit almost one parent radius beyond
+            # the nearest source-backed leaf, while its opposite edge extends
+            # another radius.  The diameter is the tight hierarchy-safe bound
+            # for exterior imagery padding; L0 remains a hard no-padding mask.
+            allowed[mask] = np.maximum(allowed[mask], np.float32(2.0 * radius))
         mask_image.close()
 
     # Parent masks overlap their unit descendants. Clearing them explicitly is
@@ -1293,7 +1310,7 @@ def fill_from_nearest_global_aerial(
     ) * math.sqrt(2.0)
     if np.any(too_far):
         raise RuntimeError(
-            f"{page.asset_stem}: nearest global source exceeds aggregate cap radius "
+            f"{page.asset_stem}: nearest global source exceeds aggregate padding bound "
             f"by {float(np.max(distances_m[too_far] - permitted_distance_m[too_far])):.2f}m"
         )
 
@@ -1691,10 +1708,13 @@ def bake_global_texture_pages(
                     )
                     record_result(page, paths, padding_stats, timings)
                     break
-                except Exception:
+                except Exception as exc:
                     if attempt >= max_retries:
                         raise
-                    print(f"      retrying {page.asset_stem} ({attempt + 1}/{max_retries})")
+                    print(
+                        f"      retrying {page.asset_stem} "
+                        f"({attempt + 1}/{max_retries}): {exc}"
+                    )
     elif pending:
         if BASISU_BINARY is None:
             raise RuntimeError("parallel texture workers require a resolved BasisU binary")
@@ -1714,10 +1734,13 @@ def bake_global_texture_pages(
                 page, attempt = futures.pop(future)
                 try:
                     _key, paths, padding_stats, timings = future.result()
-                except Exception:
+                except Exception as exc:
                     if attempt >= max_retries:
                         raise
-                    print(f"      retrying {page.asset_stem} ({attempt + 1}/{max_retries})")
+                    print(
+                        f"      retrying {page.asset_stem} "
+                        f"({attempt + 1}/{max_retries}): {exc}"
+                    )
                     futures[executor.submit(_bake_texture_page_worker, page)] = (page, attempt + 1)
                     continue
                 record_result(page, paths, padding_stats, timings)
@@ -2159,7 +2182,7 @@ read_gsp1_unit_valid = read_gsp_unit_valid
 
 def bake_gosper_binary(
     latQ, latR, dem_ds, grad_ds, output_dir="frontend/app/tiles_bin",
-    return_timings=False,
+    return_timings=False, source_coverage=None,
 ):
     total_started = time.perf_counter()
     timings = {}
@@ -2173,6 +2196,17 @@ def bake_gosper_binary(
         return (False, timings) if return_timings else False
 
     info, unit_x, unit_y, dem_data, dem_transform, h_unit, unit_valid = dem_sample
+    if source_coverage is not None:
+        # The production extent is the TIF/DEM intersection, not merely every
+        # DEM sample in an island whose bounding polygon touches a source TIF.
+        # Clipping the leaf validity mask makes texture-page demand exact and
+        # prevents geometry outside usable orthophoto coverage from entering
+        # the manifest.  The optional argument preserves the Mac mini-bake path.
+        unit_valid &= np.asarray(
+            intersects_xy(source_coverage, unit_x, unit_y), dtype=bool
+        )
+        if not np.any(unit_valid):
+            return (False, timings) if return_timings else False
     stage_started = time.perf_counter()
     unit_deltas, unit_slopes, unit_nx, unit_nz = _sample_unit_edges_and_normals(
         unit_x, unit_y, h_unit, unit_valid, dem_data, dem_transform, grad_ds, info["bounds"])

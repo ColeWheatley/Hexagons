@@ -1,7 +1,7 @@
 /* global self, caches, fetch, Response */
 // This file is deliberately dependency-free: it is bundled as a standalone
 // worker and its build id is replaced by build.mjs before it is fingerprinted.
-const BUILD_ID = 'v0.10.0-rc5';
+const BUILD_ID = 'v0.10.0-rc6';
 const SHELL_CACHE = `hexagons-shell-${BUILD_ID}`;
 const RUNTIME_CACHE = `hexagons-runtime-${BUILD_ID}`;
 const META_CACHE = 'hexagons-cache-meta';

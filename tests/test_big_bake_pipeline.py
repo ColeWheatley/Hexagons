@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
+from shapely.geometry import box
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "hex_backend"
@@ -42,11 +43,11 @@ def inventory_fixture(root: Path):
         "geometry_recipe": {"version": waffle_iron.BAKER_VERSION, "format": "GSP3"},
         "texture_recipe": {
             "version": waffle_iron.texture_page_cache_version(False, "production", None),
-            "contract_version": "4.1.0",
+            "contract_version": "4.2.2",
             "encoding_profile": "production",
             "encoding_effort": 4,
             "diagnostic_tattoos": False,
-            "bootstrap_px": 32,
+            "bootstrap_px": 64,
             "tiers": {"low": 128, "medium": 256, "high": 4096},
         },
         "geometry": [{
@@ -99,6 +100,57 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(resumed["progress"]["geometry_complete"], 1)
             self.assertEqual(resumed["geometry"][0]["timings"]["total"], 1.25)
             self.assertFalse(any(item.name.endswith(".tmp") for item in root.iterdir()))
+
+    def test_exact_dem_empty_geometry_is_durably_excluded(self):
+        payload = inventory_fixture(Path("/tmp/inventory-test"))
+        bake_inventory.refresh_progress(payload)
+        bake_inventory.exclude_empty_geometry(
+            payload, (1, 2), reason="exact DEM unit sampling contains no valid samples"
+        )
+        self.assertEqual(payload["geometry"], [])
+        self.assertEqual(payload["progress"]["geometry_total"], 0)
+        self.assertEqual(payload["excluded_geometry"][0]["status"], "excluded")
+
+    def test_geometry_leaf_validity_requires_full_cap_inside_aerial_coverage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            info = waffle_iron.gosper_island_info(1, 2)
+            bounds = info["bounds"]
+            transform = from_origin(bounds[0] - 50, bounds[3] + 50, 5, 5)
+            width = max(1, int((bounds[2] - bounds[0] + 100) / 5) + 1)
+            height = max(1, int((bounds[3] - bounds[1] + 100) / 5) + 1)
+            profile = {
+                "driver": "GTiff", "width": width, "height": height,
+                "count": 1, "dtype": "float32", "crs": "EPSG:31254",
+                "transform": transform, "nodata": -9999.0,
+            }
+            dem_path = root / "dem.tif"
+            grad_path = root / "gradient.tif"
+            with rasterio.open(dem_path, "w", **profile) as target:
+                target.write(np.full((height, width), 1500, dtype=np.float32), 1)
+            gradient_profile = dict(profile, count=2)
+            with rasterio.open(grad_path, "w", **gradient_profile) as target:
+                target.write(np.zeros((2, height, width), dtype=np.float32))
+
+            center_x = (bounds[0] + bounds[2]) / 2
+            cap_radius = (
+                coordinate_utility.UNIT_HEX_WIDTH_METERS / np.sqrt(3.0)
+                + big_bake.SOURCE_COVERAGE_RASTER_MARGIN_M
+            )
+            raw_coverage = box(bounds[0] - 10, bounds[1] - 10, center_x, bounds[3] + 10)
+            coverage = big_bake.source_coverage_for_bounds([list(raw_coverage.bounds)])
+            output = root / "tiles"
+            with rasterio.open(dem_path) as dem, rasterio.open(grad_path) as gradient:
+                wrote = waffle_iron.bake_gosper_binary(
+                    1, 2, dem, gradient, output_dir=str(output),
+                    source_coverage=coverage,
+                )
+            self.assertTrue(wrote)
+            valid = waffle_iron.read_gsp_unit_valid(output / "gosper_1_2.bin")
+            unit_x = info["centerX"] + coordinate_utility.gosper_tile_geometry()["offx"]
+            self.assertTrue(valid.any())
+            self.assertTrue((~valid).any())
+            self.assertTrue(np.all(unit_x[valid] <= center_x - cap_radius))
 
     def test_exact_page_replacement_preserves_only_current_inventory_keys(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -211,6 +263,27 @@ class ProgressiveUploadTests(unittest.TestCase):
                 "local": str(asset), "logical": completed["assets"][0]["logical"],
             }])
             self.assertEqual(resumed.status()["pending"], 0)
+
+    def test_explicit_resume_requeues_durable_upload_failures(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            spool = progressive_upload.ProgressiveUploadSpool(
+                root / "spool", release_publish.LocalStore(root / "s3"),
+                "release-test", workers=1,
+            )
+            task = {
+                "schema_version": 1, "task_id": "geometry-1-2",
+                "collection": "geometry", "key": [1, 2],
+                "release_id": "release-test", "assets": [],
+                "attempts": 3, "last_error": "transient",
+            }
+            bake_inventory.write_json_atomic(
+                spool.failed / "geometry-1-2.json", task
+            )
+            self.assertEqual(spool.retry_failed(), 1)
+            requeued = json.loads((spool.pending / "geometry-1-2.json").read_text())
+            self.assertEqual(requeued["attempts"], 0)
+            self.assertIsNone(requeued["last_error"])
 
     def test_public_shell_content_types_and_cache_policies(self):
         content_type, cache, encoding = publish_site.metadata(Path("index.html"))

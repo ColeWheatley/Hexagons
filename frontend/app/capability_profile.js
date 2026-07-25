@@ -12,7 +12,7 @@ export const CAPABILITY_PROFILES = Object.freeze({
         workerCount: 2,
         textureBudgetBytes: 64 * MiB,
         maxTextureJobs: 1,
-        highTextureEnterPx: Infinity,
+        highTextureDistanceM: 0,
         guardMarginScale: 0.12,
     }),
     mid: Object.freeze({
@@ -20,7 +20,7 @@ export const CAPABILITY_PROFILES = Object.freeze({
         workerCount: 3,
         textureBudgetBytes: 128 * MiB,
         maxTextureJobs: 1,
-        highTextureEnterPx: 768,
+        highTextureDistanceM: 1500,
         guardMarginScale: 0.18,
     }),
     high: Object.freeze({
@@ -30,7 +30,7 @@ export const CAPABILITY_PROFILES = Object.freeze({
         workerCount: 6,
         textureBudgetBytes: 256 * MiB,
         maxTextureJobs: 2,
-        highTextureEnterPx: 512,
+        highTextureDistanceM: 2000,
         guardMarginScale: 0.25,
     }),
 });

@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 
 ROOT = Path(__file__).resolve().parents[1]
 # The verifier imports its publisher sibling by module name.
@@ -25,7 +27,10 @@ class ReleaseAssetVerifierTest(unittest.TestCase):
         (app / "aerial_pages" / "medium").mkdir(parents=True)
         (app / "aerial_pages" / "high").mkdir(parents=True)
         (app / "tiles_bin" / "gosper_1_2.bin").write_bytes(b"GSP3geometry")
-        (app / "aerial_pages" / "bootstrap" / "texture_4_5.webp").write_bytes(b"RIFF\x04\x00\x00\x00WEBP")
+        Image.new("RGB", (64, 64), (240, 210, 40)).save(
+            app / "aerial_pages" / "bootstrap" / "texture_4_5.webp",
+            "WEBP",
+        )
         (app / "aerial_pages" / "low" / "texture_4_5.ktx2").write_bytes(b"\xabKTX 20\xbb\r\n\x1a\nlow")
         (app / "aerial_pages" / "medium" / "texture_4_5.ktx2").write_bytes(b"\xabKTX 20\xbb\r\n\x1a\nmedium")
         (app / "aerial_pages" / "high" / "texture_4_5.ktx2").write_bytes(b"\xabKTX 20\xbb\r\n\x1a\ntexture")
@@ -33,7 +38,7 @@ class ReleaseAssetVerifierTest(unittest.TestCase):
             "tiles": [{"yq": 1, "yr": 2}],
             "texture_pages": {
                 "diagnostic_tattoos": False,
-                "bootstrap": {"container": "webp"},
+                "bootstrap": {"container": "webp", "size_px": 64},
                 "tiers": [{"name": "low"}, {"name": "medium"}, {"name": "high"}],
                 "pages": [{"page_x": 4, "page_y": 5}],
             },
@@ -63,6 +68,31 @@ class ReleaseAssetVerifierTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertTrue(any("not a GSP" in error for error in report["errors"]))
             self.assertTrue(any(error.startswith("missing:") for error in report["errors"]))
+
+    def test_rejects_bootstrap_dimension_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app, manifest = self.fixture(Path(tmp))
+            Image.new("RGB", (32, 32), (240, 210, 40)).save(
+                app / "aerial_pages" / "bootstrap" / "texture_4_5.webp",
+                "WEBP",
+            )
+            report = verifier.verify_assets(manifest, app)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("must be 64x64, got 32x32" in error for error in report["errors"]))
+
+    def test_rejects_coordinated_legacy_bootstrap_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app, manifest = self.fixture(Path(tmp))
+            Image.new("RGB", (32, 32), (240, 210, 40)).save(
+                app / "aerial_pages" / "bootstrap" / "texture_4_5.webp",
+                "WEBP",
+            )
+            payload = json.loads(manifest.read_text())
+            payload["texture_pages"]["bootstrap"]["size_px"] = 32
+            manifest.write_text(json.dumps(payload))
+            report = verifier.verify_assets(manifest, app)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("must declare size_px=64" in error for error in report["errors"]))
 
     def test_rejects_empty_and_duplicate_asset_sets(self):
         with tempfile.TemporaryDirectory() as tmp:

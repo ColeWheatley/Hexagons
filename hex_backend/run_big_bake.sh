@@ -7,6 +7,18 @@ SCRIPT="$ROOT/hex_backend/run_big_bake.sh"
 STATE_ROOT="${HEXAGONS_BIG_BAKE_STATE_ROOT:-$ROOT/local_data/big_bake}"
 CURRENT="$STATE_ROOT/current.env"
 COMMAND="${1:-status}"
+PIXI_BIN="${HEXAGONS_PIXI_BIN:-}"
+
+if [[ -z "$PIXI_BIN" ]]; then
+  PIXI_BIN="$(command -v pixi 2>/dev/null || true)"
+fi
+if [[ -z "$PIXI_BIN" && -x "$HOME/.pixi/bin/pixi" ]]; then
+  PIXI_BIN="$HOME/.pixi/bin/pixi"
+fi
+if [[ -z "$PIXI_BIN" || ! -x "$PIXI_BIN" ]]; then
+  echo "Pixi executable not found; set HEXAGONS_PIXI_BIN to its absolute path." >&2
+  exit 1
+fi
 
 mkdir -p "$STATE_ROOT"
 
@@ -70,7 +82,7 @@ preflight() {
   git -C "$ROOT" worktree list
   echo "Dirty status:"
   git -C "$ROOT" status --short
-  pixi run --manifest-path "$ROOT/pixi.toml" python -u "$ROOT/hex_backend/bake_preflight.py" \
+  "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python -u "$ROOT/hex_backend/bake_preflight.py" \
     --repo "$ROOT" \
     --execution-profile rechner-big \
     --release-profile production-tirol \
@@ -121,7 +133,7 @@ start_service() {
   sleep 1
   systemctl --user show "$UNIT" -p MainPID --value > "$RUN_ROOT/pid"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$RUN_ROOT/started_at"
-  pixi run --manifest-path "$ROOT/pixi.toml" python - "$ROOT" "$INVENTORY" "$UNIT" "$RUN_ROOT/pid" "$LOG" "$S3_BUCKET" "$S3_PREFIX" <<'PY'
+  "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python - "$ROOT" "$INVENTORY" "$UNIT" "$RUN_ROOT/pid" "$LOG" "$S3_BUCKET" "$S3_PREFIX" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "hex_backend"))
@@ -143,11 +155,11 @@ show_status() {
   load_current
   systemctl --user status "$UNIT" --no-pager || true
   if [[ -f "$INVENTORY" ]]; then
-    pixi run --manifest-path "$ROOT/pixi.toml" python "$ROOT/hex_backend/bake_status.py" \
+    "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python "$ROOT/hex_backend/bake_status.py" \
       --inventory "$INVENTORY" --pid-file "$RUN_ROOT/pid" \
       --append "$RUN_ROOT/status_snapshots.jsonl"
   elif [[ -f "$REPORT" ]]; then
-    pixi run --manifest-path "$ROOT/pixi.toml" python - "$REPORT" <<'PY'
+    "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python - "$REPORT" <<'PY'
 import json, sys
 p=json.load(open(sys.argv[1])); print(json.dumps({"passed":p["passed"],"failures":p["failures"]},indent=2))
 PY
@@ -166,13 +178,13 @@ publish_site() {
   HEXAGONS_MANIFEST_PATH="$OUTPUT_ROOT/app/tile_manifest.json" \
     HEXAGONS_DIST_DIR="$OUTPUT_ROOT/site_dist" \
     npm --prefix "$ROOT/frontend/app" run build
-  pixi run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/publish_site.py" \
+  "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/publish_site.py" \
     --bucket "$S3_BUCKET" --base-prefix hexagons --app-dist "$OUTPUT_ROOT/site_dist"
-  pixi run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/release_publish.py" \
+  "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/release_publish.py" \
     --manifest "$OUTPUT_ROOT/app/tile_manifest.json" \
     --app-root "$OUTPUT_ROOT/app" \
     --bucket "$S3_BUCKET" --prefix "$S3_PREFIX" --release-id "$RUN_ID"
-  pixi run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/verify_public_release.py"
+  "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python "$ROOT/scripts/verify_public_release.py"
 }
 
 case "$COMMAND" in
@@ -201,7 +213,7 @@ case "$COMMAND" in
     exec > >(tee -a "$LOG") 2>&1
     echo "Worker start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "Run: $RUN_ID commit=$COMMIT inventory=$INVENTORY"
-    pixi run --manifest-path "$ROOT/pixi.toml" python -u "$ROOT/hex_backend/big_bake.py" --inventory "$INVENTORY"
+    "$PIXI_BIN" run --manifest-path "$ROOT/pixi.toml" python -u "$ROOT/hex_backend/big_bake.py" --inventory "$INVENTORY"
     echo "Worker complete: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     ;;
   status)

@@ -69,6 +69,18 @@ class ProgressiveUploadSpool:
             thread.start()
             self._threads.append(thread)
 
+    def retry_failed(self) -> int:
+        """Requeue durable failures when an operator explicitly resumes a run."""
+        count = 0
+        for path in sorted(self.failed.glob("*.json")):
+            task = json.loads(path.read_text())
+            task["attempts"] = 0
+            task["last_error"] = None
+            write_json_atomic(self.pending / f"{task['task_id']}.json", task)
+            path.unlink()
+            count += 1
+        return count
+
     def _claim(self, worker: int) -> Path | None:
         with self._claim_lock:
             paths = sorted(self.pending.glob("*.json"))

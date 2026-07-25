@@ -26,6 +26,11 @@ assert.deepEqual(evicted, ['peripheral'], 'least perceptible high texture must e
 assert.equal(cache.highEntries.has('prominent'), true);
 assert.equal(cache.highEntries.has('incoming'), true);
 assert.equal(cache.highBytes, 80);
+const admittedRevision = cache.revision;
+cache.updatePriority('incoming', 501);
+assert.equal(cache.revision, admittedRevision + 1, 'distance-priority changes advance cache revision');
+cache.updatePriority('incoming', 501);
+assert.equal(cache.revision, admittedRevision + 1, 'unchanged distance does not cause retry churn');
 
 const protectedCache = new CacheManager(80);
 assert.equal(protectedCache.admitHigh('important-a', 40, () => true, new Set(), 1000), true);
@@ -58,4 +63,4 @@ assert.deepEqual(partialEvictions, []);
 assert.equal(transactional.highEntries.has('cheap'), true);
 assert.equal(transactional.highEntries.has('important'), true);
 
-console.log('perceptibility-aware high texture cache: ok');
+console.log('distance-priority high texture cache: ok');

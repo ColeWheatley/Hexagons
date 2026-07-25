@@ -12,7 +12,7 @@ const { PAGE_TEXTURE_TIER: TIER, PAGE_TEXTURE_RANK: RANK,
 assert.equal(RANK[TIER.BOOTSTRAP], -1);
 const residency = new TexturePageResidency({ pages: [{ key: 'visible' }, { key: 'offscreen' }] });
 residency.beginDemandPass();
-residency.contribute('visible', { classification: 'visible', projectedDiameterPx: 120 });
+residency.contribute('visible', { classification: 'visible', distanceMeters: 3000 });
 residency.finishDemandPass();
 assert.equal(residency.state('offscreen').classification, 'outside');
 
@@ -34,7 +34,7 @@ assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
     lowCoverageFirst: true, lowCoverageIncludesOutside: false,
 }), -1, 'KTX2 waits until the page bootstrap reaches a terminal state');
 
-const bootstrap = { texture: { dispose() {} }, bytes: 4096 };
+const bootstrap = { texture: { dispose() {} }, bytes: 16384 };
 residency.replaceAsset('visible', TIER.BOOTSTRAP, bootstrap);
 setTierState(visible, TIER.BOOTSTRAP, TIER_STATE.ABSENT, { validate: true });
 assert.equal(selectTextureDispatchTaskIndex([queue[0]], residency.states, {
@@ -50,8 +50,8 @@ assert.equal(disposed, 1);
 assert.equal(visible.assets.has(TIER.BOOTSTRAP), false);
 assert.equal(residency.bestAsset('visible')[0], TIER.LOW);
 
-// Production demand eviction must be able to fall all the way back to the
-// neutral placeholder instead of pinning the active low/bootstrap forever.
+// Explicit teardown can still fall all the way back to the neutral placeholder;
+// ordinary zoom/frustum reconciliation must never invoke this for green/blue.
 residency.state('visible').activeTier = TIER.LOW;
 assert.equal(residency.dropAsset('visible', TIER.LOW, null, {
     allowEmpty: true,

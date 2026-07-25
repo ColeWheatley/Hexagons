@@ -41,7 +41,7 @@ assert.equal(savedata.name, 'low');
 assert.ok(savedata.workerCount < high.workerCount);
 assert.ok(savedata.maxTextureJobs < high.maxTextureJobs);
 assert.ok(savedata.textureBudgetBytes < high.textureBudgetBytes);
-assert.ok(savedata.highTextureEnterPx > high.highTextureEnterPx);
+assert.ok(savedata.highTextureDistanceM < high.highTextureDistanceM);
 assert.ok(savedata.guardMarginScale < high.guardMarginScale);
 
 const main = fs.readFileSync(path.join(here, '../../frontend/app/main.js'), 'utf8');

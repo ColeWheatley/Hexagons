@@ -8,7 +8,7 @@ export const TEXTURE_HUD_ROWS = Object.freeze([
     Object.freeze({ tier: 'high4096', label: 'HIGH', size: 4096, color: '#ff00aa' }),
 ]);
 
-const DISPLAY_TIERS = new Set(['bootstrap32', ...TEXTURE_HUD_ROWS.map(row => row.tier)]);
+const DISPLAY_TIERS = new Set(['bootstrap64', ...TEXTURE_HUD_ROWS.map(row => row.tier)]);
 
 function tierSets() {
     return Object.fromEntries(Array.from(DISPLAY_TIERS, tier => [tier, new Set()]));
@@ -108,8 +108,10 @@ export function collectTextureTierResidency(states) {
     for (const state of values) {
         for (const { tier } of TEXTURE_HUD_ROWS) {
             if (state?.assets?.has(tier)) loaded[tier]++;
-            if (state?.queued?.has(tier) || state?.loading?.has(tier)) pending[tier]++;
-            if (state?.failed?.has(tier)) failed[tier]++;
+            const operational = state?.tierStates?.get?.(tier);
+            if (operational === 'queued' || operational === 'loading'
+                || state?.queued?.has(tier) || state?.loading?.has(tier)) pending[tier]++;
+            if (operational === 'failed' || state?.failed?.has(tier)) failed[tier]++;
         }
     }
     return { loaded, pending, failed };

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import rasterio
+from shapely.geometry import box
+from shapely.ops import unary_union
 
 import bake_inventory
 import generate_manifest
@@ -28,15 +31,34 @@ import release_publish
 
 
 _GEOMETRY_CONTEXT = {}
+SOURCE_COVERAGE_RASTER_MARGIN_M = 0.5
 
 
-def _init_geometry_worker(dem_path: str, gradient_path: str, output_dir: str) -> None:
+def source_coverage_for_bounds(aerial_bounds: list[list[float]]):
+    """Return source coverage inset enough to contain complete rendered L0 caps."""
+    return unary_union([box(*bounds) for bounds in aerial_bounds]).buffer(
+        -(
+            waffle.coord_util.UNIT_HEX_WIDTH_METERS / math.sqrt(3.0)
+            + SOURCE_COVERAGE_RASTER_MARGIN_M
+        )
+    )
+
+
+def _init_geometry_worker(
+    dem_path: str, gradient_path: str, output_dir: str,
+    aerial_bounds: list[list[float]],
+) -> None:
     global _GEOMETRY_CONTEXT
     waffle.S3_ENABLED = False
     _GEOMETRY_CONTEXT = {
         "dem": rasterio.open(dem_path),
         "gradient": rasterio.open(gradient_path),
         "output_dir": output_dir,
+        # A leaf renders as a complete unit hex, not a point. Eroding the TIF
+        # union by its circumradius guarantees every retained L0 cap vertex has
+        # usable imagery; center-only clipping leaked a few metres of exterior
+        # terrain into boundary pages.
+        "source_coverage": source_coverage_for_bounds(aerial_bounds),
     }
 
 
@@ -44,6 +66,7 @@ def _geometry_worker(key: tuple[int, int]) -> tuple[tuple[int, int], bool, dict[
     wrote, timings = waffle.bake_gosper_binary(
         key[0], key[1], _GEOMETRY_CONTEXT["dem"], _GEOMETRY_CONTEXT["gradient"],
         output_dir=_GEOMETRY_CONTEXT["output_dir"], return_timings=True,
+        source_coverage=_GEOMETRY_CONTEXT["source_coverage"],
     )
     return key, wrote, timings
 
@@ -86,8 +109,11 @@ def validate_runtime_inventory(inventory: dict) -> None:
             raise ValueError("production-tirol requires the sweep-verified production effort-4 recipe")
         if recipe.get("diagnostic_tattoos"):
             raise ValueError("production-tirol forbids diagnostic tattoos")
-        if recipe.get("bootstrap_px") != 32 or recipe.get("tiers") != required_tiers:
-            raise ValueError("production-tirol texture transaction must be WebP32 plus 128/256/4096 tiers")
+        if recipe.get("bootstrap_px") != waffle.TEXTURE_BOOTSTRAP_SIZE or recipe.get("tiers") != required_tiers:
+            raise ValueError(
+                f"production-tirol texture transaction must be WebP{waffle.TEXTURE_BOOTSTRAP_SIZE} "
+                "plus 128/256/4096 tiers"
+            )
         aerial = inventory["sources"]["aerial"]
         if (
             aerial.get("valid_count") != EXPECTED_FULL_CORPUS_FILES
@@ -158,7 +184,7 @@ def _geometry_is_current(output_dir: Path, key: tuple[int, int], recipe: str) ->
 
 def _run_geometry(
     inventory_path: Path, inventory: dict, dem_path: Path, gradient_path: Path,
-    output_dir: Path,
+    output_dir: Path, on_completed=None,
 ) -> None:
     profile = inventory["execution_profile"]
     recipe = inventory["geometry_recipe"]["version"]
@@ -179,12 +205,15 @@ def _run_geometry(
         return
 
     workers = min(int(profile["geometry_workers"]), len(pending))
+    aerial_bounds = [item["bounds"] for item in inventory["sources"]["aerial_files"]]
+    if not aerial_bounds:
+        raise RuntimeError("geometry bake requires authoritative aerial source bounds")
     print(f"geometry: {len(pending)} pending, {workers} persistent workers")
     attempts = {key: 0 for key in pending}
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_geometry_worker,
-        initargs=(str(dem_path), str(gradient_path), str(output_dir)),
+        initargs=(str(dem_path), str(gradient_path), str(output_dir), aerial_bounds),
     ) as executor:
         futures = {}
         for key in pending:
@@ -197,11 +226,17 @@ def _run_geometry(
             try:
                 _key, wrote, timings = future.result()
                 if not wrote:
-                    raise RuntimeError("DEM window contains no valid unit samples")
+                    reason = "exact TIF/DEM unit intersection contains no valid samples"
+                    bake_inventory.exclude_empty_geometry(inventory, key, reason=reason)
+                    print(f"geometry {key[0]},{key[1]} excluded: {reason}")
+                    bake_inventory.write_json_atomic(inventory_path, inventory)
+                    continue
                 _write_marker(_geometry_marker(output_dir, key), recipe)
                 bake_inventory.mark_unit(
                     inventory, "geometry", key, "complete", timings=timings
                 )
+                if on_completed is not None:
+                    on_completed(key)
                 print(f"geometry {key[0]},{key[1]} complete in {timings['total']:.2f}s")
             except Exception as exc:
                 attempts[key] += 1
@@ -269,8 +304,6 @@ def run(inventory_path: Path) -> None:
     gradient = waffle.get_or_create_gradient_map(str(dem_path), str(gradient_path), upsample_factor=2)
     gradient.close()
 
-    _run_geometry(inventory_path, inventory, dem_path, gradient_path, binary_dir)
-    inventory = bake_inventory.load_inventory(inventory_path)
     publication = inventory.get("publication", {})
     uploader = None
     if publication.get("progressive_upload"):
@@ -279,16 +312,31 @@ def run(inventory_path: Path) -> None:
             output_root / "upload_spool", store, inventory["release_id"],
             workers=int(inventory["execution_profile"]["upload_workers"]),
         )
+        retried = uploader.retry_failed()
+        if retried:
+            print(f"upload: requeued {retried} durable failures")
+        uploader.start()
+
+    def geometry_completed(key):
+        if uploader is None:
+            return
+        filename = waffle.gosper_asset_name(key[0], key[1], "bin")
+        uploader.spool("geometry", key, [{
+            "local": str(binary_dir / filename),
+            "logical": f"tiles_bin/{filename}",
+        }])
+
+    _run_geometry(
+        inventory_path, inventory, dem_path, gradient_path, binary_dir,
+        on_completed=geometry_completed,
+    )
+    inventory = bake_inventory.load_inventory(inventory_path)
+    if uploader:
         for item in inventory["geometry"]:
             if item.get("status") != "complete" or item.get("uploaded"):
                 continue
             key = (int(item["yq"]), int(item["yr"]))
-            filename = waffle.gosper_asset_name(key[0], key[1], "bin")
-            uploader.spool("geometry", key, [{
-                "local": str(binary_dir / filename),
-                "logical": f"tiles_bin/{filename}",
-            }])
-        uploader.start()
+            geometry_completed(key)
     tiles, exact_pages = _exact_pages_and_tiles(inventory, binary_dir)
     bake_inventory.replace_texture_pages(inventory, exact_pages)
     recipe = inventory["texture_recipe"]["version"]

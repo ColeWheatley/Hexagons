@@ -28,7 +28,7 @@ const view = {
     target: { lat: 47.01, lon: 11.12, sceneY_m: 0 },
     camera: { lat: 47.02, lon: 11.13, sceneY_m: 1200 },
 };
-const settings = { hazeDistanceKm: 12, highTextureEnterPx: 768, gradientMode: 0 };
+const settings = { hazeDistanceKm: 12, highTextureDistanceM: 1800, gradientMode: 0 };
 const envelope = { version: VIEW_STORAGE_VERSION, view, settings };
 
 // Reload roundtrip: write once, then read from a fresh state owner.
@@ -51,6 +51,13 @@ assert.equal(readPersistedEnvelope(storage), null);
 assert.equal(sanitizeStoredEnvelope({ ...envelope, version: 99 }), null);
 assert.equal(sanitizeStoredEnvelope({ ...envelope, settings: { ...settings, gradientMode: 2 } }), null);
 assert.equal(sanitizeStoredEnvelope({ ...envelope, view: { ...view, camera: { ...view.camera, lat: Infinity } } }), null);
+
+// Existing v1 projected-footprint settings migrate once to the historical
+// distance range and are normalized before the viewer sees them.
+assert.deepEqual(
+    persistence.sanitizePublicSettings({ hazeDistanceKm: 12, highTextureEnterPx: 512, gradientMode: 0 }),
+    { hazeDistanceKm: 12, highTextureDistanceM: 2000, gradientMode: 0 },
+);
 
 // Every camera input path must use the same atomic URL + persistence commit.
 const main = await fs.readFile(path.join(ROOT, 'frontend/app/main.js'), 'utf8');
