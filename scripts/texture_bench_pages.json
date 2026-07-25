@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "selection": "Five highest-total completed western boundary pages plus five geographically spread, previously unbaked interior pages. The 5/5 split keeps the per-page median sensitive to both the pathological padding strip and the bulk no-padding workload.",
+  "pages": [
+    {
+      "page_x": -14,
+      "page_y": 206,
+      "class": "heavy_boundary",
+      "real_run_total_seconds": 943.911985,
+      "real_run_boundary_padding_seconds": 914.148251
+    },
+    {
+      "page_x": -12,
+      "page_y": 206,
+      "class": "heavy_boundary",
+      "real_run_total_seconds": 756.490366,
+      "real_run_boundary_padding_seconds": 725.460247
+    },
+    {
+      "page_x": -13,
+      "page_y": 206,
+      "class": "heavy_boundary",
+      "real_run_total_seconds": 633.316889,
+      "real_run_boundary_padding_seconds": 612.708725
+    },
+    {
+      "page_x": -13,
+      "page_y": 196,
+      "class": "heavy_boundary",
+      "real_run_total_seconds": 625.471704,
+      "real_run_boundary_padding_seconds": 606.660948
+    },
+    {
+      "page_x": -13,
+      "page_y": 215,
+      "class": "heavy_boundary",
+      "real_run_total_seconds": 610.667012,
+      "real_run_boundary_padding_seconds": 564.292038
+    },
+    {
+      "page_x": 0,
+      "page_y": 220,
+      "class": "interior",
+      "real_run_total_seconds": null,
+      "real_run_boundary_padding_seconds": null
+    },
+    {
+      "page_x": 20,
+      "page_y": 230,
+      "class": "interior",
+      "real_run_total_seconds": null,
+      "real_run_boundary_padding_seconds": null
+    },
+    {
+      "page_x": 40,
+      "page_y": 240,
+      "class": "interior",
+      "real_run_total_seconds": null,
+      "real_run_boundary_padding_seconds": null
+    },
+    {
+      "page_x": 60,
+      "page_y": 230,
+      "class": "interior",
+      "real_run_total_seconds": null,
+      "real_run_boundary_padding_seconds": null
+    },
+    {
+      "page_x": 80,
+      "page_y": 210,
+      "class": "interior",
+      "real_run_total_seconds": null,
+      "real_run_boundary_padding_seconds": null
+    }
+  ]
+}
