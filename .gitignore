@@ -45,3 +45,6 @@ bake_log_*.log
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# Claude session worktrees (machine-local scratch, never committed)
+.claude/worktrees/
