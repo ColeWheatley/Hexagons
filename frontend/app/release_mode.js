@@ -1,5 +1,7 @@
 // @atlas: Explicit release-mode authority. Never derive beta/production from
-// manifest span, page count, or any other geographic proxy.
+// manifest span, page count, or any other geographic proxy. A benchmark query
+// and the explicit dev-mode toggle are the only runtime overrides, and both
+// change telemetry only, never the selected coverage profile.
 
 export const RELEASE_PROFILE_SCHEMA_VERSION = 1;
 
@@ -18,9 +20,10 @@ export const RELEASE_PROFILES = Object.freeze({
     }),
 });
 
-function profilerPolicy(profile, search) {
+function profilerPolicy(profile, search, devMode = false) {
     const bench = new URLSearchParams(search || '').get('bench');
     if (bench) return Object.freeze({ enabled: true, mode: 'full' });
+    if (devMode) return Object.freeze({ enabled: true, mode: 'bounded-recovery' });
     if (profile.defaultProfilerMode === 'bounded-recovery') {
         return Object.freeze({ enabled: true, mode: 'bounded-recovery' });
     }
@@ -29,10 +32,10 @@ function profilerPolicy(profile, search) {
 
 /**
  * Resolve the release lane solely from the manifest's explicit descriptor.
- * A benchmark query is the only runtime override and changes telemetry only,
- * never the selected coverage profile.
+ * A benchmark query and the explicit dev-mode toggle are the only runtime
+ * overrides; both change telemetry only, never the selected coverage profile.
  */
-export function resolveReleaseMode(manifestRelease, search = '') {
+export function resolveReleaseMode(manifestRelease, search = '', { devMode = false } = {}) {
     if (!manifestRelease || typeof manifestRelease !== 'object') {
         throw new Error('Manifest is missing its explicit release descriptor');
     }
@@ -52,7 +55,7 @@ export function resolveReleaseMode(manifestRelease, search = '') {
         profile: profileName,
         mode: profile.mode,
         coverageProfile: profile.coverageProfile,
-        profiler: profilerPolicy(profile, search),
+        profiler: profilerPolicy(profile, search, devMode),
     });
 }
 

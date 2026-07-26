@@ -2,7 +2,7 @@
 """AA-12/13/15/16 release browser gate (real Chromium, real built app)."""
 import asyncio, json, os, signal, shutil, socket, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import websockets
 from validate_ux_browser_gate import evaluate
 
@@ -12,6 +12,15 @@ def free_debugging_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(('127.0.0.1', 0))
         return probe.getsockname()[1]
+
+def with_dev_param(url):
+    """The gate drives the developer HUD, so it needs dev mode on. Append
+    dev=1 to the query string only if the caller did not already specify a
+    dev= value (an explicit override, e.g. dev=0, is left alone)."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.setdefault('dev', '1')
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 class CDP:
     def __init__(self, ws): self.ws, self.n = ws, 0
@@ -28,6 +37,7 @@ class CDP:
         return result.get('result', {}).get('value')
 
 async def main(url, output):
+    url = with_dev_param(url)
     profile = tempfile.mkdtemp(prefix='hex-ux-gate-')
     debug_port, target_host = free_debugging_port(), urlsplit(url).hostname
     proc = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={debug_port}', f'--user-data-dir={profile}', '--no-first-run', url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

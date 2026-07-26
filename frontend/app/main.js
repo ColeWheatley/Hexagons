@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
 import { LoadingScreen } from './loading_screen.mjs';
-import { setDisclosure, setPanelMinimized, setPressedButton, toggleDisclosure } from './ui_accessibility.js';
+import { setPanelMinimized, setPressedButton } from './ui_accessibility.js';
 import { VRAMLedger } from './vram_ledger.js';
 import { CacheManager } from './cache_manager.js';
 import {
@@ -13,7 +13,8 @@ import {
 } from './capability_profile.js';
 import { PerfProfiler } from './perf_profiler.js';
 import { createProfilerForReleaseMode, resolveReleaseMode } from './release_mode.js';
-import { initBenchmark } from './benchmark.js';
+import { initBenchmark } from './dev/benchmark.js';
+import { initDevMode, isDevModeEnabled } from './dev/dev_entry.js';
 import { ShareableViewState } from './view_state.js';
 import {
     VisibilityClass,
@@ -31,7 +32,6 @@ import {
     planGosperGeometrySelection,
 } from './gosper_geometry_selection.js';
 import {
-    applyLodPauseTransition,
     CameraMotionLatch,
     cameraPoseChanged,
     geometryBuildCanCommit,
@@ -65,9 +65,7 @@ import {
     BOOTSTRAP_PAGE_SIZE_PX,
 } from './texture_page_residency.js';
 import {
-    TEXTURE_HUD_ROWS,
     collectDisplayedTexturePages,
-    collectTextureTierResidency,
     countUnpaintedVisibleTiles,
 } from './texture_hud_telemetry.js';
 import { TexturePageVisibilityAdapter } from './texture_page_visibility_adapter.js';
@@ -235,6 +233,9 @@ const KTX2_FORMAT_MAP = {
 class PistonViewer {
     constructor() {
         console.log(`[HEXAGONS] ${APP_VERSION} — loading...`);
+        this.devTools = null;
+        this.logBuffer = [];
+        this.readouts = {};
         this.container = document.getElementById('canvas-container');
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x0a0a0a); // Dark Grey
@@ -439,19 +440,10 @@ class PistonViewer {
         this.projScreenMatrix = new THREE.Matrix4();
         this.atmosphereSettings = { hazeDistance: DEFAULT_HAZE_DISTANCE };
 
-        // Debug/Stats
-        this.fpsState = { frames: 0, activeElapsed: 0, lastActiveFrame: null };
-        this.fpsEl = document.getElementById('fps-counter');
-        this.hexCountEl = document.getElementById('hex-count');
-        this.triCountEl = document.getElementById('tri-count');
-        this.drawStatsEl = document.getElementById('draw-stats');
-        this.debugSectionEl = document.querySelector('[data-section="debug"]');
-        this.tileHeightEl = document.getElementById('tile-height');
-        this.cameraHeightEl = document.getElementById('camera-height');
+        // Navigation overlay (consumer UI)
         this.distanceScaleBarEl = document.getElementById('distance-scale-bar');
         this.distanceScaleLabelEl = document.getElementById('distance-scale-label');
         this.compassNeedleEl = document.getElementById('compass-needle');
-        this.statsUpdateState = { lastUpdate: 0, interval: 500 };
 
         this.wasMovingView = false;
 
@@ -482,20 +474,13 @@ class PistonViewer {
         });
         this.failedWorkerJobs = new Set();
 
-        // Frametime Graph
-        this.frametimeCanvas = document.getElementById('frametime-graph');
-        this.frametimeCtx = this.frametimeCanvas ? this.frametimeCanvas.getContext('2d') : null;
-        this.frametimeBuffer = new Array(640).fill(16.67); // 60fps baseline
-        this.frametimeLastTime = performance.now();
-
         // LOD Pause Toggle
         this.lodPaused = false;
 
-        this.initDebugConsole();
+        this.log('PistonViewer Initialized.', 'success');
         this.installGlobalBackstop();
         this.initMinimizeButton();
-        this.initCollapsibleSections();
-        this.initLODSliders();
+        this.initConsumerControls();
         this.initLodTruthLabels();
         this.viewState.restorePublicSettings();
         this.updateFogAndClip();
@@ -532,7 +517,8 @@ class PistonViewer {
             firstTextureHeapBytes: null,
         };
         this._textureMilestonesDone = false;
-        this._updateTexBadge(); // seed the on-screen "TEX · loading..." badge immediately
+        this._updateTextureMilestones(); // seed texture bootstrap/milestone tracking immediately
+        this.devTools?.onTextureActivity();
 
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
@@ -1015,50 +1001,10 @@ class PistonViewer {
     }
 
     log(msg, type = "info") {
-        const el = document.getElementById('console-output');
-        // In-app DOM console only — no browser console output
-
-        if (!el) return;
-        const line = document.createElement('div');
-        line.className = `log-line ${type}`;
-        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        el.appendChild(line);
-        el.scrollTop = el.scrollHeight;
-    }
-
-    initDebugConsole() {
-        this.log("PistonViewer Initialized.", "success");
-        this.initCopyLogButton();
-    }
-
-    initCopyLogButton() {
-        const btn = document.getElementById('copy-log-btn');
-        const output = document.getElementById('console-output');
-        if (!btn || !output) return;
-
-        const idleText = btn.textContent || 'COPY';
-        let resetHandle = null;
-        btn.addEventListener('click', async () => {
-            const lines = Array.from(output.querySelectorAll('.log-line'))
-                .map(line => line.textContent.trim())
-                .filter(Boolean);
-            const text = lines.length ? lines.join('\n') : output.textContent.trim();
-            try {
-                await this.writeClipboardText(text);
-                btn.textContent = 'COPIED';
-                btn.classList.add('copied');
-            } catch (e) {
-                btn.textContent = 'FAILED';
-                btn.classList.remove('copied');
-                console.warn('[HUD] Failed to copy status log:', e);
-            }
-
-            if (resetHandle) clearTimeout(resetHandle);
-            resetHandle = setTimeout(() => {
-                btn.textContent = idleText;
-                btn.classList.remove('copied');
-            }, 1200);
-        });
+        const entry = { t: Date.now(), msg, type };
+        this.logBuffer.push(entry);
+        if (this.logBuffer.length > 400) this.logBuffer.shift();
+        this.devTools?.onLog(entry);
     }
 
     async writeClipboardText(text) {
@@ -1404,82 +1350,20 @@ class PistonViewer {
         }
     }
 
-    initCollapsibleSections() {
-        document.querySelectorAll('.collapsible-header').forEach(header => {
-            const content = document.getElementById(header.getAttribute('aria-controls'));
-            if (!content) return;
-            setDisclosure(header, content, !header.parentElement.classList.contains('collapsed'));
-            header.addEventListener('click', () => {
-                const section = header.parentElement;
-                const expanded = toggleDisclosure(header, content);
-                section.classList.toggle('collapsed', !expanded);
-                if (section === this.debugSectionEl && expanded) {
-                    this.updateRendererDebugStats();
-                }
-            });
-        });
-    }
-
     initLodTruthLabels() {
         const km = value => `${value / 1000}`;
         const nearBands = Array.from(this.settledLodRadii.slice(0, 3), km);
         const farBands = Array.from(this.settledLodRadii.slice(3, 5), km);
         const movingWidth = G.levelSize(this.movingLevel);
-        this._setHudText('near-lod-bands', `${nearBands.join(' / ')} km`);
-        this._setHudText('far-lod-bands', `${farBands.join(' / ')} km`);
-        this._setHudText(
-            'moving-lod-summary',
-            `moving: uniform skirtless L${this.movingLevel} (${movingWidth.toFixed(0)} m)`,
-        );
-        this._setHudText(
-            'settled-lod-summary',
-            `settled: fixed ${[...nearBands, ...farBands].join(' / ')} km bands`,
-        );
+        this.readouts.nearLodBands = `${nearBands.join(' / ')} km`;
+        this.readouts.farLodBands = `${farBands.join(' / ')} km`;
+        this.readouts.movingLodSummary =
+            `moving: uniform skirtless L${this.movingLevel} (${movingWidth.toFixed(0)} m)`;
+        this.readouts.settledLodSummary =
+            `settled: fixed ${[...nearBands, ...farBands].join(' / ')} km bands`;
     }
 
-    _formatTextureDistance(distanceM) {
-        if (!(distanceM > 0)) return 'OFF';
-        return distanceM >= 1000
-            ? `${(distanceM / 1000).toFixed(distanceM % 1000 === 0 ? 0 : 1)}km`
-            : `${distanceM}m`;
-    }
-
-    initLODSliders() {
-        // Non-mini fog/horizon transition; unrelated to residency.
-        const rdSlider = document.getElementById('haze-distance-slider');
-        const rdVal = document.getElementById('haze-distance-val');
-        if (rdSlider) {
-            rdSlider.value = this.atmosphereSettings.hazeDistance / 1000;
-            if (rdVal) rdVal.textContent = (this.atmosphereSettings.hazeDistance / 1000) + "km";
-            rdSlider.addEventListener('input', () => {
-                this.atmosphereSettings.hazeDistance = parseInt(rdSlider.value) * 1000;
-                if (rdVal) rdVal.textContent = rdSlider.value + "km";
-                this.updateFogAndClip();
-                this.viewState?.commitSettingsChange();
-            });
-        }
-
-        // Pink texture range. The runtime compares this only with full 3D
-        // camera-to-page-center distance; screen footprint is not an input.
-        const texSlider = document.getElementById('tex-upgrade-slider');
-        const texVal = document.getElementById('tex-upgrade-val');
-        if (texSlider) {
-            texSlider.min = '0';
-            texSlider.max = '5000';
-            texSlider.step = '100';
-            texSlider.value = this.highTextureDistanceM;
-            if (texVal) texVal.textContent = this._formatTextureDistance(this.highTextureDistanceM);
-            texSlider.addEventListener('input', () => {
-                // Object.freeze protects defaults, so retain a deliberately
-                // tiny per-view override for manual tuning.
-                this.highTextureDistanceM = parseInt(texSlider.value, 10);
-                if (texVal) texVal.textContent = this._formatTextureDistance(this.highTextureDistanceM);
-                this.needsLODUpdate = true;
-                this.needsRender = true;
-                this.viewState?.commitSettingsChange();
-            });
-        }
-
+    initConsumerControls() {
         // Gradient Toggle
         const terrainBtn = document.getElementById('gradient-terrain');
         const gradientBtn = document.getElementById('gradient-slope');
@@ -1513,29 +1397,12 @@ class PistonViewer {
                 this.viewState?.commitSettingsChange();
             });
         }
-
-        // LOD Pause Toggle
-        const lodPauseToggle = document.getElementById('lod-pause-toggle');
-        if (lodPauseToggle) {
-            lodPauseToggle.addEventListener('change', (e) => {
-                applyLodPauseTransition(this, e.target.checked);
-                this.log(this.lodPaused ? "LOD Updates PAUSED" : "LOD Updates RESUMED", "info");
-            });
-        }
     }
 
     applyPublicSettings(settings) {
         this.atmosphereSettings.hazeDistance = settings.hazeDistanceKm * 1000;
         this.highTextureDistanceM = settings.highTextureDistanceM;
         this.gradientMode = settings.gradientMode;
-        const hazeSlider = document.getElementById('haze-distance-slider');
-        const hazeValue = document.getElementById('haze-distance-val');
-        if (hazeSlider) hazeSlider.value = String(settings.hazeDistanceKm);
-        if (hazeValue) hazeValue.textContent = `${settings.hazeDistanceKm}km`;
-        const textureSlider = document.getElementById('tex-upgrade-slider');
-        const textureValue = document.getElementById('tex-upgrade-val');
-        if (textureSlider) textureSlider.value = String(settings.highTextureDistanceM);
-        if (textureValue) textureValue.textContent = this._formatTextureDistance(settings.highTextureDistanceM);
         const terrainBtn = document.getElementById('gradient-terrain');
         const gradientBtn = document.getElementById('gradient-slope');
         const terrain = settings.gradientMode === 0;
@@ -1549,6 +1416,7 @@ class PistonViewer {
         }
         this.updateFogAndClip();
         this.needsLODUpdate = true;
+        this.devTools?.syncControls();
     }
 
     // --- FIXED WORLD-DISTANCE LOD BAND RADII ---
@@ -1914,7 +1782,7 @@ class PistonViewer {
             const manifest = await this._loadManifestWithRetry(scope);
             if (!this.appLifecycle.isCurrent(scope)) return;
             this.manifest = manifest;
-            this.releaseMode = resolveReleaseMode(this.manifest.release, window.location.search);
+            this.releaseMode = resolveReleaseMode(this.manifest.release, window.location.search, { devMode: isDevModeEnabled() });
             this.profiler = createProfilerForReleaseMode(this, this.releaseMode, PerfProfiler);
             this.profiler?.setMeta({
                 releaseProfile: this.releaseMode.profile,
@@ -1928,8 +1796,7 @@ class PistonViewer {
             const supportedBinaryVersions = new Set(this.binaryContract.supported_versions || [1, 2]);
             // This is release configuration, not a geographic heuristic.
             this.isMiniBake = this.releaseMode.profile === 'beta-stubai';
-            const hazeControl = document.getElementById('haze-distance-control');
-            if (hazeControl) hazeControl.hidden = this.isMiniBake;
+            this.devTools?.syncControls();
             this.updateFogAndClip();
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
@@ -2645,143 +2512,6 @@ class PistonViewer {
         this.globalStats.count++;
     }
 
-    formatHudNumber(value) {
-        return Number.isFinite(value) ? Math.round(value).toLocaleString() : '--';
-    }
-
-    updateRendererDebugStats() {
-        if (!this.debugSectionEl || this.debugSectionEl.classList.contains('collapsed')) return;
-
-        const renderInfo = this.renderer?.info?.render || {};
-        const memoryInfo = this.renderer?.info?.memory || {};
-        if (this.triCountEl) {
-            this.triCountEl.textContent = this.formatHudNumber(renderInfo.triangles);
-        }
-        if (this.drawStatsEl) {
-            this.drawStatsEl.textContent = `Calls: ${this.formatHudNumber(renderInfo.calls)} | ` +
-                `G:${this.formatHudNumber(memoryInfo.geometries)} | T:${this.formatHudNumber(memoryInfo.textures)}`;
-        }
-    }
-
-    updateRenderStats(now) {
-        if (now - this.statsUpdateState.lastUpdate < 500) return;
-        this.statsUpdateState.lastUpdate = now;
-        this.updateRendererDebugStats();
-
-        let capCount = 0;
-        let skirtCount = 0;
-
-        for (const t of this.tiles.values()) {
-            if (t.mesh && t.mesh.isGroup) {
-                // Caps are always first child, skirts second
-                // Iterate through all children, as each LOD is a group of cap/skirt
-                t.mesh.children.forEach(lodGroup => {
-                    if (lodGroup.isGroup && lodGroup.visible) {
-                        const capMesh = lodGroup.children[0];
-                        const skirtMesh = lodGroup.children[1];
-                        if (capMesh && capMesh.visible) capCount += capMesh.count;
-                        if (skirtMesh && skirtMesh.visible) skirtCount += (lodGroup.userData.activeSkirts || 0);
-                    }
-                });
-            }
-        }
-
-        const countEl = document.getElementById('hex-count');
-        if (countEl) {
-            countEl.innerHTML = `
-                <span style="color: #00d2ff">${capCount.toLocaleString()} TOPS</span> | 
-                <span style="color: #ff7675">${skirtCount.toLocaleString()} SKIRTS</span>
-            `;
-        }
-    }
-
-    updateFps(now, willRender) {
-        if (!this.fpsEl) return;
-        const dist = this.camera.position.distanceTo(this.controls.target);
-
-        // STATIC means the camera and refinement state are settled even when a
-        // one-off maintenance render was requested. Reporting that sparse
-        // maintenance cadence as active FPS is misleading, so STATIC is
-        // always truthfully idle.
-        if (this.engineState === ENGINE_STATES.STATIC) {
-            this.fpsEl.textContent = `FPS: IDLE | Zoom: ${dist.toFixed(0)}`;
-            this.fpsState.frames = 0;
-            this.fpsState.activeElapsed = 0;
-            this.fpsState.lastActiveFrame = null;
-            return;
-        }
-
-        if (!willRender) return;
-
-        if (this.fpsState.lastActiveFrame !== null) {
-            this.fpsState.activeElapsed += Math.max(0, now - this.fpsState.lastActiveFrame);
-        }
-        this.fpsState.lastActiveFrame = now;
-        this.fpsState.frames += 1;
-        if (this.fpsState.activeElapsed < 500 || this.fpsState.frames < 2) return;
-
-        const fps = ((this.fpsState.frames - 1) * 1000) / this.fpsState.activeElapsed;
-        this.fpsEl.textContent = `FPS: ${fps.toFixed(0)} | Zoom: ${dist.toFixed(0)}`;
-        this.fpsState.frames = 1;
-        this.fpsState.activeElapsed = 0;
-        this.fpsState.lastActiveFrame = now;
-    }
-
-    updateFrametimeGraph() {
-        if (!this.frametimeCtx) return;
-
-        const now = performance.now();
-        const frametime = now - this.frametimeLastTime;
-        this.frametimeLastTime = now;
-
-        // Update buffer (shift left, add new value on right)
-        this.frametimeBuffer.shift();
-        this.frametimeBuffer.push(frametime);
-
-        const ctx = this.frametimeCtx;
-        const width = this.frametimeCanvas.width;
-        const height = this.frametimeCanvas.height;
-
-        // Clear canvas
-        ctx.fillStyle = '#0a0a0a';
-        ctx.fillRect(0, 0, width, height);
-
-        // Draw grid lines
-        ctx.strokeStyle = '#222';
-        ctx.lineWidth = 1;
-        // 16.67ms line (60fps)
-        const y60 = height - (16.67 / 50) * height;
-        ctx.beginPath();
-        ctx.moveTo(0, y60);
-        ctx.lineTo(width, y60);
-        ctx.stroke();
-        // 33.33ms line (30fps)
-        const y30 = height - (33.33 / 50) * height;
-        ctx.beginPath();
-        ctx.moveTo(0, y30);
-        ctx.lineTo(width, y30);
-        ctx.stroke();
-
-        // Draw frametime graph
-        ctx.strokeStyle = '#74b9ff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let i = 0; i < this.frametimeBuffer.length; i++) {
-            const ft = Math.min(this.frametimeBuffer[i], 50); // Cap at 50ms for display
-            const x = i;
-            const y = height - (ft / 50) * height;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        // Draw labels
-        ctx.fillStyle = '#666';
-        ctx.font = '10px monospace';
-        ctx.fillText('16.67ms (60fps)', 5, y60 - 3);
-        ctx.fillText('33.33ms (30fps)', 5, y30 - 3);
-    }
-
     // --- CORE LOOP ---
 
     _textureResourceKey(resourceOrKey) {
@@ -3395,7 +3125,8 @@ class PistonViewer {
                 setTierState(state, task.tier, TIER_STATE.FAILED);
                 this._markTextureFailed(task.key, task.tier, error);
                 this._texErrorCount++;
-                this._updateTexBadge();
+                this._updateTextureMilestones();
+                this.devTools?.onTextureActivity();
                 if (this._texErrorCount <= 3) {
                     console.warn(`[TEX_FAIL] ${task.key}/${task.tier}: ${error.message}`);
                 }
@@ -4212,66 +3943,19 @@ class PistonViewer {
         this.texStats.maxTranscodeMs = Math.max(this.texStats.maxTranscodeMs, texResult.transcodeMs || 0);
         this.texStats.formatKey = texResult.formatKey;
         this.texStats.totalGpuBytes += texResult.gpuBytes || 0;
-        this._updateTexBadge();
+        this._updateTextureMilestones();
+        this.devTools?.onTextureActivity();
     }
 
-    // On-screen page telemetry (bottom-left, always visible without opening
-    // devtools). "Displayed" is binding-driven and deduplicated across every
-    // visible geometry consumer; fetched-only and manifest-only pages do not
-    // inflate it.
-    _updateTexBadge() {
-        if (!this._texBadgeEl) {
-            const el = document.createElement('div');
-            el.id = 'tex-debug-badge';
-            el.style.cssText = [
-                'position:fixed',
-                'bottom:max(8px,env(safe-area-inset-bottom))',
-                'left:max(8px,env(safe-area-inset-left))',
-                'max-width:calc(100vw - 16px)',
-                'background:rgba(7,20,34,0.82)',
-                "font:10px/1.35 'Courier New',monospace",
-                'font-variant-numeric:tabular-nums',
-                'padding:5px 7px', 'border-radius:6px',
-                'border:1px solid rgba(151,193,224,0.24)',
-                'box-shadow:0 2px 10px rgba(0,0,0,0.2)',
-                'z-index:9999', 'pointer-events:none', 'white-space:nowrap',
-                'display:grid', 'gap:2px',
-            ].join(';');
-            const rowElements = new Map();
-            for (const rowSpec of TEXTURE_HUD_ROWS) {
-                const row = document.createElement('div');
-                row.className = 'tex-debug-row';
-                row.dataset.tier = rowSpec.tier;
-                row.dataset.sizePx = String(rowSpec.size);
-                row.style.cssText = [
-                    'display:grid', 'grid-template-columns:7px 68px auto',
-                    'align-items:center', 'column-gap:5px',
-                ].join(';');
-
-                const swatch = document.createElement('span');
-                swatch.dataset.role = 'tier-swatch';
-                swatch.style.cssText = [
-                    'display:block', 'width:6px', 'height:6px', 'border-radius:50%',
-                    `background:${rowSpec.color}`, `box-shadow:0 0 5px ${rowSpec.color}`,
-                ].join(';');
-
-                const label = document.createElement('span');
-                label.dataset.role = 'tier-label';
-                label.style.cssText = `color:${rowSpec.color};font-weight:700`;
-                label.textContent = `${rowSpec.label} ${rowSpec.size}px`;
-
-                const metrics = document.createElement('span');
-                metrics.dataset.role = 'tier-metrics';
-                metrics.style.color = '#d7e6f2';
-
-                row.append(swatch, label, metrics);
-                el.appendChild(row);
-                rowElements.set(rowSpec.tier, { row, metrics });
-            }
-            document.body.appendChild(el);
-            this._texBadgeEl = el;
-            this._texBadgeRows = rowElements;
-        }
+    // Engine-owned texture bootstrap/profiler milestones. "Displayed" is
+    // binding-driven and deduplicated across every visible geometry consumer;
+    // fetched-only and manifest-only pages do not count. This must keep
+    // running in consumer mode (no dev HUD attached) — it drives
+    // _finishTextureBootstrapPhase and the firstTexture/visibleTexturedCoverage
+    // profiler milestones, not just badge display. Once both are settled it
+    // early-returns so consumer mode stops paying for the page-collection walk.
+    _updateTextureMilestones() {
+        if (this._textureMilestonesDone && !this.bootstrapPhaseActive) return;
 
         const displayed = collectDisplayedTexturePages(this.tiles, this.visibilityByKey);
         const hasDisplayedPage = Object.values(displayed).some(pages => pages.size > 0);
@@ -4294,36 +3978,6 @@ class PistonViewer {
                 milestones.visibleTexturedCoverage !== undefined
             );
         }
-        const residency = collectTextureTierResidency(this.textureStates);
-        const snapshot = TEXTURE_HUD_ROWS.map(({ tier }) => ({
-            tier,
-            displayed: displayed[tier].size,
-            loaded: residency.loaded[tier],
-            pending: residency.pending[tier],
-            failed: residency.failed[tier],
-        }));
-        const signature = JSON.stringify([this.texStats.formatKey, snapshot]);
-        if (signature === this._texBadgeSignature) return;
-        this._texBadgeSignature = signature;
-
-        for (const counts of snapshot) {
-            const { row, metrics } = this._texBadgeRows.get(counts.tier);
-            row.dataset.displayed = String(counts.displayed);
-            row.dataset.loaded = String(counts.loaded);
-            row.dataset.pending = String(counts.pending);
-            row.dataset.failed = String(counts.failed);
-            metrics.textContent = `displayed ${counts.displayed} · loaded ${counts.loaded} · q/inflight ${counts.pending} · fail ${counts.failed}`;
-            metrics.style.color = counts.failed > 0 ? '#ff9c9c' : '#d7e6f2';
-        }
-        const format = this.texStats.formatKey || 'loading';
-        this._texBadgeEl.dataset.format = format;
-        this._texBadgeEl.title = `Texture pages · ${format}`;
-        this._texBadgeEl.setAttribute(
-            'aria-label',
-            `Texture pages ${format}. ${snapshot.map(counts =>
-                `${counts.tier}: ${counts.displayed} displayed, ${counts.loaded} loaded, ${counts.pending} queued or inflight, ${counts.failed} failed`
-            ).join('. ')}`,
-        );
     }
 
     processInstantiationQueue() {
@@ -4522,7 +4176,8 @@ class PistonViewer {
             // Re-evaluate paint milestones when that consumer is attached;
             // otherwise the profiler waits for an unrelated later texture
             // result and reports a falsely slow first textured frame.
-            this._updateTexBadge();
+            this._updateTextureMilestones();
+            this.devTools?.onTextureActivity();
 
             this.tileStates.delete(key);
             if (!this.loaderHidden) {
@@ -4666,16 +4321,6 @@ class PistonViewer {
         this.searchBar = new HexSearch();
     }
 
-    // HUD readouts: cache element refs once and only touch the DOM when the
-    // string actually changed — this method runs every rendered frame.
-    _setHudText(id, text) {
-        if (!this._hudEls) { this._hudEls = {}; this._hudLast = {}; }
-        if (this._hudLast[id] === text) return;
-        let el = this._hudEls[id];
-        if (el === undefined) el = this._hudEls[id] = document.getElementById(id);
-        if (el) { el.textContent = text; this._hudLast[id] = text; }
-    }
-
     sampleTerrainSourceElevation(sceneX, sceneZ) {
         const wx = sceneX + this.worldOrigin.x;
         const wy = this.worldOrigin.y - sceneZ;
@@ -4705,9 +4350,9 @@ class PistonViewer {
         const targetSample = this.sampleTerrainSourceElevation(target.x, target.z);
 
         // Update Readouts
-        this._setHudText('sector-val', `${targetSample.tq}, ${targetSample.tr}`);
-        this._setHudText('world-val', `${targetSample.wx.toFixed(0)}, ${targetSample.wy.toFixed(0)}`);
-        this._setHudText('hex-val', `${targetSample.axial.q}, ${targetSample.axial.r}`);
+        this.readouts.sector = `${targetSample.tq}, ${targetSample.tr}`;
+        this.readouts.world = `${targetSample.wx.toFixed(0)}, ${targetSample.wy.toFixed(0)}`;
+        this.readouts.hex = `${targetSample.axial.q}, ${targetSample.axial.r}`;
 
         const groundH = targetSample.sourceElevation;
 
@@ -4750,9 +4395,9 @@ class PistonViewer {
             });
             this.camera.position.y = clearance.cameraY;
 
-            this._setHudText('tile-height', `${anchored.terrainY.toFixed(1)}m`);
+            this.readouts.tileHeight = `${anchored.terrainY.toFixed(1)}m`;
         }
-        this._setHudText('camera-height', `${this.camera.position.y.toFixed(0)}m`);
+        this.readouts.cameraHeight = `${this.camera.position.y.toFixed(0)}m`;
     }
     updateNavigationOverlay() {
         if (!this.distanceScaleBarEl || !this.distanceScaleLabelEl || !this.compassNeedleEl) return;
@@ -5160,20 +4805,20 @@ class PistonViewer {
         // Queue/loading state can change without a successful transcode. Keep
         // startup telemetry live even on an otherwise idle render tick; after
         // the loader closes, render frames and texture callbacks own updates.
-        if (!this.loaderHidden) this._updateTexBadge();
+        if (!this.loaderHidden) {
+            this._updateTextureMilestones();
+            this.devTools?.onTextureActivity();
+        }
 
         // --- RENDER CHECK ---
         // STATIC state: must NOT render. Early-out if nothing moved and no flags set.
         const willRender = moved || this.needsRender;
         this.profiler?.frame(now, this.engineState, willRender);
-        this.updateFps(now, willRender);
+        this.devTools?.onFrame(now, willRender);
         if (!willRender) return { active: this._schedulerHasWork() };
 
         // ===== BEGIN TIMED RENDER CYCLE =====
         const cycleStart = performance.now();
-
-        this.updateRenderStats(now);
-        this.updateFrametimeGraph();
 
         // --- VISIBILITY PASS ---
         // No flat-plane swap (top-down 2D is just the flattened caps via
@@ -5191,7 +4836,8 @@ class PistonViewer {
         // --- MATERIAL UNIFORM UPDATE ---
         this.computeLodRadii();
         this.updateLevelVisibility(h);
-        this._updateTexBadge();
+        this._updateTextureMilestones();
+        this.devTools?.onTextureActivity();
         this.materialChurn.uniformPasses++;
         writeUniformIfChanged(this.sharedMaterialUniforms.heightFactor, h, this.materialChurn);
         writeUniformIfChanged(this.sharedMaterialUniforms.floorOffset, this.floorState.value, this.materialChurn);
@@ -5285,4 +4931,5 @@ class PistonViewer {
 }
 
 new PistonViewer();
+initDevMode(window.pistonViewer, APP_VERSION);
 initBenchmark(window.pistonViewer, APP_VERSION);
