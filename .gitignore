@@ -42,3 +42,6 @@ bake_log_*.log
 
 # Pixi environment (machine-local, never tracked)
 .pixi/
+
+# Playwright MCP scratch output
+.playwright-mcp/

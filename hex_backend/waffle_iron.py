@@ -412,12 +412,34 @@ def verify_basisu_xuastc(basisu_bin, encoding_profile=DEFAULT_TEXTURE_ENCODING_P
         )
 
 
+def basisu_max_threads():
+    """Per-process thread budget for basisu.
+
+    basisu's intra-image encode stops scaling near ~5.4 effective cores (the
+    measured 1,616% CPU across 3 concurrent workers on a 32-core box). Handing
+    every concurrent encode `os.cpu_count()` therefore oversubscribes badly:
+    N processes x 32 threads thrash while the machine sits half idle. The
+    throughput-optimal shape is more processes with fewer threads each, so this
+    is a knob rather than a constant.
+
+    Override with HEXAGONS_BASISU_MAX_THREADS; defaults to the old behaviour.
+    """
+    override = os.environ.get("HEXAGONS_BASISU_MAX_THREADS")
+    if override:
+        value = int(override)
+        if value < 1:
+            raise ValueError("HEXAGONS_BASISU_MAX_THREADS must be >= 1")
+        return value
+    return os.cpu_count() or 4
+
+
 def run_basisu_encode(
     input_png,
     output_ktx2,
     encoding_profile=DEFAULT_TEXTURE_ENCODING_PROFILE,
     tier_name="high",
     encoding_effort=None,
+    max_threads=None,
 ):
     """
     Encode a PNG with one named XUASTC profile/tier. No fallback codec exists.
@@ -443,7 +465,7 @@ def run_basisu_encode(
         "-mip_srgb",
         "-no_alpha",
         "-y_flip",
-        "-max_threads", str(os.cpu_count() or 4),
+        "-max_threads", str(max_threads if max_threads is not None else basisu_max_threads()),
         "-file", str(input_png),
         "-output_file", str(output_ktx2),
     ]
