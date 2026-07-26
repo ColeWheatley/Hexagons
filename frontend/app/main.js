@@ -1285,6 +1285,13 @@ class PistonViewer {
         this.texturePageGrid = null;
         this.texturePageResidency = null;
         this.texturePageVisibilityAdapter = null;
+        // Mirror first boot: with the manifest-derived world gone, updateLOD
+        // must early-return until initWorld rebuilds the adapter. Leaving the
+        // old adapter armed lets a scheduler tick in this window dereference
+        // the nulled manifestGrid, and that throw escapes frame() before the
+        // next wake is scheduled — killing the rAF loop mid-retry.
+        this.visibilityAdapter = null;
+        this.visibilityBootstrapReady = false;
         this.textureStates = new Map();
         this.visibilityByKey.clear();
         this.currentVisibilityContext = null;
