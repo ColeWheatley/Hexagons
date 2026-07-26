@@ -175,7 +175,12 @@ async def main(url, output):
                 const searchInput=document.querySelector('#hex-search-input');
                 record('hex-search-input',searchInput.value==='Habicht'&&new URL(location.href).searchParams.get('view')==='1','keyboard query and selection');
 
+                // data-ux-gate-exempt marks control groups whose actions cannot
+                // be exercised in-run by design (e.g. the dev benchmark
+                // launcher, whose buttons reload the page into this gate's own
+                // scripted scenarios or trigger file downloads).
                 const visible=Array.from(document.querySelectorAll('button,input,select,textarea')).filter(isVisible)
+                  .filter(el=>!el.closest('[data-ux-gate-exempt]'))
                   .map(el=>el.id||`disclosure:${el.getAttribute('aria-controls')}`||el.tagName);
                 const covered=new Set(actions.map(row=>row.name));
                 const uncovered=visible.filter(name=>!covered.has(name));

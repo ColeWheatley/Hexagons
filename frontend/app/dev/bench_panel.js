@@ -60,6 +60,10 @@ export function buildBenchSection(viewer) {
     content.id = 'bench-content';
     content.hidden = true;
     content.setAttribute('aria-hidden', 'true');
+    // The UX browser gate exercises every visible control; these buttons
+    // reload the page into the gate's own scripted scenarios (or trigger
+    // file downloads), which the gate cannot meaningfully exercise in-run.
+    content.dataset.uxGateExempt = 'navigates-or-downloads';
 
     const btnRow = document.createElement('div');
     btnRow.className = 'dev-bench-btn-row';
@@ -154,13 +158,16 @@ export function buildBenchSection(viewer) {
         const p95 = report.frames?.p95_ms;
         const ageMs = Date.now() - new Date(meta.timestamp).getTime();
         const ageMin = Number.isFinite(ageMs) ? Math.max(0, Math.round(ageMs / 60000)) : '?';
-        const status = meta.finished ? 'finished' : 'CRASHED';
+        // The live profiler persists rolling unfinished snapshots by design;
+        // only a *different* run's unfinished snapshot means a crash.
+        const isLiveSession = !meta.finished && meta.runId && meta.runId === viewer.profiler?.runId;
+        const status = meta.finished ? 'finished' : (isLiveSession ? 'live session' : 'CRASHED');
         summary.textContent =
             `${meta.scenario || 'manual'} · ${Number.isFinite(fpsAvg) ? fpsAvg.toFixed(1) : '--'} fps · ` +
             `p95 ${Number.isFinite(p95) ? p95.toFixed(1) : '--'}ms · ${status} · ${ageMin}min ago`;
 
-        crashNotice.hidden = meta.finished !== false;
-        if (meta.finished === false) {
+        crashNotice.hidden = meta.finished !== false || isLiveSession;
+        if (meta.finished === false && !isLiveSession) {
             crashNotice.textContent =
                 `Recovered an unfinished run (scenario=${meta.scenario || 'unknown'}, runId=${meta.runId || 'unknown'}). ` +
                 'The profiler or the tab likely crashed mid-run; the report above reflects its last persisted snapshot.';
