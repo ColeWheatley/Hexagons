@@ -63,13 +63,17 @@ snowpack inputs were synthetic.
 ## File format
 
 `<out>/avalanche/<YYYY>/<MM>/<DD>/<HH>.pfl` — 32-byte `PFL1` header
-(`pfl.py`: magic, u16 version, u16 layerId=3, u32 epochHour, u32 tileCount,
+(`pfl.py`: magic, u16 version, u16 layerId, u32 epochHour, u32 tileCount,
 u16 nodeCount=2401, u8 encoding, u8 aggregate, u32 manifestHash = CRC32 of
-tile_manifest.json, 8 reserved) + `tileCount × 2401` body. Header enums are
-centralized in `config.py` and must stay byte-identical with the snowpack
-writer — the design doc's field list sums to 36 B against a stated 32 B
-header; this writer closes it with 8 reserved bytes (**flagged for byte-exact
-confirmation with snowpack-design**). Daily cadence emits at `HH=12`.
+the raw tile_manifest.json bytes, **8 reserved — ratified canonical**, body
+at offset 32) + `tileCount × 2401` body. Enum values follow the canonical
+(snowpack) table per the 2026-07-29 ruling: layerId avalanche=**4**,
+encoding packed_bits=**3**, aggregate max=**2**; the manifest-hash algorithm
+is ours (whole-file CRC32). `config.py` imports `snow_backend/pfl_enums.py`
+(the shared registry) when present; its local literals are bootstrap-only.
+Daily cadence emits at `HH=12`. Note: the first retro generation predates
+this ruling and carries layerId 3 / encoding 2 / aggregate 1 in headers —
+superseded by the bulletin-prior rerun.
 
 ## External interfaces
 

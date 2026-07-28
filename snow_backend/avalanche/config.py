@@ -96,13 +96,24 @@ TERRAIN_COLUMNS_NPZ = _external("AVALANCHE_TERRAIN_COLUMNS", "terrain_columns.np
 BULLETIN_TIMELINE = _external("AVALANCHE_BULLETIN_TIMELINE", "timeline.json")
 
 # --- PFL sidecar container ---------------------------------------------------
-# 32-byte PFL1 header + tileCount x 2401 body (manifest tile order).
-# Enum values below must stay byte-identical with the snowpack writer
-# (coordinated with snowpack-design, who owns index.json).
-PFL_VERSION = 1
-PFL_LAYER_ID_AVALANCHE = 3
-PFL_ENCODING_PACKED_BITS = 2
-PFL_AGGREGATE_MAX = 1
+# 32-byte PFL1 header (8 reserved bytes -- ratified canonical) + tileCount x
+# 2401 body (manifest tile order). Enum values follow the team-lead ruling of
+# 2026-07-29: snowpack's table is canonical; snow_backend/pfl_enums.py is the
+# shared registry and is preferred as soon as it lands. The literals below are
+# the ruled values and MUST BE DELETED in favor of the import once pfl_enums
+# exists (they are a bootstrap, not a fork).
+try:
+    from snow_backend.pfl_enums import (  # type: ignore
+        PFL_VERSION,
+        PFL_LAYER_ID_AVALANCHE,
+        PFL_ENCODING_PACKED_BITS,
+        PFL_AGGREGATE_MAX,
+    )
+except ImportError:
+    PFL_VERSION = 1
+    PFL_LAYER_ID_AVALANCHE = 4
+    PFL_ENCODING_PACKED_BITS = 3
+    PFL_AGGREGATE_MAX = 2
 EMIT_HOUR = 12  # daily cadence emits one step at 12:00 local
 
 # --- Winter retrospective ---------------------------------------------------
