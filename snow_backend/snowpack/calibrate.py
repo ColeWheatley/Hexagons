@@ -44,10 +44,17 @@ def theta_from_vector(v):
     return base._replace(**upd)
 
 
-def load_station_problem(data_dir, max_dist_m=3000.0):
+def load_station_problem(data_dir, max_dist_m=float("inf")):
+    """Stations that have observation files.  NOTE (data reality, 2026-07):
+    every station with a numeric series lies OUTSIDE the beta footprint
+    (9-52 km); their mapped columns are elevation-comparable proxies, so the
+    fit is a magnitude calibration, not a point validation — weight by
+    1/distance or gate on elevation similarity when running in earnest."""
     st = [s for s in json.load(open(os.path.join(data_dir, "station_columns.json")))
           if s["distance_m"] < max_dist_m and s.get("file")]
-    cols = np.array([s["column_id"] for s in st])
+    if not st:
+        raise SystemExit("no stations with observation files in station_columns.json")
+    cols = np.array([s["column_id"] for s in st], dtype=np.int64)
     terr = np.load(os.path.join(data_dir, "terrain_columns.npz"))
     static = Static(
         elev=terr["elev_m"][cols], dz_node=terr["dz_node_m"][cols],
