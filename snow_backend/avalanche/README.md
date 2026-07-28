@@ -23,6 +23,23 @@ severity clamps to ≥ 2 so it cannot alias "simulated, no hazard". So:
 severity domain is [1,127] for release cells, [2,127] for runout cells; the
 frontend may treat raw 128 as a data error.
 
+⚠ **The runout floor of 2 is LOAD-BEARING, not cosmetic.** The frontend's
+per-field LOD reduction takes `max` over severity — if runout could emit
+severity 1, a coarse hex whose worst child is a barely-reached runout cell
+would aggregate to byte 1 and be indistinguishable from "simulated, no
+hazard": real hazard manufactured into the no-hazard value. Starting runout
+at 2 makes that impossible by construction. Do not "tidy" the runout domain
+to [1,127].
+
+**Coarse-level semantics under per-field reduction** (release "or",
+severity "max"): a reduced byte can be a combination no child cell had —
+e.g. children {129 (release, sev 1), 127 (runout, sev 127)} reduce to 255.
+Read a coarse byte as: *"this hex CONTAINS at least one release-zone cell,
+and the worst severity ANYWHERE in it is X"* — deliberately conservative,
+never understating, and NOT "there is a single release cell with severity
+X". This is intended behavior, matching the safety rationale for `max`
+aggregation in the frontend design (§1.3).
+
 **Bulletin prior** (`bulletin.py`, a labeled heuristic): when the recon
 timeline (`avalanche_work/inputs/timeline.json` or
 `AVALANCHE_BULLETIN_TIMELINE`) is present, packed severities are scaled by a
