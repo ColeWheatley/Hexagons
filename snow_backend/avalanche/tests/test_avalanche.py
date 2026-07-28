@@ -224,31 +224,80 @@ def _cols(n=1):
     return dict(elev=elev, aspect_rad=aspect, valid=np.ones((1, 4), dtype=bool))
 
 
+def _timeline_entry():
+    """Realistic entry in the recon timeline.json schema."""
+    return {
+        "date": "2026-01-15",
+        "regions": [{"regionID": "AT-07-22", "name": "Stubai Alps Central"}],
+        "valid_from": "2026-01-14T16:00:00Z",
+        "valid_to": "2026-01-15T16:00:00Z",
+        "danger_ratings": [
+            {"level": "moderate", "elevation_lower": None,
+             "elevation_upper": "2000", "valid_time_period": "all_day"},
+            {"level": "high", "elevation_lower": "2000",
+             "elevation_upper": None, "valid_time_period": "all_day"},
+        ],
+        "problems": [
+            {"type": "wind_slab", "aspects": ["N", "NE"],
+             "elevation_min": "2000", "elevation_max": None,
+             "time_of_day": "all_day", "avalanche_size": 2, "frequency": "some"},
+        ],
+    }
+
+
 def test_bulletin_factor_matching():
     from .. import bulletin
     from datetime import date
 
-    timeline = {"2026-01-15": {
-        "danger": {"below": 2, "above": 4, "elev_split_m": 2000},
-        "problems": [{"aspects": ["N", "NE"], "elev_min_m": 2000, "elev_max_m": None}],
-    }}
+    timeline = {"2026-01-15": _timeline_entry()}
     cols = _cols()
     f, meta = bulletin.severity_factor(timeline, date(2026, 1, 15), cols)
-    assert meta["applied"]
-    # col 3: N aspect, 2400 m -> matched, danger 4 -> 1.25
+    assert meta["applied"] and meta["problem_types"] == ["wind_slab"]
+    # col 3: N aspect, 2400 m -> matched, high (4) -> 1.25
     assert f[0, 3] == pytest.approx(1.25)
     # col 2: S aspect, 2400 m -> unmatched, damped halfway: 1 + 0.25/2
     assert f[0, 2] == pytest.approx(1.125)
-    # col 0: 1400 m, danger below split = 2 -> unmatched (elev band) 0.875
+    # col 0: 1400 m, moderate (2) below split -> unmatched 0.875
     assert f[0, 0] == pytest.approx(0.875)
 
 
-def test_bulletin_absent_is_identity():
+def test_bulletin_time_of_day_filter():
+    from .. import bulletin
+    from datetime import date
+
+    e = _timeline_entry()
+    e["problems"][0]["time_of_day"] = "earlier"  # not active at the 12:00Z emit
+    f, meta = bulletin.severity_factor({"2026-01-15": e}, date(2026, 1, 15), _cols())
+    assert meta["matched_hexes"] == 0  # problem filtered out -> all damped
+    assert f[0, 3] == pytest.approx(1.125)
+
+
+def test_bulletin_absent_and_nulled_are_identity():
     from .. import bulletin
     from datetime import date
 
     f, meta = bulletin.severity_factor(None, date(2026, 1, 15), _cols())
     assert not meta["applied"] and (f == 1.0).all()
+    nulled = {"2026-01-15": {"date": "2026-01-15", "danger_ratings": None,
+                             "problems": None}}
+    f, meta = bulletin.severity_factor(nulled, date(2026, 1, 15), _cols())
+    assert not meta["applied"] and meta["reason"] == "day nulled in timeline"
+    assert (f == 1.0).all()
+
+
+def test_load_timeline_picks_primary_region_and_noon_window(tmp_path):
+    from .. import bulletin
+    import json as _json
+
+    other = dict(_timeline_entry(), regions=[{"regionID": "AT-07-99", "name": "x"}])
+    late = dict(_timeline_entry(), valid_from="2026-01-15T16:00:00Z",
+                valid_to="2026-01-16T16:00:00Z")  # does not cover 01-15 noon
+    tl = dict(primary_region="AT-07-22", entries=[other, late, _timeline_entry()])
+    p = tmp_path / "timeline.json"
+    p.write_text(_json.dumps(tl))
+    out = bulletin.load_timeline(p)
+    assert list(out) == ["2026-01-15"]
+    assert out["2026-01-15"]["valid_from"] == "2026-01-14T16:00:00Z"
 
 
 def test_apply_to_packed_invariants():
