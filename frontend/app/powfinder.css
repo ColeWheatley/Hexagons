@@ -1,0 +1,22 @@
+/* PowFinder layer picker, legend rows, mode badge, and beta labeling.
+ *
+ * OWNER: task P2.2. Do not add scrubber or popup rules here — they live in
+ * powfinder_scrubber.css (P2.3) and powfinder_popup.css (P2.4) so the three
+ * Phase-2 UI tasks never write the same file.
+ *
+ * Mount points, created by [fe:prep] in index.html and never edited again by
+ * a Phase-2 task:
+ *   #powfinder-dock     bottom dock wrapper (shared; position/stacking only)
+ *   #powfinder-layers   layer picker row
+ *   #powfinder-legend   legend rows, nested inside the existing .legend panel
+ *   #powfinder-intro    first-run beta sheet
+ *
+ * House style: .glass-panel is rgba(20,20,20,0.7) + blur(10px) + 1px
+ * rgba(255,255,255,0.1) + 12px radius. Accent is PowFinder pink #ff6b9d;
+ * leave the engineering HUD's blue (rgba(116,185,255,*)) alone so the two
+ * surfaces stay visually separable. Minimum hit target is 56x56px — this is
+ * operated with gloves. Respect env(safe-area-inset-*) as .legend already does.
+ *
+ * This file is concatenated into the single hashed style bundle by build.mjs
+ * (APP_STYLESHEETS), in listed order after style.css.
+ */

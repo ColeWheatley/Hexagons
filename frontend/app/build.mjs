@@ -186,6 +186,16 @@ async function buildServiceWorker(appVersion) {
     );
 }
 
+// Every app stylesheet, in cascade order. One file per Phase-2 UI task keeps
+// those tasks from writing the same file; they are concatenated into a single
+// hashed bundle here so production still serves one stylesheet request.
+const APP_STYLESHEETS = [
+    'style.css',
+    'powfinder.css',
+    'powfinder_scrubber.css',
+    'powfinder_popup.css',
+];
+
 async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, serviceWorkerPath }) {
     let html = await fs.readFile(path.join(appDir, 'index.html'), 'utf8');
     html = html.replace(/\s*<script type="importmap">[\s\S]*?<\/script>\s*/, '\n');
@@ -202,6 +212,21 @@ async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, servi
         '<link rel="stylesheet" href="style.css">',
         headLinks,
     );
+    // The remaining source stylesheets are already inside the hashed bundle.
+    // Drop their dev links (and the comment introducing them) so dist never
+    // requests a file that was not emitted.
+    html = html.replace(
+        /\n\s*<!-- One stylesheet per Phase-2 UI task[\s\S]*?-->/,
+        '',
+    );
+    for (const stylesheet of APP_STYLESHEETS.slice(1)) {
+        html = html.replace(`\n    <link rel="stylesheet" href="${stylesheet}">`, '');
+    }
+    for (const stylesheet of APP_STYLESHEETS) {
+        if (html.includes(`href="${stylesheet}"`)) {
+            throw new Error(`dist index.html still links unbundled ${stylesheet}.`);
+        }
+    }
     html = html.replace(
         '<script type="module" src="main.js"></script>',
         `<script type="module" src="${mainPath}"></script>`,
@@ -346,12 +371,15 @@ async function main() {
         '.wasm',
     );
 
-    const cssSource = await fs.readFile(path.join(appDir, 'style.css'), 'utf8');
+    const cssParts = [];
+    for (const stylesheet of APP_STYLESHEETS) {
+        cssParts.push(await fs.readFile(path.join(appDir, stylesheet), 'utf8'));
+    }
     const cssPath = await writeHashedFile(
         '',
         'style',
         '.css',
-        await rewriteCssFonts(cssSource),
+        await rewriteCssFonts(cssParts.join('\n')),
     );
 
     const { mainPath, workerPath } = await buildJavaScript({ basisJsPath, basisWasmPath });

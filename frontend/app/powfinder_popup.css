@@ -1,0 +1,19 @@
+/* PowFinder tap-a-hex info sheet: value rows, ramp-coloured bars, the picked
+ * cell readout, and the modeled-not-a-forecast disclaimer.
+ *
+ * OWNER: task P2.4. Do not add layer-picker/legend rules here — those are
+ * powfinder.css (P2.2) — nor scrubber rules (powfinder_scrubber.css, P2.3).
+ *
+ * Mount point, created by [fe:prep] in index.html and never edited again by
+ * a Phase-2 task:
+ *   #powfinder-popup    bottom sheet on mobile, anchored card at >=768px
+ *
+ * Value bars must use the same LUT colours the shader samples (via
+ * rampStops() from sidecar_colormap.mjs) so the number and the pixel agree.
+ *
+ * The disclaimer line is non-dismissible and must not be styled into
+ * invisibility — it is the one place a user reads carefully.
+ *
+ * This file is concatenated into the single hashed style bundle by build.mjs
+ * (APP_STYLESHEETS), in listed order after powfinder_scrubber.css.
+ */

@@ -1,0 +1,24 @@
+/* PowFinder time scrubber: month chips, day track, availability rail, hour
+ * track, +/-1h steppers, and the LIVE/HISTORY mode treatment.
+ *
+ * OWNER: task P2.3. Do not add layer-picker/legend rules here — those are
+ * powfinder.css (P2.2) — nor popup rules (powfinder_popup.css, P2.4).
+ *
+ * Mount point, created by [fe:prep] in index.html and never edited again by
+ * a Phase-2 task:
+ *   #powfinder-time     scrubber container, first child of #powfinder-dock
+ *
+ * #powfinder-dock itself is shared with P2.2; style only #powfinder-time and
+ * its descendants from this file.
+ *
+ * HISTORY mode owns one piece of chrome outside the scrubber: the persistent
+ * 2px amber inset border along the top edge of the viewport, above the safe
+ * area inset. Scope it to a body/root class this file defines so it cannot
+ * collide with P2.2's rules.
+ *
+ * Steppers are the primary hour control at 56x56px; the hour track is the
+ * accelerator. This is used with gloves on a mountain.
+ *
+ * This file is concatenated into the single hashed style bundle by build.mjs
+ * (APP_STYLESHEETS), in listed order after powfinder.css.
+ */

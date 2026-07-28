@@ -10,8 +10,14 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>PowFinder | Bestagon Viewer</title>
+    <title>PowFinder beta — snow conditions</title>
     <link rel="stylesheet" href="style.css">
+    <!-- One stylesheet per Phase-2 UI task so P2.2/P2.3/P2.4 never write the
+         same file. build.mjs concatenates all four into one hashed bundle in
+         APP_STYLESHEETS order and strips these dev links from dist. -->
+    <link rel="stylesheet" href="powfinder.css">
+    <link rel="stylesheet" href="powfinder_scrubber.css">
+    <link rel="stylesheet" href="powfinder_popup.css">
     <script type="importmap">
         {
             "imports": {
@@ -68,7 +74,7 @@
             <div class="panel-header">
                 <div class="header-content">
                     <h1>POWFINDER 3D</h1>
-                    <div class="subtitle">Binary Hex Piston Engine</div>
+                    <div class="subtitle">Snow conditions · <span class="beta-pill">BETA</span></div>
                 </div>
                 <button id="minimize-btn" class="minimize-btn" type="button" title="Expand controls panel"
                     aria-controls="main-panel-body" aria-expanded="false" aria-label="Expand controls panel">+</button>
@@ -224,6 +230,7 @@
         <div class="compass" aria-label="North orientation"><span id="compass-needle" class="compass-needle" aria-hidden="true">▲</span><span>N</span></div>
     </aside>
     <div class="legend glass-panel" aria-label="Slope legend">
+        <div id="powfinder-legend" data-owner="P2.2" hidden></div>
         <div class="legend-item">
             <div class="swatch" style="background:#000;"></div>
             &lt; 30° TEXTURE
@@ -238,6 +245,27 @@
             <div class="swatch" style="background:#ff9900;"></div> 40–45° ORANGE · 45°+ RED/VIOLET
         </div>
     </div>
+    <!-- PowFinder mount points. Created once by [fe:prep] so the Phase-2 UI
+         tasks never write index.html concurrently; see data-owner for which
+         task owns each. Contract for owners:
+           - Reveal by clearing the `hidden` property in JS (el.hidden = false),
+             never by a CSS `display` rule — a CSS display declaration silently
+             defeats the hidden attribute and the mount would render empty on
+             first paint.
+           - Set every ARIA attribute from JS when you build the content, so
+             adjusting a role never requires editing this file.
+           - #powfinder-dock is shared by P2.2 and P2.3: P2.3 styles only
+             #powfinder-time, P2.2 styles only #powfinder-layers. Position and
+             stacking of the dock itself belong to powfinder.css (P2.2).
+         All mounts ship `hidden`, so this commit is a zero-pixel change until
+         a Phase-2 task populates one. -->
+    <div id="powfinder-dock" data-owner="P2.2+P2.3" hidden>
+        <div id="powfinder-time" data-owner="P2.3" hidden></div>
+        <div id="powfinder-layers" data-owner="P2.2" hidden></div>
+    </div>
+    <div id="powfinder-popup" data-owner="P2.4" hidden></div>
+    <div id="powfinder-intro" data-owner="P2.2" hidden></div>
+
     <div id="canvas-container"></div>
 
     <script type="module" src="main.js"></script>

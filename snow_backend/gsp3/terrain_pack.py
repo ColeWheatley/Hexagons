@@ -156,4 +156,6 @@ def build(tiles_dir: str | None = None, out_dir: str | None = None,
         cent_path, meta=json.dumps(meta), tile_yq=tile_yq, tile_yr=tile_yr,
         xy=centroids, **per_tile,
     )
+    # avalanche pipeline's documented interface (config.CENTROID_FILE)
+    np.save(os.path.join(out_dir, "l1_centroids.npy"), centroids)
     return terr_path, cent_path
