@@ -26,7 +26,7 @@ from `s3://wheatley.cloud/hexagons/beta/tiles_bin/`):
 
 | file | contents |
 |---|---|
-| `terrain_columns.npz` | per-column `elev_m, dz_node_m, slope_mean_deg, slope_max_deg, n_east/n_north/n_up, aspect_rad, svf, valid`; per-tile `yq/yr/x/y/node_elev/lat/lon`; `meta` JSON incl. `manifest_hash_u32` |
+| `terrain_columns.npz` | per-column `elev_m, dz_node_m, slope_mean_deg, slope_max_deg, n_east/n_north/n_up, aspect_rad, svf, valid`; per-tile `yq/yr/x/y/node_elev/lat/lon`; `meta` JSON incl. `manifest_hash_u32` (CRC32 of the raw manifest file bytes, ruled) |
 | `centroids_l1_epsg31254.npz` | **avalanche-driver export**, see below |
 | `inca_node_map.npz` | per-tile bilinear idx/weights on the INCA EPSG:31287 grid |
 | `node_forcing_winter.npz` | `[4344, 197, 8]` f32 (T2M/TD2M K, RH2M %, RR kg/m², GL W/m², UU/VV m/s, P0 Pa) + `glcs`, `sun_enu`, `time_s`, `qc_filled_hours` (gap-filled hours, linear interp) |

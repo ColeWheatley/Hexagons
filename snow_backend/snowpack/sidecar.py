@@ -12,7 +12,8 @@ Header: exactly 32 bytes, always written:
 (The design doc's field list said "12 reserved", which would make 36 B, but
 the consumer takes the body from offset 32 — offset 32 wins; reserved is 8.)
 epochHour = unix_seconds // 3600 of the forecast hour (UTC).
-manifestHash = CRC32 of the manifest tiles[] (yq,yr) <i4 sequence
+manifestHash = CRC32 of the raw tile_manifest.json file bytes (ruled;
+beta-stubai: 3511903013 — pfl_enums.manifest_hash)
 (terrain_pack.manifest_hash_u32).
 """
 

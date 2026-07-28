@@ -40,12 +40,12 @@ def load_tile_list(manifest_path: str = DEFAULT_MANIFEST):
     return list(manifest["tiles"]), manifest
 
 
-def manifest_hash_u32(tiles) -> int:
-    """CRC32 of the (yq, yr) int32-LE sequence in tiles[] order — the PFL1
-    header's manifestHash; catches tile-count or order skew."""
-    import zlib
-    seq = np.array([[t["yq"], t["yr"]] for t in tiles], dtype="<i4")
-    return zlib.crc32(seq.tobytes()) & 0xFFFFFFFF
+def manifest_hash_u32(manifest_path: str) -> int:
+    """PFL1 manifestHash — ruled: CRC32 of the raw manifest FILE BYTES
+    (delegates to the shared registry; beta-stubai: 3511903013)."""
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from pfl_enums import manifest_hash
+    return manifest_hash(manifest_path)
 
 
 def ensure_tiles_local(tiles, tiles_dir: str) -> list[str]:
@@ -135,7 +135,7 @@ def build(tiles_dir: str | None = None, out_dir: str | None = None,
                         "depth-4 heap order within tile (GSP3 depth-4 block); "
                         "global column id = tile_slot*2401 + heap_index",
         "n_tiles": n_tiles, "columns_per_tile": N_COLUMNS,
-        "manifest_hash_u32": manifest_hash_u32(tiles),
+        "manifest_hash_u32": manifest_hash_u32(manifest_path),
         "release_profile": manifest.get("release", {}),
         "aspect_convention": "atan2(n_east, n_north), radians clockwise from "
                              "north; 0 where packed normal is vertical",

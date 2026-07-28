@@ -77,7 +77,11 @@ def main():
     static_full, info = load_static(terr_path)
     meta = json.loads(str(np.load(terr_path)["meta"]))
     n_tiles = info["n_tiles"]
-    manifest_hash = meta["manifest_hash_u32"]
+    # manifestHash always from the live manifest file (ruled: CRC32 of raw
+    # bytes), never from a possibly-stale pack meta.
+    import pfl_enums
+    manifest_hash = pfl_enums.manifest_hash(os.path.abspath(os.path.join(
+        HERE, "..", "..", "frontend", "app", "tile_manifest.json")))
     profile = meta["release_profile"].get("profile", "beta-stubai")
 
     stations = json.load(open(os.path.join(args.data, "station_columns.json")))

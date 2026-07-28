@@ -7,9 +7,18 @@ Header (32 bytes, ratified: 8 reserved):
   u16 nodeCount | u8 encoding | u8 aggregate | u32 manifestHash | 8 reserved
 Body: tileCount x 2401 bytes, tile_manifest.json tiles[] order, depth-4 heap
 order within tile.  Byte 0 = NODATA in every layer.
-epochHour = unix_seconds // 3600 (UTC).  manifestHash = CRC32 of the manifest
-tiles[] (yq, yr) <i4 sequence.
+epochHour = unix_seconds // 3600 (UTC).
+manifestHash = CRC32 of the raw tile_manifest.json FILE BYTES (ruled; the
+frontend fetches the file and hashes it as-is — beta-stubai: 3511903013).
 """
+
+import zlib
+
+
+def manifest_hash(manifest_path: str) -> int:
+    """CRC32 of the raw tile_manifest.json bytes — the PFL1 manifestHash."""
+    with open(manifest_path, "rb") as fh:
+        return zlib.crc32(fh.read()) & 0xFFFFFFFF
 
 PFL_MAGIC = b"PFL1"
 PFL_VERSION = 1
