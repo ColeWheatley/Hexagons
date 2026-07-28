@@ -94,6 +94,10 @@ def main():
 
     nf = np.load(os.path.join(args.data, "node_forcing_winter.npz"))
     forcing, glcs, sun = nf["forcing"], nf["glcs"], nf["sun_enu"]
+    for name, a in (("forcing", forcing), ("glcs", glcs), ("sun", sun)):
+        if not np.isfinite(a).all():
+            raise ValueError(f"non-finite {name}; rebuild node forcing pack "
+                             "(gap fill lives in build_terrain.py)")
     time_s = nf["time_s"]
     n_hours = min(args.days * 24, forcing.shape[0])
     times = time_s.astype("datetime64[s]")

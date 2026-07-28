@@ -35,6 +35,24 @@ DEFAULT_SCRATCH = ("/private/tmp/claude-501/-Users-cole-dev/"
                    "af754c65-5383-45a7-ae6c-4108255c1107/scratchpad")
 
 
+def gap_fill_time(forcing):
+    """Linear-interp NaN gaps along the time axis per (tile, var); INCA
+    analysis occasionally misses an hour of GL/P0 domain-wide.  Returns the
+    filled array + indices of hours that had any fill (QC record)."""
+    t_idx = np.arange(forcing.shape[0], dtype=np.float64)
+    filled_hours = np.where(~np.isfinite(forcing).all(axis=(1, 2)))[0]
+    for j in range(forcing.shape[1]):
+        for k in range(forcing.shape[2]):
+            s = forcing[:, j, k]
+            bad = ~np.isfinite(s)
+            if bad.any():
+                good = ~bad
+                s[bad] = np.interp(t_idx[bad], t_idx[good], s[good])
+    if not np.isfinite(forcing).all():
+        raise ValueError("gap fill failed: non-finite forcing remains")
+    return forcing, filled_hours
+
+
 def build_node_forcing(inca_dir, out_dir, tile_x, tile_y, tile_lat, tile_lon,
                        tile_node_elev):
     from solar import clearsky_ghi, sun_vector_enu
@@ -42,6 +60,9 @@ def build_node_forcing(inca_dir, out_dir, tile_x, tile_y, tile_lat, tile_lon,
     if not paths:
         raise FileNotFoundError(f"no INCA files in {inca_dir}")
     forcing, time, _ = extract_node_series(paths, tile_x, tile_y)
+    forcing, filled_hours = gap_fill_time(forcing)
+    if len(filled_hours):
+        print(f"  gap-filled {len(filled_hours)} hours: {list(filled_hours)}")
     t_s = time.astype("datetime64[s]")
     sun = np.empty(forcing.shape[:2] + (3,), np.float32)
     glcs = np.empty(forcing.shape[:2], np.float32)
@@ -60,6 +81,7 @@ def build_node_forcing(inca_dir, out_dir, tile_x, tile_y, tile_lat, tile_lon,
         forcing=forcing, glcs=glcs, sun_enu=sun,
         time_s=t_s.astype(np.int64),
         tile_node_elev_m=tile_node_elev,
+        qc_filled_hours=np.asarray(filled_hours, np.int32),
     )
     return path, forcing.shape
 
