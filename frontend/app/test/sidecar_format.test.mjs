@@ -271,6 +271,33 @@ test('buildPackedPyramid: NODATA is a whole-byte skip, not per-field', () => {
     assert.equal(decodePacked(parent, AVALANCHE_FIELDS.severity), 40);
 });
 
+test('buildPackedPyramid never synthesizes raw 128 (release=1, severity=0) at any level, given severity>=1 input', () => {
+    // The real hazard byte contract (snow_backend/avalanche/config.py,
+    // "harmonized contract") guarantees every non-NODATA leaf has
+    // severity >= 1 (byte 1 = "simulated, no hazard" is the floor; runout
+    // severity is clamped >= 2) -- raw 128 is invalid and never emitted at
+    // the leaf level. That invariant is preserved at *every* pyramid level
+    // by construction, not just asserted: whenever a parent's release is 1
+    // (via "or"), some non-NODATA child contributed that 1, and that same
+    // child's severity (>=1, by the same leaf invariant) is in the "max"
+    // pool for severity -- so the parent's severity can never be 0
+    // whenever its release is 1. This test constructs input respecting the
+    // leaf invariant and asserts raw 128 never appears anywhere in the
+    // output pyramid, at any of the five levels.
+    const body = new Uint8Array(L1_NODE_COUNT);
+    for (let i = 0; i < L1_NODE_COUNT; i++) {
+        const r = (i * 2654435761) % 100; // deterministic pseudo-random coverage
+        if (r < 15) { body[i] = 0; continue; } // ~15% NODATA
+        const severity = 1 + (i % 127); // always >= 1, per the real contract
+        const release = (i % 3 === 0) ? 1 : 0; // toggles independently of severity
+        body[i] = encodePacked({ release, severity }, AVALANCHE_FIELDS);
+    }
+    assert.equal(body.includes(128), false, 'sanity: no leaf is the invalid raw 128');
+
+    const pyr = buildPackedPyramid(body, 1, AVALANCHE_FIELDS);
+    assert.equal(pyr.includes(128), false, 'raw 128 must not appear at any reduced level');
+});
+
 test('buildPackedPyramid accepts a custom per-field aggregate function', () => {
     const fields = { severity: { shift: 0, bits: 7, aggregate: (values) => values.length } };
     const body = new Uint8Array(L1_NODE_COUNT).fill(0);

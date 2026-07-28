@@ -14,6 +14,16 @@ const TILE_LEVEL = G.TILE_LEVEL; // 5
 // skirtless mosaic look). Units (level 0) stay exact for skirt continuity.
 const CAP_OVERSCAN = 1.15;
 
+// PowFinder sidecar pyramid-address constants, duplicated (not imported) from
+// frontend/app/sidecar_format.mjs's L1_DEPTH / PYRAMID_DEPTH_OFFSETS — that
+// file is the single source of truth. This worker is importScripts-based,
+// not an ES module, so it cannot import a module that itself has no
+// importScripts-compatible form; test/sidecar_address.test.mjs asserts these
+// two duplicates stay byte-identical to the real exports, so drift is caught
+// immediately rather than silently mis-addressing every sidecar lookup.
+const SIDECAR_L1_DEPTH = 4;
+const SIDECAR_PYRAMID_DEPTH_OFFSETS = [0, 1, 8, 57, 400];
+
 // =============================================================================
 // XUASTC KTX2 TRANSCODING (Basis Universal v2 WASM)
 // Ported from ktx2_nonrect_texture_test/BasisV2KTX2Loader.js, minus all DOM
@@ -570,6 +580,9 @@ function buildLevelBuffers(parsed, selection = null) {
         const pd = parsed.depths[d];
         const level = gd.level;
         const isUnit = (level === 0);
+        // Precomputed once per depth (not per instance) for the nz2.w pyramid
+        // address below — see SIDECAR_PYRAMID_DEPTH_OFFSETS.
+        const sidecarDepthDivisor = d >= SIDECAR_L1_DEPTH ? Math.pow(7, d - SIDECAR_L1_DEPTH) : 1;
         const selectedRanges = validateSelectedRanges(
             selection?.rangesByDepth?.[d],
             pd.valid.length,
@@ -621,7 +634,19 @@ function buildLevelBuffers(parsed, selection = null) {
                 const hh = parsed.depths[d].h[i];
                 const n1 = w * 4;
                 nz1[n1] = hh; nz1[n1 + 1] = hh; nz1[n1 + 2] = hh; nz1[n1 + 3] = hh;
-                nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh; nz2[n1 + 3] = 0.0;
+                nz2[n1] = hh; nz2[n1 + 1] = hh; nz2[n1 + 2] = hh;
+                // nz2.w carries this node's tile-pyramid address (0..2800) for
+                // the PowFinder sidecar atlas lookup (design doc §1.6). Unit
+                // nodes (depth 5) resolve to their L1 parent: the sidecar has
+                // no finer granularity than a level-1 flower. Pure static
+                // geometry metadata — unrelated to timestamp/layer, so a
+                // geometry rebuild reproduces it with no extra bookkeeping.
+                // `i` is the source heap index (not `w`, the write cursor,
+                // which drifts from `i` whenever pd.valid[] or a range
+                // selection skips nodes — see the module note above TILE_LEVEL).
+                nz2[n1 + 3] = (d >= SIDECAR_L1_DEPTH)
+                    ? (SIDECAR_PYRAMID_DEPTH_OFFSETS[SIDECAR_L1_DEPTH] + ((i / sidecarDepthDivisor) | 0))
+                    : (SIDECAR_PYRAMID_DEPTH_OFFSETS[d] + i);
 
                 const sIdx = w * 3;
                 if (isUnit) {
