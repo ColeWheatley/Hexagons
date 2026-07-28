@@ -141,7 +141,8 @@ class GpuZoneRunner:
         self.sim.set_dem_with_bounds(sub_s, config.CELL, x0, x1, y0, y1, 1.0)
         self.sim.set_release_areas(rel_s)
         self.sim.run()
-        h = np.asarray(self.sim.get_peak_flow_thickness)
+        # pyo3 #[getter] get_peak_flow_thickness exposes `peak_flow_thickness`.
+        h = np.asarray(self.sim.peak_flow_thickness)
         return np.flipud(h)
 
 
