@@ -70,30 +70,19 @@ export const LAYERS = [
 ];
 
 // Numeric ids for the PFL1 header's u16 layerId / u8 encoding / u8 aggregate
-// fields. sqh/depth/surface mirror the real backend table in
-// snow_backend/snowpack/sidecar.py (LAYERS/ENCODING/AGGREGATE dicts), the
-// only concrete source for those three. avalanche uses the values
-// team-lead pinned directly to this task, matching
-// snow_backend/avalanche/config.py (PFL_LAYER_ID_AVALANCHE=3,
-// PFL_ENCODING_PACKED_BITS=2, PFL_AGGREGATE_MAX=1).
-//
-// KNOWN CONFLICT, flagged upstream, unresolved as of this commit: those two
-// backend tables disagree with each other on every axis — snowpack's table
-// has avalanche=4/packed_bits=3/max=2, not 3/2/1 — including a direct id
-// collision (avalanche=3 here vs surface=3 in snowpack's own table) and an
-// encoding collision (packed_bits=2 here vs u8_class=2 in snowpack's
-// table). This is header-only bookkeeping: nothing in sidecar_format.mjs's
-// consumer parser validates these numbers against anything, and pyramid
-// decode is driven entirely by index.json's string-keyed encoding/
-// aggregate/fields, so the collision cannot mis-decode a sidecar — but the
-// two backend modules will write mutually inconsistent header bytes for
-// the same concepts until reconciled.
-const LAYER_ID_CODES = { sqh: 1, depth: 2, surface: 3, avalanche: 3 };
-const ENCODING_CODES = { u8_linear: 1, u8_class: 2, packed_bits: 2 };
+// fields. CANONICAL per team-lead's final enum reconciliation ruling,
+// superseding both the doc's original draft and this file's own earlier
+// avalanche/config.py-matching values — the authoritative source is
+// snow_backend/snowpack/sidecar.py's LAYERS/ENCODING/AGGREGATE dicts,
+// extended with avalanche=4 (the avalanche pipeline's own
+// snow_backend/avalanche/config.py is expected to be updated to match,
+// separately, outside this task).
+const LAYER_ID_CODES = { sqh: 1, depth: 2, surface: 3, avalanche: 4 };
+const ENCODING_CODES = { u8_linear: 1, u8_class: 2, packed_bits: 3 };
 // avalanche's per-field aggregates (release:"or", severity:"max") don't
-// collapse to one header byte; team-lead pinned "max"=1 for it specifically
-// (a vestigial/informational value only — see buildPfl1Header below).
-const AGGREGATE_CODES = { mean: 1, mode: 3, max: 1 };
+// collapse to one header byte; "max"=2 is written for it specifically (a
+// vestigial/informational value only — see buildPfl1Header below).
+const AGGREGATE_CODES = { mean: 1, max: 2, mode: 3, or: 4 };
 
 // Standard CRC-32 (IEEE 802.3 / zlib / PNG polynomial 0xEDB88320), verified
 // to match Python's zlib.crc32 on the real tile_manifest.json bytes.
