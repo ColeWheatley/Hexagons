@@ -137,12 +137,17 @@ test('continuous ramps are luminance-monotonic across their full domain (glancea
     }
 });
 
-test('hazard row (1) is 5 hard-stepped EAWS classes over the 0..127 severity domain, no rescale', () => {
+test('hazard row (1) is 5 hard-stepped EAWS classes over the [2,127] severity domain, no rescale', () => {
     const lut = buildLutData();
     const row = rampRow('hazard');
-    // bin = floor((severity / 128) * 5), clamped to [0,4]. severity is the
-    // raw LUT index directly -- no 1..255 domain stretch.
-    assert.deepEqual(rowRgba(lut, row, 1), [52, 211, 153, 255]);    // #34d399, low
+    // Neutral floor: 0 = NODATA, 1 = "simulated, no hazard" -- both
+    // transparent, neither reads as a saturated-green "safe" swatch.
+    assert.deepEqual(rowRgba(lut, row, 0), [0, 0, 0, 0]);
+    assert.deepEqual(rowRgba(lut, row, 1), [0, 0, 0, 0]);
+    // bin = floor(((severity-2) / 126) * 5), clamped to [0,4]. EAWS classes
+    // only occupy [2,127] -- severity is the raw LUT index directly, no
+    // 1..255 domain stretch.
+    assert.deepEqual(rowRgba(lut, row, 2), [52, 211, 153, 255]);    // #34d399, low (first real class)
     assert.deepEqual(rowRgba(lut, row, 64), [251, 146, 60, 255]);   // #fb923c, considerable (mid-domain)
     assert.deepEqual(rowRgba(lut, row, 127), [127, 29, 29, 255]);   // #7f1d1d, very high (max severity)
     // Bytes above 127 are unreachable from a 7-bit field; defensively clamp

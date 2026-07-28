@@ -103,8 +103,18 @@ const DEPTH_STOPS = resolveStops([
 // a 7-bit severity 0..127. The shader passes severity straight through as
 // the LUT sample index with **no rescale** (unlike the general 1..255
 // sidecar domain other ramps use), so this ramp's bins are computed
-// directly over 0..127.
+// directly over the severity range.
+//
+// Three-tier floor, not two: severity 0 is the general NODATA sentinel;
+// severity 1 is "simulated, no hazard" — a real, confirmed-safe result,
+// distinct from "we have no idea" — and will *also* be shader-guarded to
+// no-tint, same as NODATA. The EAWS classes themselves only start at
+// severity 2 (runout domain is [2,127], consultant-confirmed). Both 0 and 1
+// render fully transparent here so the ramp's own floor can't be misread as
+// "safe = vivid green" — that reading would be wrong twice over (green is
+// reserved for the *lowest real danger class*, not "no danger data").
 const HAZARD_SEVERITY_MAX = 127; // 7-bit field (bits 0-6)
+const HAZARD_CLASS_MIN = 2; // EAWS classes start here; 0 = NODATA, 1 = simulated-no-hazard
 const HAZARD_COLORS = ['#34d399', '#facc15', '#fb923c', '#f87171', '#7f1d1d'];
 const HAZARD_LABELS = ['low', 'moderate', 'considerable', 'high', 'very high'];
 // Row 1's "very high" class additionally gets a black stipple per §2.5 —
@@ -208,16 +218,20 @@ function categoricalEqualColorForByte(colors, raw) {
 
 // `raw` here is already the extracted severity (0..127, no rescale — see
 // HAZARD_SEVERITY_MAX above), not a general 1..255 sidecar byte. Severity 0
-// takes the same no-tint path as NODATA: the shader's `sidecarRamp()`
-// transparency guard (`raw < 0.5`, §2.3) runs on this already-extracted
-// value for packed layers, so severity 0 ("no hazard") and true NODATA are
-// indistinguishable downstream and both correctly render as "nothing to
-// show" rather than a class colour.
+// (NODATA) and severity 1 ("simulated, no hazard") both take the same
+// no-tint path: the shader's `sidecarRamp()` transparency guard
+// (`raw < 0.5`, §2.3) only literally catches 0, so severity 1 needs its own
+// explicit guard here (and will get one in the shader too, per
+// frontend-design) — this LUT ships transparent at 1 regardless, so a
+// direct LUT sample (this module's own helpers, a future debug view) can
+// never show "confirmed safe" as saturated green. EAWS classes are binned
+// across [HAZARD_CLASS_MIN, HAZARD_SEVERITY_MAX] only.
 function hazardColorForByte(colors, raw) {
-    if (raw === NODATA_BYTE) return [0, 0, 0, 0];
+    if (raw === NODATA_BYTE || raw === 1) return [0, 0, 0, 0];
     const n = colors.length;
     const severity = Math.min(raw, HAZARD_SEVERITY_MAX); // defensive clamp; raw > 127 is unreachable from a 7-bit field
-    const bin = Math.min(n - 1, Math.floor((severity / (HAZARD_SEVERITY_MAX + 1)) * n));
+    const span = HAZARD_SEVERITY_MAX - HAZARD_CLASS_MIN + 1;
+    const bin = Math.min(n - 1, Math.floor(((severity - HAZARD_CLASS_MIN) / span) * n));
     const [r, g, b] = hexToRgb(colors[bin]);
     return [r, g, b, 255];
 }
