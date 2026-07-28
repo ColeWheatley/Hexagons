@@ -72,15 +72,34 @@ test('a custom atlasWidth/rowsPerTile is honoured', () => {
 // Slot assignment
 // -----------------------------------------------------------------------
 
-test('slotFor/rowBaseFor follow manifest.tiles[] order and the "yq_yr" key convention', () => {
-    const manifest = fakeManifest([[10, -20], [11, -21], [12, -22]]);
+test('slotFor/rowBaseFor follow manifest.tiles[] DECLARATION order, not sorted (yq,yr) order, and the "yq_yr" key convention', () => {
+    // Deliberately scrambled — mirrors the real manifest's actual layout
+    // (a column-strip scan with alternating direction; the doc author
+    // verified 182/197 real tile positions differ from sorted order). A
+    // conveniently-sorted fixture here would still pass against an
+    // implementation that accidentally re-sorts tiles internally before
+    // assigning slots — silent data corruption no CRC32 guard can catch,
+    // since the file bytes are unchanged and the corruption is purely
+    // in-memory. This is the actual guard against that bug.
+    const manifest = fakeManifest([[5, 3], [5, 2], [5, 1], [6, -1], [6, 0], [6, 1]]);
+
+    // Sanity on the fixture itself: assert it is genuinely non-sorted, so
+    // the assertions below exercise declaration-order preservation rather
+    // than agreeing with sorted order by coincidence.
+    const sorted = [...manifest.tiles].sort((a, b) => a.yq - b.yq || a.yr - b.yr);
+    const isSortedOrder = sorted.every((t, i) => t.yq === manifest.tiles[i].yq && t.yr === manifest.tiles[i].yr);
+    assert.equal(isSortedOrder, false, 'fixture must be non-sorted to be a meaningful guard');
+
     const atlas = createSidecarAtlas(FakeTHREE, { manifest });
-    assert.equal(atlas.slotFor('10_-20'), 0);
-    assert.equal(atlas.slotFor('11_-21'), 1);
-    assert.equal(atlas.slotFor('12_-22'), 2);
-    assert.equal(atlas.rowBaseFor('10_-20'), 0);
-    assert.equal(atlas.rowBaseFor('11_-21'), ROWS_PER_TILE);
-    assert.equal(atlas.rowBaseFor('12_-22'), 2 * ROWS_PER_TILE);
+    assert.equal(atlas.slotFor('5_3'), 0);
+    assert.equal(atlas.slotFor('5_2'), 1);
+    assert.equal(atlas.slotFor('5_1'), 2);
+    assert.equal(atlas.slotFor('6_-1'), 3);
+    assert.equal(atlas.slotFor('6_0'), 4);
+    assert.equal(atlas.slotFor('6_1'), 5);
+    assert.equal(atlas.rowBaseFor('5_3'), 0);
+    assert.equal(atlas.rowBaseFor('6_-1'), 3 * ROWS_PER_TILE);
+    assert.equal(atlas.rowBaseFor('6_1'), 5 * ROWS_PER_TILE);
 });
 
 test('slotFor/rowBaseFor return null for a key not in the manifest', () => {
@@ -94,7 +113,7 @@ test('slotFor/rowBaseFor return null for a key not in the manifest', () => {
 // -----------------------------------------------------------------------
 
 test('installLayer writes each tile\'s bytes into its own row-block, in the correct RGBA channel', () => {
-    const manifest = fakeManifest([[0, 0], [1, 0]]); // slot 0, slot 1
+    const manifest = fakeManifest([[9, 0], [2, 0]]); // slot 0 = higher yq, slot 1 = lower yq -- non-sorted
     const atlas = createSidecarAtlas(FakeTHREE, { manifest, atlasWidth: 16, rowsPerTile: 1 });
     const nodesPerTile = 5;
     // tile 0: [10,20,30,40,50], tile 1: [60,70,80,90,100]

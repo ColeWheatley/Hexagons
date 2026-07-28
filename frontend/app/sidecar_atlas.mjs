@@ -40,6 +40,18 @@ export function createSidecarAtlas(THREE, { manifest, atlasWidth = ATLAS_WIDTH, 
     // "yq_yr", matching main.js's own tile Map key convention exactly (see
     // `this.tiles = new Map(); // Key: "yq_yr"`), so callers can look up a
     // slot with the same key they already have on hand.
+    //
+    // Captured into this Map ONCE, here, and never re-derived from tiles[]
+    // afterward — every lookup goes through slotByKey/slotFor(), never
+    // `tiles.indexOf(...)` or similar. This matters: `slot === array index`
+    // is true today but not structurally enforced by anything else, and a
+    // future render-ordering refactor that sorted/filtered manifest.tiles
+    // in place would silently reassign every tile's atlas row with no
+    // errors and no CRC32 mismatch (the sidecar file bytes are unchanged;
+    // the corruption is purely in-memory). Callers must call
+    // createSidecarAtlas() before anything else has a chance to touch
+    // manifest.tiles, and must never build a competing index->slot mapping
+    // of their own.
     const slotByKey = new Map();
     tiles.forEach((tile, index) => slotByKey.set(`${tile.yq}_${tile.yr}`, index));
 
