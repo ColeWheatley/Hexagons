@@ -97,6 +97,15 @@ because it's a **real fork in the road**:
 the command sequence below to raw/uncompressed (safe under both scenarios)
 and documenting the gzip alternative as an explicit opt-in.
 
+> **RESOLVED (2026-07-28, frontend design ruling): whole-file only — the
+> consumer never Range-GETs within a `.pfl`, in the design or the roadmap.
+> PRE-GZIP the sidecars.** Upload gzipped bodies **with `Content-Encoding:
+> gzip` metadata set** (mandatory: the browser then decodes transparently and
+> the consumer's `byteLength === tileCount*2401` assert passes unchanged; a
+> gzipped object *without* the header fails that assert loudly — the safe
+> failure mode). Use the gzip variant of the sidecar sync commands, not the
+> raw default. HTML/JS/CSS guidance in §2 (rely on Cloudflare) unchanged.
+
 ## 5. Payload estimate — measured against real output, not guessed
 
 The winter backfill (#8) has actually finished a full run as of this recon
