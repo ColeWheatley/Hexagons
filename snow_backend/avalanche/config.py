@@ -73,7 +73,27 @@ BYTE_NODATA = 0
 BYTE_SIMULATED_NONE = 1
 BYTE_RELEASE_FLAG = 128
 RUNOUT_SEVERITY_MIN = 2
-BYTE_SLAB_FULL_M = 2.5  # slab-derived release *intensity* saturation
+# Release-cell severity = max(runout severity at the cell, loading grade),
+# loading grade = round(127 * clamp(slab / RELEASE_SLAB_FULL_M, 0, 1)).
+# A loading-scaled *severity*, not a decodable slab depth — slab itself lives
+# in the metadata/popup path (harmonized contract 2026-07-29).
+RELEASE_SLAB_FULL_M = 1.5
+
+
+def _external(env_var, default_rel):
+    """env override, else WORK_DIR/inputs/<default_rel> if present, else None."""
+    if os.environ.get(env_var):
+        return Path(os.environ[env_var])
+    p = WORK_DIR / "inputs" / default_rel
+    return p if p.exists() else None
+
+
+# Snowpack terrain pack (per-column elev/aspect/valid; canonical slot order =
+# tiles sorted by (yq, yr), reordered to manifest order by columns.py).
+# Validity masks the 2,861 DEM-clipped SE-border columns to NODATA.
+TERRAIN_COLUMNS_NPZ = _external("AVALANCHE_TERRAIN_COLUMNS", "terrain_columns.npz")
+# LWD Tirol bulletin timeline (recon task 13); absent -> prior disabled.
+BULLETIN_TIMELINE = _external("AVALANCHE_BULLETIN_TIMELINE", "timeline.json")
 
 # --- PFL sidecar container ---------------------------------------------------
 # 32-byte PFL1 header + tileCount x 2401 body (manifest tile order).

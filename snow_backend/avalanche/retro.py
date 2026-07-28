@@ -8,7 +8,10 @@ from datetime import date, datetime
 
 import numpy as np
 
-from . import bytelayer, config, energyline, gate, hexpack, pfl, registry, terrain
+from . import (
+    bulletin, bytelayer, columns, config, energyline, gate, hexpack, pfl,
+    registry, terrain,
+)
 
 _CTX = {}
 
@@ -21,6 +24,8 @@ def _init_worker():
     _CTX.update(
         dem=t["dem"], labels=labels, idx=idx, valid=valid,
         registry=registry.SyntheticRegistry(),
+        cols=columns.load_terrain_columns(),
+        timeline=bulletin.load_timeline(),
     )
 
 
@@ -59,6 +64,11 @@ def compute_step(when, dem, labels, reg):
         registry=f["meta"],
         release_cells=int(release.sum()),
         reached_cells=int((f_agree > 0).sum()),
+        # Slab depth rides here (popup path), not in the display byte.
+        slab_release_p10_p50_p90_m=[
+            round(float(v), 3)
+            for v in np.percentile(slab[release], [10, 50, 90])
+        ] if release.any() else None,
     )
     return byte_mosaic, meta
 
@@ -71,6 +81,17 @@ def run_step(when):
     t0 = time.time()
     byte_mosaic, meta = compute_step(when, _CTX["dem"], _CTX["labels"], _CTX["registry"])
     packed = hexpack.pack_tiles(byte_mosaic, _CTX["idx"], _CTX["valid"])
+
+    cols = _CTX["cols"]
+    if cols is not None:
+        factor, bmeta = bulletin.severity_factor(_CTX["timeline"], when, cols)
+        packed = bulletin.apply_to_packed(packed, factor)
+        packed = np.where(cols["valid"], packed, config.BYTE_NODATA)
+        meta["bulletin_prior"] = bmeta
+        meta["column_validity_masked"] = int((~cols["valid"]).sum())
+    else:
+        meta["bulletin_prior"] = dict(applied=False, reason="no terrain columns pack")
+
     meta["tiles"] = int(packed.shape[0])
     meta["nodata_hexes"] = int((packed == config.BYTE_NODATA).sum())
     meta["release_hexes"] = int((packed >= config.BYTE_RELEASE_FLAG).sum())

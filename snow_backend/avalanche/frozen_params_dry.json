@@ -1,0 +1,17 @@
+{
+  "_provenance": "avalanchers freeze campaign 2026-07-28 (private fork, results/campaign_2026-07-28): structure winner m3_samosat_c1p1e1n0 (s1/s4, flags=7: curvature+particle-interaction+earth-pressure ON, entrainment OFF); mu = 0.36 is the panel median of the 101 per-case s4_confirm bests under that structure (p25/p75 0.229/0.465) - a deployable global, not a per-event fit. basal_friction_angle 25 recorded as fixed-at-default-never-swept. density frozen at 200 (shader-coupled; never substitute registry density). samosAT has no xi; drag_coefficient is inert for model 3 and recorded at its structure default. slab_thickness is set to 1.0 by the driver so per-cell slab passes through load_release_areas.wgsl.",
+  "friction_model": 3,
+  "friction_coefficient": 0.36,
+  "drag_coefficient": 4000.0,
+  "internal_friction_angle": 40.0,
+  "basal_friction_angle": 25.0,
+  "density": 200.0,
+  "cfl": 0.5,
+  "released_particles_per_cell": 8,
+  "max_steps": 3000,
+  "roughness_threshold": 0.01,
+  "enable_curvature": true,
+  "enable_particle_interaction": true,
+  "enable_earth_pressure_coefficient": true,
+  "enable_entrainment": false
+}

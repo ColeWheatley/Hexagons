@@ -38,14 +38,20 @@ def runout_severity(f_agree, margin_med):
     ).astype(np.uint8)
 
 
-def release_byte(slab):
-    """128 + slab-derived intensity 1..127 (uint8). Raw 128 is never produced:
-    intensity is clamped to >= 1 (a release zone with today's slab always has
-    nonzero intensity)."""
-    s = np.round(
-        127.0 * np.clip(np.nan_to_num(slab) / config.BYTE_SLAB_FULL_M, 0.0, 1.0)
+def release_byte(slab, runout_sev=None):
+    """128 + release severity 1..127 (uint8).
+
+    Release severity = max(runout severity computed at the cell, loading
+    grade), loading grade = round(127 * clamp(slab / 1.5 m, 0, 1)). This is a
+    loading-scaled *severity*, not a decodable slab depth (slab itself rides
+    in the metadata/popup path). Raw 128 is never produced: severity is
+    clamped to >= 1."""
+    load = np.round(
+        127.0 * np.clip(np.nan_to_num(slab) / config.RELEASE_SLAB_FULL_M, 0.0, 1.0)
     ).astype(np.int16)
-    return (config.BYTE_RELEASE_FLAG + np.clip(s, 1, 127)).astype(np.uint8)
+    if runout_sev is not None:
+        load = np.maximum(load, runout_sev.astype(np.int16))
+    return (config.BYTE_RELEASE_FLAG + np.clip(load, 1, 127)).astype(np.uint8)
 
 
 def hazard_bytes(dem, f_agree, margin_med, release_mask, slab):
@@ -57,5 +63,5 @@ def hazard_bytes(dem, f_agree, margin_med, release_mask, slab):
     ).astype(np.uint8)
     runout = runout_severity(f_agree, margin_med)
     out = np.where(runout > 0, runout, out)
-    rel = release_byte(slab)
+    rel = release_byte(slab, runout_sev=runout)
     return np.where(release_mask, rel, out)

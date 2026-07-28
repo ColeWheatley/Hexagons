@@ -212,3 +212,76 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Bulletin prior + column adapter (added with the harmonized-contract rework)
+# ---------------------------------------------------------------------------
+
+def _cols(n=1):
+    elev = np.array([[1400.0, 1800.0, 2400.0, 2400.0]], dtype=np.float32)
+    aspect = np.radians([[0.0, 0.0, 180.0, 0.0]]).astype(np.float32)  # N,N,S,N
+    return dict(elev=elev, aspect_rad=aspect, valid=np.ones((1, 4), dtype=bool))
+
+
+def test_bulletin_factor_matching():
+    from .. import bulletin
+    from datetime import date
+
+    timeline = {"2026-01-15": {
+        "danger": {"below": 2, "above": 4, "elev_split_m": 2000},
+        "problems": [{"aspects": ["N", "NE"], "elev_min_m": 2000, "elev_max_m": None}],
+    }}
+    cols = _cols()
+    f, meta = bulletin.severity_factor(timeline, date(2026, 1, 15), cols)
+    assert meta["applied"]
+    # col 3: N aspect, 2400 m -> matched, danger 4 -> 1.25
+    assert f[0, 3] == pytest.approx(1.25)
+    # col 2: S aspect, 2400 m -> unmatched, damped halfway: 1 + 0.25/2
+    assert f[0, 2] == pytest.approx(1.125)
+    # col 0: 1400 m, danger below split = 2 -> unmatched (elev band) 0.875
+    assert f[0, 0] == pytest.approx(0.875)
+
+
+def test_bulletin_absent_is_identity():
+    from .. import bulletin
+    from datetime import date
+
+    f, meta = bulletin.severity_factor(None, date(2026, 1, 15), _cols())
+    assert not meta["applied"] and (f == 1.0).all()
+
+
+def test_apply_to_packed_invariants():
+    from .. import bulletin
+
+    packed = np.array([[0, 1, 2, 60, 129, 200]], dtype=np.uint8)
+    f = np.full(packed.shape, 0.5, dtype=np.float32)
+    out = bulletin.apply_to_packed(packed, f)
+    assert out[0, 0] == 0 and out[0, 1] == 1          # NODATA / none untouched
+    assert out[0, 2] == 2                              # runout floor holds
+    assert out[0, 3] == 30
+    assert out[0, 4] == 129                            # release floor holds
+    assert out[0, 5] == 128 + 36                       # (200-128)*0.5 = 36
+    f2 = np.full(packed.shape, 4.0, dtype=np.float32)
+    out2 = bulletin.apply_to_packed(packed, f2)
+    assert out2[0, 5] == 255 and out2[0, 3] == 127     # ceilings hold
+
+
+def test_release_byte_takes_max_of_runout_and_loading():
+    slab = np.array([[0.15, 1.5]], dtype=np.float32)   # loading ~13, 127
+    runout = np.array([[90, 5]], dtype=np.uint8)
+    rb = bytelayer.release_byte(slab, runout_sev=runout)
+    assert rb[0, 0] == 128 + 90    # runout severity dominates thin slab
+    assert rb[0, 1] == 255         # full loading dominates weak runout
+
+
+def test_manifest_perm_roundtrip():
+    from .. import columns
+    import json
+
+    m = json.loads(config.TILE_MANIFEST.read_text())["tiles"]
+    yq = np.array(sorted(t["yq"] for t in m))[:0]  # placeholder, use real below
+    yqs = np.array([t["yq"] for t in m]); yrs = np.array([t["yr"] for t in m])
+    order = np.lexsort((yrs, yqs))                 # canonical: sorted by (yq, yr)
+    perm = columns.manifest_perm(yqs[order], yrs[order])
+    assert (yqs[order][perm] == yqs).all() and (yrs[order][perm] == yrs).all()

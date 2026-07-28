@@ -10,16 +10,28 @@ L1 hex (~17 m), 2,401 B per L5 tile in heap order, tile order =
 
 | byte | meaning |
 |---|---|
-| 0 | NODATA — off-DEM / outside domain / not simulated |
+| 0 | NODATA — off-DEM / DEM-clipped columns (2,861 on 3 SE-border tiles, from terrain_columns.npz validity) / not simulated |
 | 1 | simulated, no hazard |
 | 2–127 | runout severity (bits 0–6): `clamp(round(127 · f_agree · g), 2, 127)`, `g = log1p(margin) / log1p(600 m)` |
-| 129–255 | release-zone cell (bit 7 set): `128 + clamp(round(127 · clamp(slab/2.5 m, 0, 1)), 1, 127)` |
+| 129–255 | release-zone cell (bit 7 set): severity = `clamp(max(runout severity at the cell, round(127 · clamp(slab/1.5 m, 0, 1))), 1, 127)` |
 
-**Raw 128 (release=1, severity=0) is invalid and never emitted** — release
-intensity is clamped to ≥ 1 (a release zone with today's slab always has
-nonzero intensity), and runout severity is clamped to ≥ 2 so it cannot alias
-"simulated, no hazard". So: severity domain is [1,127] for release cells,
-[2,127] for runout cells; the frontend may treat raw 128 as a data error.
+**Release cells carry SEVERITY, not a slab-depth encoding** — the loading
+grade is a severity scale (slab depth itself rides in the step metadata /
+popup path, `slab_release_p10_p50_p90_m`). **Raw 128 (release=1, severity=0)
+is invalid and never emitted** — release severity clamps to ≥ 1, and runout
+severity clamps to ≥ 2 so it cannot alias "simulated, no hazard". So:
+severity domain is [1,127] for release cells, [2,127] for runout cells; the
+frontend may treat raw 128 as a data error.
+
+**Bulletin prior** (`bulletin.py`, a labeled heuristic): when the recon
+timeline (`avalanche_work/inputs/timeline.json` or
+`AVALANCHE_BULLETIN_TIMELINE`) is present, packed severities are scaled by a
+per-day danger factor — danger {1: ×0.5, 2: ×0.75, 3: ×1.0, 4: ×1.25,
+5: ×1.5} — at full strength on hexes matching a bulletin problem's aspects
+and elevation band, damped halfway toward 1.0 elsewhere; elevation-split
+danger levels are honored. Absent timeline → factor 1.0 and
+`bulletin_prior.applied: false` in metadata. Floors/ceilings survive
+scaling; NODATA and simulated-none are untouched.
 
 index.json layer entry (owned by snowpack-design; values to mirror):
 `fields: { release: {shift 7, bits 1, aggregate "or"}, severity: {shift 0,
@@ -44,12 +56,19 @@ confirmation with snowpack-design**). Daily cadence emits at `HH=12`.
 
 ## External interfaces
 
-- **L1 centroids (task #7)**: preferred `snow_backend/data/l1_centroids.npy`,
-  float64 `(n_tiles, 2401, 2)`, EPSG:31254 (x, y), heap order, manifest tile
-  order; per-tile `l1_centroids_<t>.npy` also accepted. Absent either,
-  `centroids.py` self-generates from the manifest +
-  `hex_backend/coordinate_utility.py` (pitch- and footprint-validated in both
-  paths — the generator doubles as a cross-check on the external file).
+- **L1 centroids (task #7)**: parity-verified against the delivered
+  `centroids_l1_epsg31254.npz` — geometry agrees to 5 mm **after reordering**:
+  ⚠ the snowpack terrain pack uses "canonical slot" order (tiles sorted by
+  `(yq, yr)`), which is NOT the manifest `tiles[]` order that the frontend
+  contract and our PFL bodies use. `columns.manifest_perm` converts; every
+  consumer of pack arrays must apply it. `centroids.py` self-generates from
+  the manifest + `hex_backend/coordinate_utility.py` (pitch- and
+  footprint-validated), so no runtime dependency on the pack for centroids.
+- **Terrain columns pack (task #7)**: `avalanche_work/inputs/
+  terrain_columns.npz` (or `AVALANCHE_TERRAIN_COLUMNS`) supplies per-column
+  elev/aspect/validity in canonical order; `columns.py` reorders to manifest
+  order. Used for the bulletin prior's aspect/elevation matching and to mask
+  the 2,861 invalid (DEM-clipped) columns to NODATA.
 - **Snowpack sidecars (task #8)**: `registry.SidecarRegistry` reads `depth`
   (u8_linear, [0,500] cm) and `surface` (u8_class, class 4 = wet) PFL layers;
   byte→physical decode to be pinned with snowpack-design. Until then

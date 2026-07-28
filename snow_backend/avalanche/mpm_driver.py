@@ -25,13 +25,15 @@ import argparse
 import json
 import os
 from datetime import date, datetime
+from pathlib import Path
 
 import numpy as np
 
 from . import bytelayer, config, gate, hexpack, pfl, registry, terrain
 
 FROZEN_PARAMS_JSON = os.environ.get(
-    "AVALANCHE_FROZEN_PARAMS", str(config.WORK_DIR / "frozen_params.json")
+    "AVALANCHE_FROZEN_PARAMS",
+    str(Path(__file__).with_name("frozen_params_dry.json")),
 )
 
 # Uncalibrated wet-regime placeholder (Voellmy; see design doc section 5).

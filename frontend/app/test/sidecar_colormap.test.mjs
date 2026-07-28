@@ -115,24 +115,49 @@ test('continuous ramps are luminance-monotonic across their full domain (glancea
     // surface, steepness) are deliberately exempt — they are read by hue
     // plus the legend/stipple, not luminance (EAWS green->yellow->orange->
     // red->dark-red is not monotonic by convention, and that's correct).
-    // Each byte's RGB is independently rounded to the nearest integer
-    // channel, which can shave a fraction of a luma unit off an otherwise
-    // strictly increasing curve at an isolated byte (observed worst case
-    // across both continuous ramps: -0.43/255 on `powder`, versus the
-    // ~46/255 dip the original hex stops had). ROUNDING_TOLERANCE is sized
-    // well above that quantization noise floor but two orders of magnitude
-    // below anything perceptible, so a real design regression still fails
-    // this test loudly.
+    //
+    // ROUNDING_TOLERANCE is forced, not a pragmatic loosening. Each byte's
+    // RGB is rounded per channel independently; on `powder`'s flattest
+    // segment (#2f6a90 -> #8f66c4, +21.3 luma over ~51 entries) the curve
+    // advances only ~0.42 luma/entry, below the ~1.0-luma perturbation that
+    // independent per-channel rounding can introduce between adjacent
+    // entries. Strict >=0 monotonicity is unachievable at 8-bit for any
+    // ramp this shallow in places -- it is not a defect in these stops, and
+    // tightening this constant to 0 will produce a red build with no real
+    // regression behind it. (Frontend-design measured the built LUT's
+    // worst single-step delta at -0.218, comfortably inside this bound.)
+    //
+    // A per-step bound alone doesn't catch cumulative drift, though: 255
+    // consecutive -1.0 steps would pass while the ramp fell 255 luma, more
+    // than `powder` climbs end to end (196.4). The windowed check below
+    // closes that hole without weakening the per-step one -- per-step
+    // catches a sharp inversion (the original -45.9 defect), windowed
+    // catches a slow, tolerance-riding descent that no single step trips.
+    // Window 8 measured worst-case deltas: window 4 -> +1.06, window 8 ->
+    // +2.91, window 16 -> +6.10 -- window 8 leaves ~3 luma of headroom,
+    // tight enough to catch a real regression, loose enough not to be
+    // flaky against rounding noise.
     const ROUNDING_TOLERANCE = 1.0;
+    const WINDOW = 8;
     const lut = buildLutData();
     for (const id of RAMP_IDS) {
         if (rampStops(id).categorical) continue;
         const row = rampRow(id);
-        let prev = -Infinity;
-        for (let raw = 1; raw <= 255; raw++) {
-            const l = luma(rowRgba(lut, row, raw));
-            assert.ok(l >= prev - ROUNDING_TOLERANCE, `${id}: luma dropped at byte ${raw} (${l} < ${prev})`);
-            prev = l;
+        const lumas = [];
+        for (let raw = 1; raw <= 255; raw++) lumas.push(luma(rowRgba(lut, row, raw)));
+
+        for (let i = 1; i < lumas.length; i++) {
+            assert.ok(
+                lumas[i] >= lumas[i - 1] - ROUNDING_TOLERANCE,
+                `${id}: luma dropped at byte ${i + 1} (${lumas[i]} < ${lumas[i - 1]})`,
+            );
+        }
+        for (let i = 0; i + WINDOW < lumas.length; i++) {
+            assert.ok(
+                lumas[i + WINDOW] > lumas[i],
+                `${id}: luma did not climb over an ${WINDOW}-byte window starting at byte ${i + 1} ` +
+                `(${lumas[i + WINDOW]} <= ${lumas[i]})`,
+            );
         }
     }
 });
