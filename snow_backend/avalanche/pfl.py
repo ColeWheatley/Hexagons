@@ -2,23 +2,21 @@
 import json
 import os
 import struct
-import zlib
 from datetime import datetime, timezone
+
+from snow_backend import pfl_enums
 
 from . import config
 
-# PFL1 | u16 version | u16 layerId | u32 epochHour | u32 tileCount |
-# u16 nodeCount | u8 encoding | u8 aggregate | u32 manifestHash | 8 reserved
-# = 32 bytes. (The frontend design doc's field list sums to 36 with "12
-# reserved" but fixes the header at 32 bytes; 8 reserved closes it. Flagged
-# for byte-exact confirmation with the snowpack sidecar writer.)
-_HEADER_FMT = "<4sHHIIHBBI8x"
+# Header layout and enums come from the canonical registry
+# (snow_backend/pfl_enums.py); 8 reserved bytes, 32 total, ratified.
+_HEADER_FMT = pfl_enums.PFL_HEADER_FORMAT
 assert struct.calcsize(_HEADER_FMT) == 32
 
 
 def manifest_hash():
     """CRC32 of the raw tile_manifest.json bytes (coupling guard)."""
-    return zlib.crc32(config.TILE_MANIFEST.read_bytes()) & 0xFFFFFFFF
+    return pfl_enums.manifest_hash(str(config.TILE_MANIFEST))
 
 
 def epoch_hour(when_dt):

@@ -334,3 +334,64 @@ def test_manifest_perm_roundtrip():
     order = np.lexsort((yrs, yqs))                 # canonical: sorted by (yq, yr)
     perm = columns.manifest_perm(yqs[order], yrs[order])
     assert (yqs[order][perm] == yqs).all() and (yrs[order][perm] == yrs).all()
+
+
+# ---------------------------------------------------------------------------
+# Canonical enums / sidecar decode (post pfl_enums ruling)
+# ---------------------------------------------------------------------------
+
+def test_canonical_enum_values():
+    from snow_backend import pfl_enums
+
+    assert config.PFL_LAYER_ID_AVALANCHE == 4
+    assert config.PFL_ENCODING_PACKED_BITS == 3
+    assert config.PFL_AGGREGATE_MAX == 2
+    assert pfl_enums.SURFACE_CLASSES[4] == "crust"   # the wet==4 trap, pinned
+    assert pfl_enums.WET_CLASS_WET == 3
+
+
+def test_sidecar_registry_decode(tmp_path):
+    import struct
+    from datetime import datetime
+    from snow_backend import pfl_enums
+    from .. import registry
+
+    when = datetime(2026, 1, 15, 12)
+
+    def write_layer(layer, byte_vals):
+        body = np.zeros(config.TILE_BYTES, dtype=np.uint8)
+        body[0], body[1] = byte_vals
+        hdr = struct.pack(
+            pfl_enums.PFL_HEADER_FORMAT, pfl_enums.PFL_MAGIC,
+            pfl_enums.PFL_VERSION, pfl_enums.PFL_LAYER_ID[layer],
+            int(when.timestamp() // 3600), 1, config.TILE_BYTES,
+            pfl_enums.PFL_ENCODING["u8_linear"], pfl_enums.PFL_AGGREGATE["mean"], 0,
+        )
+        p = tmp_path / layer / "2026/01/15"
+        p.mkdir(parents=True)
+        (p / "12.pfl").write_bytes(hdr + body.tobytes())
+
+    # slab: byte 128 -> (128-1)/254*508 = 254 cm = 2.54 m; byte 0 -> NODATA -> 0
+    write_layer("slab", (128, 0))
+    # wet: hex 0 class 3 (wet), hex 1 class 1 (dry)
+    write_layer("wet", (3, 1))
+
+    hex_to_cells = [[np.array([0]), np.array([1])] + [np.array([], dtype=int)] * (config.TILE_BYTES - 2)]
+    reg = registry.SidecarRegistry(tmp_path, hex_to_cells, (1, 2))
+    f = reg.fields_for(when, dem=None)
+    assert f["slab"][0, 0] == pytest.approx(2.54, abs=0.01)
+    assert f["slab"][0, 1] == 0.0
+    assert bool(f["wet"][0, 0]) and not bool(f["wet"][0, 1])
+    assert f["meta"]["synthetic"] is False
+
+
+def test_v2_terrain_pack_is_manifest_order():
+    from .. import columns
+
+    if config.TERRAIN_COLUMNS_NPZ is None or "snow_backend/data" not in str(config.TERRAIN_COLUMNS_NPZ):
+        pytest.skip("committed v2 pack not present")
+    z = np.load(config.TERRAIN_COLUMNS_NPZ, allow_pickle=True)
+    perm = columns.manifest_perm(z["tile_yq"], z["tile_yr"])
+    assert (perm == np.arange(len(perm))).all(), "v2 pack should be manifest order"
+    cols = columns.load_terrain_columns()
+    assert int((~cols["valid"]).sum()) == 2861

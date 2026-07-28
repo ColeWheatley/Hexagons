@@ -97,18 +97,21 @@ class SidecarRegistry:
         return pfl.read_sidecar(p)["body"]
 
     def fields_for(self, when, dem):
-        depth_b = self._read_layer(when, "depth")    # u8_linear, domain [0,500] cm
-        state_b = self._read_layer(when, "surface")  # u8_class, 4 = "wet"
-        # Decode per index.json layer entries; exact byte->physical mapping to
-        # be pinned with snowpack-design (nodata 0 excluded from both).
-        slab_hex = np.where(
-            depth_b > 0, depth_b.astype(np.float32) * (5.0 / 255.0), 0.0
-        )  # 0..500 cm -> m
-        wet_hex = state_b == 4
+        from snow_backend import pfl_enums
+
+        # Ratified decode (snowpack-design pins, 2026-07-29): `slab` is
+        # slab-above-active-weak-layer (the quantity the simulator wants, NOT
+        # total snow depth); `wet` is the surface-wetness state layer (class
+        # 3 = wet; the `surface` layer's class 4 is CRUST, never use it here).
+        slab_b = self._read_layer(when, "slab")  # u8_linear [0, 508] cm
+        wet_b = self._read_layer(when, "wet")    # u8_class WET_CLASSES
+        lo, hi, _units = pfl_enums.U8_LINEAR_DOMAINS["slab"]
+        slab_hex = np.nan_to_num(pfl_enums.u8_linear_decode(slab_b, lo, hi)) / 100.0
+        wet_hex = wet_b == pfl_enums.WET_CLASS_WET
 
         slab = np.zeros(self.shape, dtype=np.float32)
         wet = np.zeros(self.shape, dtype=bool)
-        for t in range(depth_b.shape[0]):
+        for t in range(slab_b.shape[0]):
             for h, cells in enumerate(self.hex_to_cells[t]):
                 slab.ravel()[cells] = slab_hex[t, h]
                 wet.ravel()[cells] |= bool(wet_hex[t, h])

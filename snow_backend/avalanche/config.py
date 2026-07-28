@@ -81,39 +81,37 @@ RELEASE_SLAB_FULL_M = 1.5
 
 
 def _external(env_var, default_rel):
-    """env override, else WORK_DIR/inputs/<default_rel> if present, else None."""
+    """env override, else the committed snow_backend/data artifact, else
+    WORK_DIR/inputs/<default_rel>, else None."""
     if os.environ.get(env_var):
         return Path(os.environ[env_var])
-    p = WORK_DIR / "inputs" / default_rel
-    return p if p.exists() else None
+    for p in (REPO / "snow_backend/data" / default_rel, WORK_DIR / "inputs" / default_rel):
+        if p.exists():
+            return p
+    return None
 
 
-# Snowpack terrain pack (per-column elev/aspect/valid; canonical slot order =
-# tiles sorted by (yq, yr), reordered to manifest order by columns.py).
-# Validity masks the 2,861 DEM-clipped SE-border columns to NODATA.
+# Snowpack terrain pack (per-column elev/aspect/valid). The committed v2 pack
+# is manifest tile order; columns.manifest_perm self-adapts to any order by
+# matching the pack's (yq, yr) against the manifest (identity on v2, a real
+# permutation on the superseded scratchpad v1). Validity masks the 2,861
+# DEM-clipped SE-border columns to NODATA.
 TERRAIN_COLUMNS_NPZ = _external("AVALANCHE_TERRAIN_COLUMNS", "terrain_columns.npz")
 # LWD Tirol bulletin timeline (recon task 13); absent -> prior disabled.
 BULLETIN_TIMELINE = _external("AVALANCHE_BULLETIN_TIMELINE", "timeline.json")
 
 # --- PFL sidecar container ---------------------------------------------------
-# 32-byte PFL1 header (8 reserved bytes -- ratified canonical) + tileCount x
-# 2401 body (manifest tile order). Enum values follow the team-lead ruling of
-# 2026-07-29: snowpack's table is canonical; snow_backend/pfl_enums.py is the
-# shared registry and is preferred as soon as it lands. The literals below are
-# the ruled values and MUST BE DELETED in favor of the import once pfl_enums
-# exists (they are a bootstrap, not a fork).
-try:
-    from snow_backend.pfl_enums import (  # type: ignore
-        PFL_VERSION,
-        PFL_LAYER_ID_AVALANCHE,
-        PFL_ENCODING_PACKED_BITS,
-        PFL_AGGREGATE_MAX,
-    )
-except ImportError:
-    PFL_VERSION = 1
-    PFL_LAYER_ID_AVALANCHE = 4
-    PFL_ENCODING_PACKED_BITS = 3
-    PFL_AGGREGATE_MAX = 2
+# 32-byte PFL1 header (8 reserved -- ratified) + tileCount x 2401 body
+# (manifest tile order). snow_backend/pfl_enums.py is the canonical shared
+# registry (team-lead ruling 2026-07-29); no local enum literals may exist.
+from snow_backend.pfl_enums import (  # noqa: F401  (re-exported for pfl.py/tests)
+    PFL_AGGREGATE_MAX,
+    PFL_ENCODING_PACKED_BITS,
+    PFL_HEADER_FORMAT,
+    PFL_LAYER_ID_AVALANCHE,
+    PFL_VERSION,
+)
+
 EMIT_HOUR = 12  # daily cadence emits one step at 12:00 local
 
 # --- Winter retrospective ---------------------------------------------------
