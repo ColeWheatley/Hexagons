@@ -20,6 +20,8 @@ awscli = "*"
 tqdm = "*"
 requests = "*"
 ipykernel = "*"
+jax = ">=0.10.2,<0.11"
+pytest = ">=9.1.1,<10"
 
 [tasks]
 bake      = "python hex_backend/waffle_iron.py"
