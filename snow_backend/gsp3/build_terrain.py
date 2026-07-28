@@ -104,6 +104,59 @@ def build_inca_node_map(inca_dir, out_dir, tile_x, tile_y, tile_yq, tile_yr):
     return path
 
 
+def build_station_forcing(inca_dir, out_dir):
+    """SYNTHETIC station-column forcing for calibration: INCA bilinear AT the
+    station point (not the tile node), sun/clear-sky at the station lat/lon/
+    elevation.  Pairs with flat/open synthetic terrain (slope 0, SVF 1) in
+    calibrate.py --synthetic.  Only stations with observation files.
+
+    Caveat (documented, accepted): dz_node = 0 for synthetic columns — the
+    INCA cell's own model elevation is not read, so the lapse/precip-gradient
+    parameters have no lever at stations; they calibrate against the real
+    in-domain columns later, not here."""
+    from solar import clearsky_ghi, sun_vector_enu
+    st = [s for s in json.load(open(os.path.join(out_dir, "station_columns.json")))
+          if s.get("file")]
+    paths = sorted(glob.glob(os.path.join(inca_dir, "inca_stubai_*.nc")))
+    # keep only stations inside the downloaded INCA subset bbox
+    from pyproj import Transformer
+    _, gx, gy, _ = read_inca(paths[0], variables=())
+    tr = Transformer.from_crs("EPSG:31254", "EPSG:31287", always_xy=True)
+    px, py = tr.transform(np.array([s["x31254"] for s in st]),
+                          np.array([s["y31254"] for s in st]))
+    inside = ((px >= gx[0]) & (px <= gx[-1]) & (py >= gy[0]) & (py <= gy[-1]))
+    dropped = [s["id"] for s, k in zip(st, inside) if not k]
+    if dropped:
+        print(f"  station forcing: {len(dropped)} outside INCA subset "
+              f"dropped: {dropped}")
+    st = [s for s, k in zip(st, inside) if k]
+    x = np.array([s["x31254"] for s in st])
+    y = np.array([s["y31254"] for s in st])
+    forcing, time, _ = extract_node_series(paths, x, y)
+    forcing, filled = gap_fill_time(forcing)
+    t_s = time.astype("datetime64[s]")
+    sun = np.empty(forcing.shape[:2] + (3,), np.float32)
+    glcs = np.empty(forcing.shape[:2], np.float32)
+    for j, s in enumerate(st):
+        sv = sun_vector_enu(s["lat"], s["lon"], t_s)
+        sun[:, j, :] = sv
+        glcs[:, j] = clearsky_ghi(sv[..., 2], forcing[:, j, 7],
+                                  float(s["elevation_m"]))
+    path = os.path.join(out_dir, "station_forcing_winter.npz")
+    np.savez_compressed(
+        path,
+        meta=json.dumps({"format": "station-forcing", "version": 1,
+                         "station_ids": [s["id"] for s in st],
+                         "elevations_m": [s["elevation_m"] for s in st],
+                         "files": [s["file"] for s in st],
+                         "dz_node": "zero by construction (see docstring)",
+                         "gap_filled_hours": [int(h) for h in filled]}),
+        forcing=forcing, glcs=glcs, sun_enu=sun,
+        time_s=t_s.astype(np.int64),
+    )
+    return path, forcing.shape
+
+
 def build_station_map(stations_path, out_dir, tile_yq, tile_yr):
     """Every station -> nearest registry column.  Stations inside the beta
     footprint resolve exactly via the gosper walk (`inside: true`); stations
@@ -182,6 +235,9 @@ def main():
     st_path, n_in = build_station_map(stations, args.out,
                                       terr["tile_yq"], terr["tile_yr"])
     print(f"station map  : {st_path} ({n_in} stations in footprint)")
+
+    sf_path, sf_shape = build_station_forcing(args.inca_dir, args.out)
+    print(f"station frc  : {sf_path} {sf_shape}")
 
 
 if __name__ == "__main__":
