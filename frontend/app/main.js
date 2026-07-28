@@ -123,6 +123,12 @@ import { APP_LIFECYCLE, AppLifecycle } from './app_lifecycle.mjs';
 import { ResourceLifecycleRegistry } from './resource_lifecycle.mjs';
 import './gosper_core.js';
 import { navigationOverlayState } from './navigation_overlay.mjs';
+import {
+    SIDECAR_VERTEX_DECLARATIONS,
+    SIDECAR_VERTEX_FETCH,
+    SIDECAR_FRAGMENT_DECLARATIONS,
+    SIDECAR_FRAGMENT_TINT,
+} from './sidecar_shader.mjs';
 
 const G = window.GosperCore;
 const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
@@ -415,6 +421,28 @@ class PistonViewer {
             lodRadii: Array.from({ length: TILE_LEVEL + 1 }, () => ({
                 value: new THREE.Vector2(0.0, 1e9),
             })),
+            // PowFinder sidecar uniforms (design doc §2.1). Declared here so
+            // P1.3 (the atlas) does not also touch this object — P1.2 owns
+            // this one addition. sidecarGeom.x (atlas width) is a fixed
+            // architectural constant (design doc §1.5); sidecarTexel.y
+            // (1/atlasHeight) depends on tileCount and is a placeholder
+            // until P1.3 builds the real atlas and overwrites it — harmless
+            // in the meantime since uSidecarValid defaults to 0 per tile,
+            // so the fetch this feeds is never reached. sidecarRamp.y (ramp
+            // row count) mirrors sidecar_colormap.mjs's RAMP_COUNT as a
+            // literal rather than an import, to keep this task's main.js
+            // footprint to exactly this block; test/sidecar_shader.test.mjs
+            // asserts the two stay in sync.
+            sidecarAtlas: { value: null },
+            sidecarLut: { value: null },
+            sidecarTexel: { value: new THREE.Vector2(1 / 1024, 1) },
+            sidecarGeom: { value: new THREE.Vector2(1024, 1 / 1024) },
+            sidecarChannel: { value: new THREE.Vector4(1, 0, 0, 0) },
+            sidecarOverlay: { value: new THREE.Vector4(0, 0, 0, 0) },
+            sidecarRamp: { value: new THREE.Vector2(0, 8) },
+            sidecarMode: { value: 0.0 },
+            sidecarMix: { value: new THREE.Vector2(0, 0) },
+            sidecarOpacity: { value: 0.72 },
         };
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
         this.bootstrapPhaseActive = true;
@@ -2364,7 +2392,7 @@ class PistonViewer {
         // Force Three.js to treat this as a distinct program variant so we don't accidentally
         // reuse a cached MeshBasicMaterial program that didn't get our onBeforeCompile edits.
         // If you change shader code, bump this string.
-        material.customProgramCacheKey = () => 'piston_hex_global_pages_v5_signed_skirts';
+        material.customProgramCacheKey = () => 'piston_hex_global_pages_v6_powfinder_sidecar';
 
         const pageSize = this.texturePageGrid.pageSize;
         const sourceOrigin = this.worldOrigin;
@@ -2409,6 +2437,7 @@ class PistonViewer {
                              baseColor *= mix(0.6, 0.95, clamp(vInstDist / 3000.0, 0.0, 1.0));
                          }
                     }
+                    ${SIDECAR_FRAGMENT_TINT}
                     vec3 finalColor = baseColor * lighting;
                     if (vIsTop > 0.5 && !gl_FrontFacing) {
                         // Radioactive green is a deliberate invariant alarm:
@@ -2461,6 +2490,27 @@ class PistonViewer {
                 };
             }
 
+            // PowFinder sidecar uniforms. Shared ones are assigned by object
+            // identity (same pattern as uHeightFactor etc. above), so one
+            // CPU write to sharedMaterialUniforms.sidecarX.value updates
+            // every compiled material. The two per-tile ones follow the
+            // uPageOrigin{slot} pattern: read from material.userData here
+            // (set by _applySidecarBinding before setupMaterialShader runs,
+            // per the design doc §1.7 lifecycle table), then kept live by
+            // _applySidecarBinding's own uniform write post-compile.
+            shader.uniforms.uSidecarAtlas = sharedUniforms.sidecarAtlas;
+            shader.uniforms.uSidecarLut = sharedUniforms.sidecarLut;
+            shader.uniforms.uSidecarTexel = sharedUniforms.sidecarTexel;
+            shader.uniforms.uSidecarGeom = sharedUniforms.sidecarGeom;
+            shader.uniforms.uSidecarChannel = sharedUniforms.sidecarChannel;
+            shader.uniforms.uSidecarOverlayCh = sharedUniforms.sidecarOverlay;
+            shader.uniforms.uSidecarRamp = sharedUniforms.sidecarRamp;
+            shader.uniforms.uSidecarMode = sharedUniforms.sidecarMode;
+            shader.uniforms.uSidecarMix = sharedUniforms.sidecarMix;
+            shader.uniforms.uSidecarOpacity = sharedUniforms.sidecarOpacity;
+            shader.uniforms.uSidecarRowBase = { value: this.userData.sidecarRowBase || 0 };
+            shader.uniforms.uSidecarValid = { value: this.userData.sidecarValid || 0 };
+
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
                 #include <common>
                 uniform float uHeightFactor;
@@ -2490,6 +2540,7 @@ class PistonViewer {
                 varying float vSideId;
                 varying float vInstDist;
                 varying vec3 vMyNormal;
+                ${SIDECAR_VERTEX_DECLARATIONS}
             `).replace('#include <begin_vertex>', `
                 #include <begin_vertex>
 
@@ -2524,6 +2575,7 @@ class PistonViewer {
                         return;
                     }
                     vInstDist = instDist;
+                    ${SIDECAR_VERTEX_FETCH}
                 #else
                     vInstDist = 0.0;
                 #endif
@@ -2629,6 +2681,7 @@ class PistonViewer {
                     if (s < 55.0) return vec3(0.9, 0.2, 0.2); // Red
                     return vec3(0.6, 0.2, 0.8); // Violet
                 }
+                ${SIDECAR_FRAGMENT_DECLARATIONS}
             `).replace('#include <map_fragment>', fragmentMapPatch);
         };
 
@@ -3073,6 +3126,27 @@ class PistonViewer {
                 );
                 shader.uniforms[`uPageValid${slot}`].value = binding.valid ? 1 : 0;
             }
+        }
+    }
+
+    // Modelled directly on _applyTexturePageBindings above (design doc
+    // §1.7's P1.2 task spec). `rowBase` is slot*3 (the atlas row this
+    // tile's pyramid lives at, per §1.5); `valid` is falsy for a tile with
+    // no atlas slot / no installed data yet, in which case the vertex fetch
+    // is skipped entirely (see SIDECAR_VERTEX_FETCH) and the tile renders
+    // plain terrain. Callers set userData before setupMaterialShader runs
+    // (so a freshly compiled shader picks up the right values immediately)
+    // and call this again after, to refresh an already-compiled shader's
+    // live uniforms without a recompile.
+    _applySidecarBinding(material, rowBase, valid) {
+        if (!material) return;
+        material.userData.sidecarRowBase = rowBase || 0;
+        material.userData.sidecarValid = valid ? 1 : 0;
+
+        const shader = material.userData.shader;
+        if (shader) {
+            shader.uniforms.uSidecarRowBase.value = material.userData.sidecarRowBase;
+            shader.uniforms.uSidecarValid.value = material.userData.sidecarValid;
         }
     }
 
