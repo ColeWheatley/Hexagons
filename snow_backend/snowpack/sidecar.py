@@ -22,15 +22,17 @@ import base64
 import json
 import os
 import struct
+import sys
 import numpy as np
 
-N_NODES = 2401
-PFL_VERSION = 1
-HEADER_STRUCT = struct.Struct("<4sHHIIHBBI8x")     # 32 bytes
-assert HEADER_STRUCT.size == 32
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from pfl_enums import (PFL_AGGREGATE as AGGREGATE,  # noqa: E402
+                       PFL_ENCODING as ENCODING,
+                       PFL_HEADER_FORMAT, PFL_LAYER_ID, PFL_MAGIC,
+                       PFL_NODE_COUNT as N_NODES, PFL_VERSION)
 
-ENCODING = {"u8_linear": 1, "u8_class": 2, "packed_bits": 3}
-AGGREGATE = {"mean": 1, "max": 2, "mode": 3, "or": 4}
+HEADER_STRUCT = struct.Struct(PFL_HEADER_FORMAT)   # 32 bytes
+assert HEADER_STRUCT.size == 32
 
 SURFACE_CLASSES = ["—", "powder", "settled", "wind slab", "crust",
                    "wet", "refrozen", "bare"]
@@ -65,6 +67,9 @@ LAYERS = {
                     domain=[0, 1016], units="kg/m3", ramp="depth",
                     label="Surface density", short="RHO", display=False),
 }
+
+# Layer ids must agree with the shared registry (avalanche writer relies on it).
+assert all(spec["id"] == PFL_LAYER_ID[name] for name, spec in LAYERS.items())
 
 AVALANCHE_LAYER_INDEX_ENTRY = {
     "id": "avalanche", "label": "Avalanche", "encoding": "packed_bits",
@@ -102,7 +107,7 @@ def write_pfl(base: str, layer: str, t: np.datetime64, body: np.ndarray,
     if body.size != tile_count * N_NODES:
         raise ValueError(f"{layer}: body {body.size} != {tile_count}x{N_NODES}")
     header = HEADER_STRUCT.pack(
-        b"PFL1", PFL_VERSION, spec["id"], epoch_hour(t), tile_count, N_NODES,
+        PFL_MAGIC, PFL_VERSION, spec["id"], epoch_hour(t), tile_count, N_NODES,
         ENCODING[spec["encoding"]], AGGREGATE[spec["aggregate"]],
         manifest_hash)
     path = pfl_path(base, layer, t)
@@ -116,7 +121,7 @@ def write_pfl(base: str, layer: str, t: np.datetime64, body: np.ndarray,
 def read_pfl(path: str):
     with open(path, "rb") as fh:
         blob = fh.read()
-    if blob[:4] == b"PFL1":
+    if blob[:4] == PFL_MAGIC:
         fields = HEADER_STRUCT.unpack_from(blob)
         return fields, np.frombuffer(blob, np.uint8, offset=32)
     return None, np.frombuffer(blob, np.uint8)
