@@ -57,25 +57,30 @@ function resolveStops(rawStops) {
 // --- Ramp definitions -------------------------------------------------
 //
 // `powder` (row 0, SQH) is the brand ramp: deep slate ("not the goods")
-// through the landing-page blue into brand pink, with the top 15% of the
-// domain reserved for the bright-pink -> pale-pink transition so "pink = go
-// there" is learnable in one session (§2.5 row 0). The other four stops
+// through a darkened blue-violet climb into brand pink, with the top 15% of
+// the domain reserved for the bright-pink -> pale-pink transition so "pink =
+// go there" is learnable in one session (§2.5 row 0). The other four stops
 // split the remaining 85% evenly — the doc pins the top-15% cutoff exactly
 // but not the interior spacing, so this is the plainest reading of "evenly
 // stepped until the reserved top band."
 //
-// KNOWN ISSUE, flagged to frontend-design rather than resolved unilaterally:
-// §2.5 also asks for this ramp to be "perceptually monotonic in luminance."
-// Taken literally, the doc's own six named hex stops are not: #6fc6ff
-// (luma ~184) is brighter than the #c06ff2 stop immediately after it
-// (luma ~138). Shipped verbatim per the doc's exact hex codes; see
-// test/sidecar_colormap.test.mjs for the luma numbers and the P0.2 agent
-// report for the question sent upstream.
+// Luminance-monotonic by construction (§2.5: "survives the x luma
+// modulation"), per frontend-design review. The doc's original six named
+// hex stops were NOT monotonic: #6fc6ff (luma ~184) was brighter than the
+// #c06ff2 stop immediately after it (luma ~138), which under the fragment
+// shader's `layer.rgb * (0.45 + 0.55*luma)` terrain modulation (§2.6) let
+// two different SQH values land on the same on-screen luminance — the
+// exact glanceability failure the "monotonic" requirement exists to
+// prevent. Fix, verified monotonic end to end (luma 25.4 / 63.8 / 96.2 /
+// 117.5 / 142.1 / 221.9): `#6fc6ff` is sacrificed as a stop so the brand
+// anchor (`#ff6b9d` / `#ffd3e8`, unchanged) can only ever sit at the top of
+// the ramp. `#6fc6ff` itself is not lost from the brand — it still anchors
+// the `depth` ramp and the landing page.
 const POWDER_STOPS = resolveStops([
     { at: 0, hex: '#141a24' },
-    { at: 0.2125, hex: '#2f5d7c' },
-    { at: 0.425, hex: '#6fc6ff' },
-    { at: 0.6375, hex: '#c06ff2' },
+    { at: 0.2125, hex: '#24455e' },
+    { at: 0.425, hex: '#2f6a90' },
+    { at: 0.6375, hex: '#8f66c4' },
     { at: 0.85, hex: '#ff6b9d' },
     { at: 1, hex: '#ffd3e8' },
 ]);
@@ -90,12 +95,16 @@ const DEPTH_STOPS = resolveStops([
     { at: 1, hex: '#ffffff' },
 ]);
 
-// `hazard` (row 1, avalanche release) — 5 EAWS-shaped danger classes, hard
+// `hazard` (row 1, avalanche severity) — 5 EAWS-shaped danger classes, hard
 // steps, no interpolation: "a danger level is a class, not a gradient"
-// (§2.5 row 1). The fragment shader pre-scales the packed 0..31 release
-// field onto the 0..255 LUT domain (`sidecarRelease(raw) * (255.0/31.0)`,
-// §2.3), so this module only needs to slice its own byte domain into 5
-// equal bins.
+// (§2.5 row 1). The avalanche `packed_bits` layout is `{release: shift 7,
+// bits 1}` + `{severity: shift 0, bits 7}` — a boolean release flag (a
+// screen-space stipple in the fragment shader, not this ramp's domain) plus
+// a 7-bit severity 0..127. The shader passes severity straight through as
+// the LUT sample index with **no rescale** (unlike the general 1..255
+// sidecar domain other ramps use), so this ramp's bins are computed
+// directly over 0..127.
+const HAZARD_SEVERITY_MAX = 127; // 7-bit field (bits 0-6)
 const HAZARD_COLORS = ['#34d399', '#facc15', '#fb923c', '#f87171', '#7f1d1d'];
 const HAZARD_LABELS = ['low', 'moderate', 'considerable', 'high', 'very high'];
 // Row 1's "very high" class additionally gets a black stipple per §2.5 —
@@ -112,7 +121,8 @@ const HAZARD_LABELS = ['low', 'moderate', 'considerable', 'high', 'very high'];
 // — kept here only so RAMP_COUNT's row 3 is fully populated and testable.
 // `index.json`'s `classes` array reserves index 0 for "-" (no class),
 // which doubles as the general NODATA=0 sentinel; the 6 real classes below
-// map to raw bytes 1..255 the same way hazard's classes do.
+// map to the general 1..255 sidecar domain (unlike `hazard`, which has its
+// own narrower 0..127 severity domain — see HAZARD_SEVERITY_MAX above).
 const SURFACE_COLORS = ['#38bdf8', '#a78bfa', '#fbbf24', '#22c55e', '#94a3b8', '#78716c'];
 const SURFACE_LABELS = ['powder', 'wind slab', 'crust', 'wet', 'refrozen', 'rock'];
 
@@ -164,7 +174,7 @@ const RAMP_DEFS = {
         ticks: [{ at: 0, label: 'thin' }, { at: 100, label: 'deep' }],
     },
     hazard: {
-        kind: 'categoricalEqual',
+        kind: 'hazardSeverity',
         colors: HAZARD_COLORS,
         labels: HAZARD_LABELS,
     },
@@ -196,12 +206,29 @@ function categoricalEqualColorForByte(colors, raw) {
     return [r, g, b, 255];
 }
 
+// `raw` here is already the extracted severity (0..127, no rescale — see
+// HAZARD_SEVERITY_MAX above), not a general 1..255 sidecar byte. Severity 0
+// takes the same no-tint path as NODATA: the shader's `sidecarRamp()`
+// transparency guard (`raw < 0.5`, §2.3) runs on this already-extracted
+// value for packed layers, so severity 0 ("no hazard") and true NODATA are
+// indistinguishable downstream and both correctly render as "nothing to
+// show" rather than a class colour.
+function hazardColorForByte(colors, raw) {
+    if (raw === NODATA_BYTE) return [0, 0, 0, 0];
+    const n = colors.length;
+    const severity = Math.min(raw, HAZARD_SEVERITY_MAX); // defensive clamp; raw > 127 is unreachable from a 7-bit field
+    const bin = Math.min(n - 1, Math.floor((severity / (HAZARD_SEVERITY_MAX + 1)) * n));
+    const [r, g, b] = hexToRgb(colors[bin]);
+    return [r, g, b, 255];
+}
+
 function colorForByte(id, raw) {
     const def = RAMP_DEFS[id];
     if (!def) throw new Error(`sidecar_colormap: unknown ramp id "${id}"`);
     switch (def.kind) {
         case 'continuous': return continuousColorForByte(def.stops, raw);
         case 'categoricalEqual': return categoricalEqualColorForByte(def.colors, raw);
+        case 'hazardSeverity': return hazardColorForByte(def.colors, raw);
         case 'steepness': return steepnessColorForByte(raw);
         default: throw new Error(`sidecar_colormap: unhandled ramp kind "${def.kind}"`);
     }
@@ -271,7 +298,11 @@ export function rampStops(id) {
         return { css, ticks: def.ticks.map(t => ({ ...t })), categorical: false };
     }
 
-    if (def.kind === 'categoricalEqual') {
+    if (def.kind === 'categoricalEqual' || def.kind === 'hazardSeverity') {
+        // The legend is a 0..1 axis regardless of the underlying byte
+        // domain (1..255 for categoricalEqual ramps, 0..127 for hazard's
+        // severity field), so both kinds divide it into n equal bins the
+        // same way.
         const n = def.colors.length;
         const boundaries = Array.from({ length: n + 1 }, (_, i) => i / n);
         return {

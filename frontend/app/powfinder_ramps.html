@@ -71,7 +71,7 @@
 <h1>PowFinder colormap LUT — dev preview</h1>
 <p class="sub">
     Every bar below is drawn two ways from the same source data
-    (<code>sidecar_colormap.js</code>): the top strip is the CSS
+    (<code>sidecar_colormap.mjs</code>): the top strip is the CSS
     <code>linear-gradient</code> from <code>rampStops(id).css</code>, the
     thin strip underneath is a 256px-wide pixel row read straight out of
     <code>buildLutData()</code> for that ramp's row. They should look
@@ -82,7 +82,7 @@
 <div id="status">loading…</div>
 
 <script type="module">
-import { RAMP_IDS, RAMP_COUNT, buildLutData, rampRow, rampStops } from './sidecar_colormap.js';
+import { RAMP_IDS, RAMP_COUNT, buildLutData, rampRow, rampStops } from './sidecar_colormap.mjs';
 
 const container = document.getElementById('ramps');
 const lut = buildLutData();

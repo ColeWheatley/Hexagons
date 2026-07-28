@@ -1,19 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-
-const source = await readFile(
-    new URL('../sidecar_colormap.js', import.meta.url),
-    'utf8',
-);
-const {
+import {
     NODATA_BYTE,
     RAMP_IDS,
     RAMP_COUNT,
     buildLutData,
     rampRow,
     rampStops,
-} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+} from '../sidecar_colormap.mjs';
 
 const mainSource = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 
@@ -21,6 +16,8 @@ function rowRgba(lut, row, raw) {
     const idx = (row * 256 + raw) * 4;
     return [lut[idx], lut[idx + 1], lut[idx + 2], lut[idx + 3]];
 }
+
+const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
 test('ramp inventory matches the §2.5 row table: 5 named ramps, 8 total rows', () => {
     assert.deepEqual(RAMP_IDS, ['powder', 'hazard', 'depth', 'surface', 'steepness']);
@@ -99,31 +96,59 @@ test('steepness row (4) reproduces main.js gradientColor() bins exactly', () => 
     assert.deepEqual(bin(255), [153, 51, 204, 255]);
 });
 
-test('powder row (0) is the brand ramp: slate -> landing blue -> pink, pink reserved for the top', () => {
+test('powder row (0) is the brand ramp: slate -> darkened blue-violet -> pink, pink reserved for the top', () => {
     const lut = buildLutData();
     const row = rampRow('powder');
-    assert.deepEqual(rowRgba(lut, row, 1), [20, 26, 36, 255]);   // #141a24, bottom of the domain
+    assert.deepEqual(rowRgba(lut, row, 1), [20, 26, 36, 255]);      // #141a24, bottom of the domain
     assert.deepEqual(rowRgba(lut, row, 255), [255, 211, 232, 255]); // #ffd3e8, top of the domain
-    // §2.5 asks for a ramp that is "perceptually monotonic in luminance."
-    // Taken as literally as the doc's six named hex stops in the doc's own
-    // order, the ramp is NOT fully monotonic: #6fc6ff (luma ~184) is
-    // brighter than the #c06ff2 stop right after it (luma ~138) before
-    // luminance climbs again through pink to pale pink. Flagged to
-    // frontend-design (see agent report) rather than silently reordering or
-    // substituting the doc's named colours. This test pins the true
-    // end-to-end trend (dark start, bright end) without asserting the
-    // stronger, currently-false, fully-monotonic claim.
-    const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    assert.ok(luma(rowRgba(lut, row, 255)) > luma(rowRgba(lut, row, 1)));
+    // The brand anchor (#ff6b9d) sits at the 85% stop; byte 254*0.85+1 is
+    // not an exact integer, so check nearby bytes land close to it rather
+    // than asserting an exact match at an arbitrary rounded byte index.
+    const near85 = rowRgba(lut, row, 217);
+    assert.ok(Math.abs(near85[0] - 255) <= 1 && Math.abs(near85[1] - 107) <= 3 && Math.abs(near85[2] - 157) <= 3);
 });
 
-test('hazard row (1) is 5 hard-stepped EAWS classes over the raw byte domain', () => {
+test('continuous ramps are luminance-monotonic across their full domain (glanceability under luma modulation)', () => {
+    // §2.5 requires this so that terrain-luma modulation (§2.6:
+    // `layer.rgb * (0.45 + 0.55*luma)`) can never make two different values
+    // read as the same on-screen brightness. Categorical ramps (hazard,
+    // surface, steepness) are deliberately exempt — they are read by hue
+    // plus the legend/stipple, not luminance (EAWS green->yellow->orange->
+    // red->dark-red is not monotonic by convention, and that's correct).
+    // Each byte's RGB is independently rounded to the nearest integer
+    // channel, which can shave a fraction of a luma unit off an otherwise
+    // strictly increasing curve at an isolated byte (observed worst case
+    // across both continuous ramps: -0.43/255 on `powder`, versus the
+    // ~46/255 dip the original hex stops had). ROUNDING_TOLERANCE is sized
+    // well above that quantization noise floor but two orders of magnitude
+    // below anything perceptible, so a real design regression still fails
+    // this test loudly.
+    const ROUNDING_TOLERANCE = 1.0;
+    const lut = buildLutData();
+    for (const id of RAMP_IDS) {
+        if (rampStops(id).categorical) continue;
+        const row = rampRow(id);
+        let prev = -Infinity;
+        for (let raw = 1; raw <= 255; raw++) {
+            const l = luma(rowRgba(lut, row, raw));
+            assert.ok(l >= prev - ROUNDING_TOLERANCE, `${id}: luma dropped at byte ${raw} (${l} < ${prev})`);
+            prev = l;
+        }
+    }
+});
+
+test('hazard row (1) is 5 hard-stepped EAWS classes over the 0..127 severity domain, no rescale', () => {
     const lut = buildLutData();
     const row = rampRow('hazard');
-    // f = (raw-1)/254; bin = floor(f*5), clamped to [0,4].
+    // bin = floor((severity / 128) * 5), clamped to [0,4]. severity is the
+    // raw LUT index directly -- no 1..255 domain stretch.
     assert.deepEqual(rowRgba(lut, row, 1), [52, 211, 153, 255]);    // #34d399, low
-    assert.deepEqual(rowRgba(lut, row, 128), [251, 146, 60, 255]);  // #fb923c, considerable (mid-domain)
-    assert.deepEqual(rowRgba(lut, row, 255), [127, 29, 29, 255]);   // #7f1d1d, very high
+    assert.deepEqual(rowRgba(lut, row, 64), [251, 146, 60, 255]);   // #fb923c, considerable (mid-domain)
+    assert.deepEqual(rowRgba(lut, row, 127), [127, 29, 29, 255]);   // #7f1d1d, very high (max severity)
+    // Bytes above 127 are unreachable from a 7-bit field; defensively clamp
+    // to the top class rather than reading garbage.
+    assert.deepEqual(rowRgba(lut, row, 200), [127, 29, 29, 255]);
+    assert.deepEqual(rowRgba(lut, row, 255), [127, 29, 29, 255]);
 });
 
 test('rampStops: continuous ramps expose a smooth gradient and two end labels', () => {
@@ -144,6 +169,8 @@ test('rampStops: continuous ramps expose a smooth gradient and two end labels', 
 test('rampStops: hazard is hard-stepped with one tick per class at its bin centre', () => {
     const hazard = rampStops('hazard');
     assert.equal(hazard.categorical, true);
+    // The legend axis is 0..1 regardless of the underlying 0..127 severity
+    // domain, so the CSS/tick shape is unchanged by the domain fix above.
     assert.equal(
         hazard.css,
         'linear-gradient(90deg, #34d399 0%, #34d399 20%, #facc15 20%, #facc15 40%, ' +
