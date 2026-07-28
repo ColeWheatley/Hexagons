@@ -161,7 +161,12 @@ def main():
           f"+ subl {subl.mean():.1f} + residual {balance:.2f}")
 
     if not args.no_sidecars:
-        idx = sidecar.build_index(n_tiles, profile, present_slots, times[n_hours - 1])
+        av_summary = os.path.abspath(os.path.join(
+            HERE, "..", "avalanche_work", "out", "avalanche",
+            "layer_summary.json"))
+        idx = sidecar.build_index(n_tiles, profile, present_slots,
+                                  times[n_hours - 1],
+                                  avalanche_summary_path=av_summary)
         sidecar.write_index(out_base, idx)
         print(f"sidecars + index.json at {out_base}")
 

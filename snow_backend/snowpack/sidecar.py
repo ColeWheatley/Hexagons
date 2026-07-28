@@ -134,10 +134,27 @@ def coverage_mask_b64(present_slots) -> str:
     return base64.b64encode(np.packbits(bits).tobytes()).decode()
 
 
+def avalanche_slots_from_summary(summary_path: str):
+    """Map the avalanche layer_summary.json steps (avalanche/YYYY/MM/DD/HH.pfl)
+    into hourly coverage slots.  Additive index info; the scrubber uses
+    nearest-present for avalanche-absent hours (team-lead ruling)."""
+    with open(summary_path) as fh:
+        steps = json.load(fh)["steps"]
+    slots = []
+    for s in steps:
+        _, yyyy, mm, dd, hh = s.replace(".pfl", "").split("/")
+        t = np.datetime64(f"{yyyy}-{mm}-{dd}T{hh}:00:00")
+        sl = slot_of(t)
+        if 0 <= sl < COVERAGE_COUNT:
+            slots.append(sl)
+    return slots
+
+
 def build_index(tile_count: int, manifest_profile: str, present_slots,
                 latest_t: np.datetime64, cache_key: str = "pf-1.0.0",
                 url_template: str = "powfinder/{layer}/{yyyy}/{mm}/{dd}/{hh}.pfl",
-                include_avalanche: bool = True) -> dict:
+                include_avalanche: bool = True,
+                avalanche_summary_path: str | None = None) -> dict:
     layers = []
     for name, spec in LAYERS.items():
         if not spec["display"]:
@@ -153,6 +170,12 @@ def build_index(tile_count: int, manifest_profile: str, present_slots,
         layers.append(entry)
         if name == "depth" and include_avalanche:
             layers.append(AVALANCHE_LAYER_INDEX_ENTRY)
+    layers_coverage = {}
+    if avalanche_summary_path and os.path.exists(avalanche_summary_path):
+        av = avalanche_slots_from_summary(avalanche_summary_path)
+        layers_coverage["avalanche"] = {
+            "present": coverage_mask_b64(av), "count": COVERAGE_COUNT,
+            "note": "daily 12:00 UTC; scrubber uses nearest-present"}
     now = np.datetime64("now", "s")
     return {
         "schema": 1,
@@ -170,6 +193,7 @@ def build_index(tile_count: int, manifest_profile: str, present_slots,
         "layers": layers,
         "engine_layers": sorted(n for n, s in LAYERS.items()
                                 if not s["display"]),
+        **({"layers_coverage": layers_coverage} if layers_coverage else {}),
     }
 
 
