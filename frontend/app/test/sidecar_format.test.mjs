@@ -4,6 +4,7 @@ import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import { generateFixtures } from '../../../scripts/make_sidecar_fixtures.mjs';
 import {
     PYRAMID_DEPTH_COUNTS,
@@ -17,12 +18,14 @@ import {
     PFL1_HEADER_BYTES,
     pyramidAddress,
     buildPyramid,
+    buildPackedPyramid,
     parseSidecarBody,
     parseSidecarIndex,
     coverageHas,
     nearestPresentHour,
     epochHourToUrl,
     decodePacked,
+    encodePacked,
     bytesToBase64,
     toEpochHour,
 } from '../sidecar_format.mjs';
@@ -183,6 +186,109 @@ test('buildPyramid handles multiple tiles independently, each tileCount*2801 byt
 });
 
 // -----------------------------------------------------------------------
+// encodePacked / decodePacked round-trip
+// -----------------------------------------------------------------------
+
+test('encodePacked is the exact inverse of decodePacked', () => {
+    const fields = {
+        release: { shift: 7, bits: 1 },
+        severity: { shift: 0, bits: 7 },
+    };
+    for (const values of [{ release: 0, severity: 0 }, { release: 1, severity: 127 }, { release: 0, severity: 55 }, { release: 1, severity: 1 }]) {
+        const raw = encodePacked(values, fields);
+        assert.equal(decodePacked(raw, fields.release), values.release);
+        assert.equal(decodePacked(raw, fields.severity), values.severity);
+    }
+});
+
+test('encodePacked masks each value to its declared bit width (cannot bleed into a neighbour field)', () => {
+    const fields = { release: { shift: 7, bits: 1 }, severity: { shift: 0, bits: 7 } };
+    // severity=255 (8 bits' worth) must be masked to 7 bits (127), not
+    // overflow into release's bit.
+    const raw = encodePacked({ release: 0, severity: 255 }, fields);
+    assert.equal(raw, 127);
+    assert.equal(decodePacked(raw, fields.release), 0);
+});
+
+// -----------------------------------------------------------------------
+// buildPackedPyramid: per-field reduction (contract amendment, post-review)
+//
+// A packed_bits byte's bits are independent fields, not one scalar — the
+// original design doc called for reducing the raw byte directly, which is
+// wrong: raw-byte max(128,127) = 128 = {release:1, severity:0}, silently
+// discarding six neighbours' severity=127 in favour of one neighbour's
+// severity=0. buildPackedPyramid decodes each field, reduces independently
+// with its own aggregate, then repacks.
+// -----------------------------------------------------------------------
+
+const AVALANCHE_FIELDS = {
+    release: { shift: 7, bits: 1, aggregate: 'or' },
+    severity: { shift: 0, bits: 7, aggregate: 'max' },
+};
+
+test('buildPackedPyramid: the exact regression case — one raw-128 + six raw-127 reduces to release=1, severity=127 (255), NOT raw-byte max 128', () => {
+    const body = new Uint8Array(L1_NODE_COUNT).fill(1); // background: release=0, severity=1
+    // depth-3 cluster 0 (leaves 0..6): one {release:1, severity:0} = raw 128,
+    // six {release:0, severity:127} = raw 127.
+    body.set([128, 127, 127, 127, 127, 127, 127], 0);
+
+    const pyr = buildPackedPyramid(body, 1, AVALANCHE_FIELDS);
+    const parent = pyr[PYRAMID_DEPTH_OFFSETS[3] + 0];
+
+    assert.notEqual(parent, 128, 'must not be the naive raw-byte max');
+    assert.equal(parent, 255);
+    assert.equal(decodePacked(parent, AVALANCHE_FIELDS.release), 1); // "or": any child released
+    assert.equal(decodePacked(parent, AVALANCHE_FIELDS.severity), 127); // "max": worst severity survives
+});
+
+test('buildPackedPyramid: release aggregates with "or", severity with "max", independently, through recursion', () => {
+    // Background: release=0, severity=50 (raw = 50) everywhere.
+    const body = new Uint8Array(L1_NODE_COUNT).fill(50);
+    // One leaf, deep in a background subtree, releases with low severity.
+    // "or" must carry release=1 to the root even though "max" would pick a
+    // *different* child (the highest-severity one) for severity.
+    body[0] = encodePacked({ release: 1, severity: 5 }, AVALANCHE_FIELDS); // raw = 133
+    body[1] = encodePacked({ release: 0, severity: 90 }, AVALANCHE_FIELDS); // raw = 90, highest severity
+
+    const pyr = buildPackedPyramid(body, 1, AVALANCHE_FIELDS);
+    const root = pyr[PYRAMID_DEPTH_OFFSETS[0] + 0];
+    assert.equal(decodePacked(root, AVALANCHE_FIELDS.release), 1, 'release "or"s up from one leaf');
+    assert.equal(decodePacked(root, AVALANCHE_FIELDS.severity), 90, 'severity "max"s up independently of which child released');
+});
+
+test('buildPackedPyramid: NODATA is a whole-byte skip, not per-field', () => {
+    const body = new Uint8Array(L1_NODE_COUNT).fill(0); // all NODATA
+    for (const reducer of [AVALANCHE_FIELDS]) {
+        const pyr = buildPackedPyramid(body, 1, reducer);
+        assert.ok(pyr.every((v) => v === 0));
+    }
+    // One non-NODATA leaf among six NODATA children is not diluted by "phantom" zeros.
+    const mixed = new Uint8Array(L1_NODE_COUNT).fill(0);
+    mixed[0] = encodePacked({ release: 1, severity: 40 }, AVALANCHE_FIELDS);
+    const pyr = buildPackedPyramid(mixed, 1, AVALANCHE_FIELDS);
+    const parent = pyr[PYRAMID_DEPTH_OFFSETS[3] + 0];
+    assert.equal(decodePacked(parent, AVALANCHE_FIELDS.release), 1);
+    assert.equal(decodePacked(parent, AVALANCHE_FIELDS.severity), 40);
+});
+
+test('buildPackedPyramid accepts a custom per-field aggregate function', () => {
+    const fields = { severity: { shift: 0, bits: 7, aggregate: (values) => values.length } };
+    const body = new Uint8Array(L1_NODE_COUNT).fill(0);
+    body.set([10, 20, 30, 0, 0, 60, 70], 0); // 5 non-NODATA of 7
+    const pyr = buildPackedPyramid(body, 1, fields);
+    assert.equal(decodePacked(pyr[PYRAMID_DEPTH_OFFSETS[3] + 0], fields.severity), 5);
+});
+
+test('buildPackedPyramid rejects an unknown per-field aggregate and an empty fields object', () => {
+    assert.throws(() => buildPackedPyramid(new Uint8Array(L1_NODE_COUNT), 1, { severity: { shift: 0, bits: 7, aggregate: 'median' } }), Error);
+    assert.throws(() => buildPackedPyramid(new Uint8Array(L1_NODE_COUNT), 1, {}), Error);
+});
+
+test('buildPackedPyramid rejects a body whose length is not tileCount * 2401', () => {
+    assert.throws(() => buildPackedPyramid(new Uint8Array(L1_NODE_COUNT - 1), 1, AVALANCHE_FIELDS), RangeError);
+});
+
+// -----------------------------------------------------------------------
 // parseSidecarBody: header sniff, headerless fallback, length assertion
 // -----------------------------------------------------------------------
 
@@ -301,6 +407,15 @@ test('parseSidecarIndex accepts a well-formed index and decodes coverage', () =>
     assert.equal(result.coverage.stepHours, 1);
     assert.equal(result.coverage.startEpochHour, toEpochHour('2026-01-01T00:00:00Z'));
     assert.equal(result.layers.length, 1);
+    assert.deepEqual(result.engineLayers, []); // absent in input -> defaults to []
+});
+
+test('parseSidecarIndex passes engine_layers through when present (real backend index.json shape)', () => {
+    const { manifest, json } = buildIndexFixture();
+    json.engine_layers = ['slab', 'hn24', 'hn72', 'wet', 'sdens'];
+    const result = parseSidecarIndex(json, manifest);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.engineLayers, ['slab', 'hn24', 'hn72', 'wet', 'sdens']);
 });
 
 test('parseSidecarIndex rejects a manifest_profile mismatch', () => {
@@ -455,13 +570,14 @@ test('decodePacked is generic over field layout (not hardcoded to any one layer)
 
 test('make_sidecar_fixtures: produces headered + headerless files of exactly tileCount*2401 (+32) bytes, and a self-consistent index.json', async (t) => {
     const manifestPath = fileURLToPath(new URL('../tile_manifest.json', import.meta.url));
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const manifestBytes = await readFile(manifestPath);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
     assert.equal(manifest.tiles.length, 197); // the acceptance criterion's literal "197 x 2401"
 
     const outDir = await mkdtemp(join(tmpdir(), 'powfinder-fixtures-'));
     t.after(() => rm(outDir, { recursive: true, force: true }));
 
-    const result = await generateFixtures({ outDir, manifest, hours: 6, seed: 42, headerlessSampleHours: 1 });
+    const result = await generateFixtures({ outDir, manifest, manifestBytes, hours: 6, seed: 42, headerlessSampleHours: 1 });
 
     assert.equal(result.tileCount, 197);
     assert.ok(result.files.length > 0);
@@ -481,18 +597,60 @@ test('make_sidecar_fixtures: produces headered + headerless files of exactly til
     assert.equal(parsed.ok, true, parsed.reason);
     assert.equal(parsed.tileCount, 197);
     assert.equal(parsed.layers.length, 4);
+    assert.deepEqual(parsed.engineLayers, []); // this generator synthesizes none
 
     const latest = JSON.parse(await readFile(result.latestPath, 'utf8'));
     assert.equal(latest.latest, index.latest);
+
+    // manifestHash = CRC32 of the raw tile_manifest.json file bytes (pinned
+    // by team-lead), cross-checked against Node's own zlib implementation.
+    const headeredFile = result.files.find((f) => f.headered);
+    const raw = await readFile(headeredFile.path);
+    const parsedBody = parseSidecarBody(new Uint8Array(raw), 197);
+    assert.equal(parsedBody.ok, true);
+    assert.equal(parsedBody.header.manifestHash, zlib.crc32(manifestBytes) >>> 0);
+});
+
+test('make_sidecar_fixtures: avalanche layer entry matches the confirmed per-field packed_bits contract', async (t) => {
+    const manifestPath = fileURLToPath(new URL('../tile_manifest.json', import.meta.url));
+    const manifestBytes = await readFile(manifestPath);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    const outDir = await mkdtemp(join(tmpdir(), 'powfinder-fixtures-'));
+    t.after(() => rm(outDir, { recursive: true, force: true }));
+
+    const result = await generateFixtures({ outDir, manifest, manifestBytes, hours: 4, seed: 3, headerlessSampleHours: 0 });
+    const index = JSON.parse(await readFile(result.indexPath, 'utf8'));
+    const avalanche = index.layers.find((l) => l.id === 'avalanche');
+    assert.ok(avalanche);
+    assert.equal(avalanche.aggregate, undefined); // no layer-level aggregate any more
+    assert.deepEqual(avalanche.fields, {
+        release: { shift: 7, bits: 1, aggregate: 'or', domain: [0, 1] },
+        severity: { shift: 0, bits: 7, aggregate: 'max', domain: [1, 127] },
+    });
+
+    // A real generated avalanche file, run through buildPackedPyramid using
+    // the layer's own published fields, produces bytes whose decoded
+    // severity/release stay in-domain everywhere (no crash, no garbage).
+    const avyFile = result.files.find((f) => f.layerId === 'avalanche');
+    const raw = await readFile(avyFile.path);
+    const body = parseSidecarBody(new Uint8Array(raw), 197);
+    assert.equal(body.ok, true);
+    const pyr = buildPackedPyramid(body.body, 197, avalanche.fields);
+    for (let i = 0; i < pyr.length; i++) {
+        if (pyr[i] === 0) continue; // NODATA
+        const severity = decodePacked(pyr[i], avalanche.fields.severity);
+        assert.ok(severity >= 1 && severity <= 127, `severity in domain at pyramid index ${i}`);
+    }
 });
 
 test('make_sidecar_fixtures: deliberate coverage holes and a NODATA region are present and buildPyramid handles both', async (t) => {
     const manifestPath = fileURLToPath(new URL('../tile_manifest.json', import.meta.url));
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const manifestBytes = await readFile(manifestPath);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
     const outDir = await mkdtemp(join(tmpdir(), 'powfinder-fixtures-'));
     t.after(() => rm(outDir, { recursive: true, force: true }));
 
-    const result = await generateFixtures({ outDir, manifest, hours: 20, seed: 7, headerlessSampleHours: 0 });
+    const result = await generateFixtures({ outDir, manifest, manifestBytes, hours: 20, seed: 7, headerlessSampleHours: 0 });
     // hours=20 with the generator's hole fractions (0.35/0.08 and 0.7/2) must
     // produce at least one absent hour.
     assert.ok(result.coverage.presentSlots.length < 20, 'at least one hour is a deliberate hole');

@@ -96,7 +96,16 @@ function reduceMode(values) {
     return best;
 }
 
-const BUILTIN_REDUCERS = { mean: reduceMean, max: reduceMax, mode: reduceMode };
+// Bitwise OR — the right reducer for a one-bit flag field (e.g. "did any
+// child release?"): a coarse hex should show a hazard if ANY descendant has
+// it, never average or vote it away.
+function reduceOr(values) {
+    let r = 0;
+    for (let i = 0; i < values.length; i++) r |= values[i];
+    return r;
+}
+
+const BUILTIN_REDUCERS = { mean: reduceMean, max: reduceMax, mode: reduceMode, or: reduceOr };
 
 /**
  * Expand a sidecar body's flat depth-4 (L1) bytes into the full 2801-entry
@@ -104,11 +113,16 @@ const BUILTIN_REDUCERS = { mean: reduceMean, max: reduceMax, mode: reduceMode };
  * `reducer`. NODATA children are skipped; a parent whose children are all
  * NODATA is itself NODATA (never fabricates a value from nothing).
  *
+ * Scalar layers only (`u8_linear`, `u8_class`). A `packed_bits` layer's byte
+ * is several independent fields, not one scalar — reducing it here would be
+ * wrong (see buildPackedPyramid's doc comment for the exact failure mode).
+ * Use buildPackedPyramid for those.
+ *
  * @param {Uint8Array|ArrayBuffer} body   tileCount * 2401 bytes, tiles in
  *   manifest order, depth-4 heap order within each tile (post header-strip —
  *   see parseSidecarBody).
  * @param {number} tileCount
- * @param {'mean'|'max'|'mode'|(values: Uint8Array) => number} reducer
+ * @param {'mean'|'max'|'mode'|'or'|(values: Uint8Array) => number} reducer
  * @param {number} [nodata]
  * @returns {Uint8Array} tileCount * 2801 bytes.
  */
@@ -156,6 +170,90 @@ export function buildPyramid(body, tileCount, reducer, nodata = SIDECAR_NODATA) 
     return pyramid;
 }
 
+/**
+ * Expand a `packed_bits` sidecar body's flat depth-4 bytes into the full
+ * 2801-entry per-tile pyramid, reducing depth 3 -> 0 **field by field**
+ * rather than on the raw byte (contract amendment, post-review — the design
+ * doc originally called for a single scalar reducer on the raw byte, which
+ * is wrong for a packed byte: its bits are independent fields, not one
+ * scalar. Concretely, raw-byte `max(128, 127)` = 128 = {release: 1, severity:
+ * 0} — one neighbour with release-but-no-severity would silently overwrite
+ * six neighbours' severity=127 with severity=0). Each field in `fields`
+ * (the shape of an index.json layer's `fields` object, e.g.
+ * `{release: {shift,bits,aggregate}, severity: {shift,bits,aggregate}}`) is
+ * decoded, reduced independently among non-NODATA children with its own
+ * `aggregate`, then repacked with encodePacked.
+ *
+ * A whole child node is skipped (not per-field) when its raw byte === nodata
+ * — NODATA is a property of the sidecar byte, not of any one field.
+ *
+ * @param {Uint8Array|ArrayBuffer} body tileCount * 2401 bytes (post header-strip)
+ * @param {number} tileCount
+ * @param {object} fields e.g. `{release: {shift, bits, aggregate}, ...}`
+ * @param {number} [nodata]
+ * @returns {Uint8Array} tileCount * 2801 bytes.
+ */
+export function buildPackedPyramid(body, tileCount, fields, nodata = SIDECAR_NODATA) {
+    const fieldNames = Object.keys(fields || {});
+    if (fieldNames.length === 0) {
+        throw new Error('buildPackedPyramid: fields must declare at least one field');
+    }
+    const fieldReducers = {};
+    for (const name of fieldNames) {
+        const spec = fields[name];
+        const reduceFn = typeof spec.aggregate === 'function' ? spec.aggregate : BUILTIN_REDUCERS[spec.aggregate];
+        if (!reduceFn) throw new Error(`buildPackedPyramid: unknown aggregate "${spec.aggregate}" for field "${name}"`);
+        fieldReducers[name] = reduceFn;
+    }
+    if (!Number.isInteger(tileCount) || tileCount <= 0) {
+        throw new RangeError(`buildPackedPyramid: tileCount must be a positive integer, got ${tileCount}`);
+    }
+    const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
+    const expectedBytes = tileCount * L1_NODE_COUNT;
+    if (bytes.byteLength !== expectedBytes) {
+        throw new RangeError(
+            `buildPackedPyramid: body length ${bytes.byteLength} !== tileCount(${tileCount}) * ${L1_NODE_COUNT} (${expectedBytes})`,
+        );
+    }
+
+    const pyramid = new Uint8Array(tileCount * PYRAMID_NODE_COUNT);
+    // Per-field scratch buffers of decoded child values, reused across nodes.
+    const scratch = {};
+    for (const name of fieldNames) scratch[name] = new Uint8Array(7);
+
+    for (let t = 0; t < tileCount; t++) {
+        const srcBase = t * L1_NODE_COUNT;
+        const dstBase = t * PYRAMID_NODE_COUNT;
+
+        pyramid.set(bytes.subarray(srcBase, srcBase + L1_NODE_COUNT), dstBase + PYRAMID_DEPTH_OFFSETS[L1_DEPTH]);
+
+        for (let d = L1_DEPTH - 1; d >= 0; d--) {
+            const childBase = dstBase + PYRAMID_DEPTH_OFFSETS[d + 1];
+            const parentBase = dstBase + PYRAMID_DEPTH_OFFSETS[d];
+            const parentCount = PYRAMID_DEPTH_COUNTS[d];
+            for (let i = 0; i < parentCount; i++) {
+                const base = childBase + i * 7;
+                let n = 0;
+                for (let c = 0; c < 7; c++) {
+                    const raw = pyramid[base + c];
+                    if (raw === nodata) continue;
+                    for (const name of fieldNames) scratch[name][n] = decodePacked(raw, fields[name]);
+                    n++;
+                }
+                if (n === 0) {
+                    pyramid[parentBase + i] = nodata;
+                    continue;
+                }
+                const fieldValues = {};
+                for (const name of fieldNames) fieldValues[name] = fieldReducers[name](scratch[name].subarray(0, n));
+                pyramid[parentBase + i] = encodePacked(fieldValues, fields);
+            }
+        }
+    }
+
+    return pyramid;
+}
+
 // -----------------------------------------------------------------------
 // Sidecar body: optional 32-byte PFL1 header, sniffed not required
 // -----------------------------------------------------------------------
@@ -167,12 +265,13 @@ function parsePfl1Header(bytes) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     // Layout (little-endian, matching this repo's GSP3 binary convention):
     //   'PFL1' | u16 version | u16 layerId | u32 epochHour | u32 tileCount |
-    //   u16 nodeCount | u8 encoding | u8 aggregate | u32 manifestHash | reserved
-    // Fields sum to 24 bytes; the doc's "12 reserved" does not reconcile with
-    // its own "32-byte header" (24 used leaves 8, not 12) — 32 total is the
-    // load-bearing, repeatedly-stated invariant (it is what callers skip to
-    // reach the body), so reserved is treated as "whatever is left" (8 bytes)
-    // rather than a fixed count anything depends on.
+    //   u16 nodeCount | u8 encoding | u8 aggregate | u32 manifestHash | 8 reserved
+    // = 32 bytes total. CANONICAL per team-lead ruling: the design doc's field
+    // list sums to 24 bytes, so its "12 reserved" would make 36, contradicting
+    // its own "32-byte header"; 24 fields + 8 reserved = 32 is correct and
+    // matches the backend's own struct format (`snow_backend/snowpack/sidecar.py`
+    // and `snow_backend/avalanche/pfl.py` both pack `"<4sHHIIHBBI8x"`, 8x = 8
+    // reserved bytes, asserted to size 32).
     return {
         magic: PFL1_MAGIC,
         version: view.getUint16(4, true),
@@ -326,6 +425,13 @@ export function parseSidecarIndex(json, manifest) {
         },
         latest: json.latest,
         layers: Array.isArray(json.layers) ? json.layers : [],
+        // Layer ids the engine produces but the layer picker never shows
+        // (e.g. slab/hn24/hn72/wet/sdens — engine-internal or not yet a UI
+        // layer). Not in the original design doc; discovered in the real
+        // backend's index.json shape (snow_backend/snowpack/sidecar.py
+        // build_index()). Passed through defensively — absent in older or
+        // hand-built index.json fixtures, so it defaults to [].
+        engineLayers: Array.isArray(json.engine_layers) ? json.engine_layers : [],
     };
 }
 
@@ -385,7 +491,7 @@ export function epochHourToUrl(template, layerId, epochHour) {
 }
 
 // -----------------------------------------------------------------------
-// Packed-bits decode (avalanche layer)
+// Packed-bits decode/encode (avalanche layer, and any future packed layer)
 // -----------------------------------------------------------------------
 
 /**
@@ -401,4 +507,25 @@ export function decodePacked(raw, fieldSpec) {
     const { shift, bits } = fieldSpec;
     const mask = (1 << bits) - 1;
     return (raw >> shift) & mask;
+}
+
+/**
+ * Inverse of decodePacked: pack named field values into one byte per the
+ * `{shift, bits}` specs in `fields` (an index.json layer's `fields` object,
+ * keyed the same way as `fieldValues`). Each value is masked to its declared
+ * bit width before combining, so an out-of-range field value cannot bleed
+ * into a neighbouring field.
+ *
+ * @param {Record<string, number>} fieldValues e.g. `{release: 1, severity: 127}`
+ * @param {Record<string, {shift: number, bits: number}>} fields
+ * @returns {number} raw byte, 0..255
+ */
+export function encodePacked(fieldValues, fields) {
+    let raw = 0;
+    for (const name of Object.keys(fields)) {
+        const { shift, bits } = fields[name];
+        const mask = (1 << bits) - 1;
+        raw |= (fieldValues[name] & mask) << shift;
+    }
+    return raw & 0xff;
 }

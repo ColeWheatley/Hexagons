@@ -37,40 +37,82 @@ const REPO_ROOT = join(__dirname, '..');
 const DEFAULT_MANIFEST_PATH = join(REPO_ROOT, 'frontend/app/tile_manifest.json');
 const DEFAULT_OUT_DIR = join(REPO_ROOT, 'frontend/app/powfinder_fixtures');
 
-// Layer definitions, matching index.json's schema (design doc §1.2) with one
-// confirmed correction: the avalanche packed_bits layout is
-// {release: shift 7, bits 1} + {severity: shift 0, bits 7} — NOT the
-// release/runout split originally drafted in the doc. See P0.1 handoff note.
+// Layer definitions. Mirrors the real backend's index.json shape as closely
+// as possible now that it exists (`snow_backend/snowpack/sidecar.py`
+// LAYERS / AVALANCHE_LAYER_INDEX_ENTRY / SURFACE_CLASSES), not just the
+// design doc's original draft, so these fixtures exercise the actual
+// contract downstream tasks will see. Two confirmed corrections since the
+// doc was written:
+//  - avalanche's packed_bits layout is {release: shift 7, bits 1} +
+//    {severity: shift 0, bits 7}, not the release/runout split originally
+//    drafted.
+//  - packed_bits fields reduce independently, each with its own aggregate
+//    (release: "or", severity: "max") — see buildPackedPyramid. There is no
+//    layer-level `aggregate` for avalanche any more; only per-field.
 export const LAYERS = [
     { id: 'sqh', label: 'Snow quality', encoding: 'u8_linear', domain: [0, 100], units: 'SQH', aggregate: 'mean', ramp: 'powder', nodata: 0, short: 'SQH' },
     { id: 'depth', label: 'Snow depth', encoding: 'u8_linear', domain: [0, 500], units: 'cm', aggregate: 'mean', ramp: 'depth', nodata: 0, short: 'HS' },
     {
         id: 'avalanche', label: 'Avalanche', encoding: 'packed_bits',
-        fields: { release: { shift: 7, bits: 1, domain: [0, 1] }, severity: { shift: 0, bits: 7, domain: [0, 127] } },
-        aggregate: 'max', ramp: 'hazard', nodata: 0, short: 'AVY',
+        fields: {
+            release: { shift: 7, bits: 1, aggregate: 'or', domain: [0, 1] },
+            severity: { shift: 0, bits: 7, aggregate: 'max', domain: [1, 127] },
+        },
+        ramp: 'hazard', nodata: 0, short: 'AVY',
     },
     {
         id: 'surface', label: 'Surface state', encoding: 'u8_class',
-        classes: ['—', 'powder', 'wind slab', 'crust', 'wet', 'refrozen', 'rock'],
+        // Real backend list (snow_backend/snowpack/sidecar.py SURFACE_CLASSES) —
+        // 8 entries, index 0 reserved ("—", collides with NODATA=0 by design).
+        classes: ['—', 'powder', 'settled', 'wind slab', 'crust', 'wet', 'refrozen', 'bare'],
         aggregate: 'mode', ramp: 'surface', nodata: 0, short: 'SFC',
     },
 ];
 
-// Own convention (not consumed anywhere else): numeric ids for the PFL1
-// header's u16 layerId / u8 encoding / u8 aggregate fields. Nothing in
-// sidecar_format.mjs validates these against anything — the header buys
-// integrity and self-description, not a second source of truth.
-const LAYER_ID_CODES = Object.fromEntries(LAYERS.map((l, i) => [l.id, i]));
-const ENCODING_CODES = { u8_linear: 0, packed_bits: 1, u8_class: 2 };
-const AGGREGATE_CODES = { mean: 0, max: 1, mode: 2 };
+// Numeric ids for the PFL1 header's u16 layerId / u8 encoding / u8 aggregate
+// fields. sqh/depth/surface mirror the real backend table in
+// snow_backend/snowpack/sidecar.py (LAYERS/ENCODING/AGGREGATE dicts), the
+// only concrete source for those three. avalanche uses the values
+// team-lead pinned directly to this task, matching
+// snow_backend/avalanche/config.py (PFL_LAYER_ID_AVALANCHE=3,
+// PFL_ENCODING_PACKED_BITS=2, PFL_AGGREGATE_MAX=1).
+//
+// KNOWN CONFLICT, flagged upstream, unresolved as of this commit: those two
+// backend tables disagree with each other on every axis — snowpack's table
+// has avalanche=4/packed_bits=3/max=2, not 3/2/1 — including a direct id
+// collision (avalanche=3 here vs surface=3 in snowpack's own table) and an
+// encoding collision (packed_bits=2 here vs u8_class=2 in snowpack's
+// table). This is header-only bookkeeping: nothing in sidecar_format.mjs's
+// consumer parser validates these numbers against anything, and pyramid
+// decode is driven entirely by index.json's string-keyed encoding/
+// aggregate/fields, so the collision cannot mis-decode a sidecar — but the
+// two backend modules will write mutually inconsistent header bytes for
+// the same concepts until reconciled.
+const LAYER_ID_CODES = { sqh: 1, depth: 2, surface: 3, avalanche: 3 };
+const ENCODING_CODES = { u8_linear: 1, u8_class: 2, packed_bits: 2 };
+// avalanche's per-field aggregates (release:"or", severity:"max") don't
+// collapse to one header byte; team-lead pinned "max"=1 for it specifically
+// (a vestigial/informational value only — see buildPfl1Header below).
+const AGGREGATE_CODES = { mean: 1, mode: 3, max: 1 };
 
-function fnv1a(str) {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < str.length; i++) {
-        h ^= str.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
+// Standard CRC-32 (IEEE 802.3 / zlib / PNG polynomial 0xEDB88320), verified
+// to match Python's zlib.crc32 on the real tile_manifest.json bytes.
+const CRC32_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
     }
-    return h >>> 0;
+    return table;
+})();
+
+function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) {
+        crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
 }
 
 function mulberry32(seed) {
@@ -134,8 +176,10 @@ function synthesizeTileLayer(layerId, elevNorm, slopeNorm, hour, tileSeed, seed)
             const release = severity > 95 ? 1 : 0;
             out[i] = ((release << 7) | (severity & 0x7f)) & 0xff;
         } else if (layerId === 'surface') {
+            // 7 real classes (index 0 of the 8-entry classes list is "—",
+            // reserved/NODATA-coincident).
             const score = clamp01(0.40 * elevNorm + 0.30 * slopeNorm + 0.30 * storm + jitter);
-            out[i] = Math.min(6, Math.max(1, Math.floor(score * 6) + 1));
+            out[i] = Math.min(7, Math.max(1, Math.floor(score * 7) + 1));
         } else {
             throw new Error(`synthesizeTileLayer: unknown layer "${layerId}"`);
         }
@@ -153,7 +197,12 @@ function buildPfl1Header({ layerId, epochHour, tileCount, encoding, aggregate, m
     view.setUint32(12, tileCount, true);
     view.setUint16(16, L1_NODE_COUNT, true);
     view.setUint8(18, ENCODING_CODES[encoding] ?? 0xff);
-    view.setUint8(19, AGGREGATE_CODES[aggregate] ?? 0xff);
+    // Packed-bits layers have no single layer-level aggregate any more (each
+    // field reduces independently — see buildPackedPyramid); `aggregate` is
+    // undefined for them here, so fall back to the pinned "max"=1 team-lead
+    // specified for avalanche's header byte. Vestigial/informational only —
+    // nothing decodes a packed layer using this byte.
+    view.setUint8(19, AGGREGATE_CODES[aggregate ?? 'max'] ?? 0xff);
     view.setUint32(20, manifestHash, true);
     return header;
 }
@@ -170,6 +219,7 @@ function buildPfl1Header({ layerId, epochHour, tileCount, encoding, aggregate, m
 export async function generateFixtures({
     outDir = DEFAULT_OUT_DIR,
     manifest,
+    manifestBytes = null,
     hours = 240,
     seed = 1337,
     headerlessSampleHours = 2,
@@ -180,7 +230,16 @@ export async function generateFixtures({
     const tiles = manifest.tiles;
     const tileCount = tiles.length;
     const manifestProfile = manifest.release?.profile;
-    const manifestHash = fnv1a(String(manifestProfile));
+    // manifestHash = CRC32 of the raw tile_manifest.json file bytes (pinned by
+    // team-lead, matching snow_backend/avalanche/pfl.py's manifest_hash()).
+    // NOTE: snow_backend/snowpack/sidecar.py's docstring describes a
+    // *different* algorithm — CRC32 of the manifest tiles[] (yq,yr) int32
+    // sequence — for the same field. Flagged upstream; this generator follows
+    // the literal instruction given to this task (whole-file CRC32). Falls
+    // back to hashing the parsed-and-reserialized JSON when raw bytes aren't
+    // supplied (test/dev convenience only — not byte-identical to the real
+    // file, so not a substitute for passing manifestBytes when it matters).
+    const manifestHash = crc32(manifestBytes ?? new TextEncoder().encode(JSON.stringify(manifest)));
 
     const hMeans = tiles.map((t) => t.hMean);
     const sMeans = tiles.map((t) => t.sMean);
@@ -274,6 +333,11 @@ export async function generateFixtures({
         coverage: { start: startIso, step_hours: 1, count: hours, present: bytesToBase64(present) },
         latest: new Date((startEpochHour + presentSlots[presentSlots.length - 1]) * 3600000).toISOString(),
         layers: LAYERS,
+        // Real backend index.json also carries engine-only layer ids (slab,
+        // hn24, hn72, wet, sdens — see snow_backend/snowpack/sidecar.py); this
+        // generator doesn't synthesize those, so honestly reports none rather
+        // than advertising fixture files that don't exist.
+        engine_layers: [],
     };
     const indexPath = join(outDir, 'index.json');
     await writeFile(indexPath, JSON.stringify(index, null, 2));
@@ -295,10 +359,13 @@ async function main() {
         if (m) args[m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = m[2];
     }
     const manifestPath = args.manifestPath || DEFAULT_MANIFEST_PATH;
-    const manifest = JSON.parse(await (await import('node:fs/promises')).readFile(manifestPath, 'utf8'));
+    const { readFile } = await import('node:fs/promises');
+    const manifestBytes = new Uint8Array(await readFile(manifestPath));
+    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
     const result = await generateFixtures({
         outDir: args.outDir || DEFAULT_OUT_DIR,
         manifest,
+        manifestBytes,
         hours: args.hours ? Number(args.hours) : 240,
         seed: args.seed ? Number(args.seed) : 1337,
         headerlessSampleHours: args.headerlessSampleHours ? Number(args.headerlessSampleHours) : 2,
