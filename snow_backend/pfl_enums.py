@@ -52,3 +52,30 @@ AVALANCHE_RELEASE_SHIFT = 7
 AVALANCHE_RELEASE_BITS = 1
 AVALANCHE_SEVERITY_SHIFT = 0
 AVALANCHE_SEVERITY_BITS = 7
+
+# --- u8_linear decode (ratified) --------------------------------------------
+# byte 0 = NODATA; bytes 1..255 span the domain linearly:
+#   value = (byte - 1) / 254 * (hi - lo) + lo
+# (encode: byte = 1 + round(clip((v - lo)/(hi - lo), 0, 1) * 254))
+def u8_linear_decode(b, lo, hi):
+    import numpy as _np
+    v = (b.astype(_np.float32) - 1.0) / 254.0 * (hi - lo) + lo
+    return _np.where(b > 0, v, _np.nan)
+
+
+# --- class layers (byte = class index; classes[0] reserved for NODATA) ------
+SURFACE_CLASSES = ("—", "powder", "settled", "wind slab", "crust",
+                   "wet", "refrozen", "bare")          # surface layer, id 3
+WET_CLASSES = ("—", "dry", "moist", "wet", "refrozen")  # wet layer, id 8
+SURFACE_CLASS_WET = SURFACE_CLASSES.index("wet")        # == 5, NOT 4 (crust)
+WET_CLASS_WET = WET_CLASSES.index("wet")                # == 3
+
+# Layer domains for u8_linear layers (lo, hi, units):
+U8_LINEAR_DOMAINS = {
+    "sqh":   (0.0, 100.0, "SQH"),
+    "depth": (0.0, 500.0, "cm"),
+    "slab":  (0.0, 508.0, "cm"),
+    "hn24":  (0.0, 254.0, "mm w.e."),
+    "hn72":  (0.0, 254.0, "mm w.e."),
+    "sdens": (0.0, 1016.0, "kg/m3"),
+}
