@@ -738,7 +738,7 @@
             <div class="layers-grid">
                 <div class="layer-card">
                     <div class="layer-swatch"
-                        style="background:linear-gradient(90deg,#141a24,#2f5d7c,#6fc6ff,#c06ff2,#ff6b9d,#ffd3e8)">
+                        style="background:linear-gradient(90deg,#141a24 0%,#24455e 21.25%,#2f6a90 42.5%,#8f66c4 63.75%,#ff6b9d 85%,#ffd3e8 100%)">
                     </div>
                     <h3>Snow quality</h3>
                     <p class="yes"><strong>What it means:</strong> a 0–100 index blending modeled depth,
@@ -1001,9 +1001,13 @@
 
         /* ================================================================
            Hero backdrop — a decorative hex field tinted with the same
-           "powder" ramp sidecar_colormap.js defines for the SQH layer
-           (#141a24 → #2f5d7c → #6fc6ff → #c06ff2 → #ff6b9d → #ffd3e8).
-           Purely illustrative: no real render exists yet for this beta.
+           "powder" ramp sidecar_colormap.mjs defines for the SQH layer:
+           #141a24 → #24455e → #2f6a90 → #8f66c4 → #ff6b9d → #ffd3e8, with
+           stops at 0 / 0.2125 / 0.425 / 0.6375 / 0.85 / 1 (the top 15% of
+           the domain reserved for the bright-pink -> pale-pink brand
+           anchor; luminance-monotonic by construction, see that file's
+           POWDER_STOPS comment). Purely illustrative: no real render
+           exists yet for this beta.
         ================================================================ */
         (function heroField() {
             var cv = document.getElementById('hero-cv');
@@ -1012,12 +1016,12 @@
             var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
             var RAMP = [
-                [0.00, [20, 26, 36]],
-                [0.35, [47, 93, 124]],
-                [0.60, [111, 198, 255]],
-                [0.80, [192, 111, 242]],
-                [0.90, [255, 107, 157]],
-                [1.00, [255, 211, 232]]
+                [0.0000, [20, 26, 36]],
+                [0.2125, [36, 69, 94]],
+                [0.4250, [47, 106, 144]],
+                [0.6375, [143, 102, 196]],
+                [0.8500, [255, 107, 157]],
+                [1.0000, [255, 211, 232]]
             ];
             function rampColor(t) {
                 t = Math.max(0, Math.min(1, t));
