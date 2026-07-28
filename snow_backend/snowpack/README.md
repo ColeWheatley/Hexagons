@@ -82,7 +82,22 @@ R2 upload is a deliberate non-goal of this module for now — sync the
 `sidecars/` and `snapshots/` dirs with rclone/aws once the deploy bucket
 layout is fixed (task #11).
 
-## Calibration
+## Calibration state (shipped 2026-07-29)
+
+Shipped with ONE bounded calibration applied (team-lead greenlight):
+`alpine_precip_boost = 0.7`, i.e. `precip *= min(1 + 0.7*clip((z-1800 m)/1 km,
+0, 1.5), 1.8)` — identity below 1,800 m.  Provenance: fit against the single
+elevation-comparable station, Pitztaler Gletscher 2,864 m, evaluated at the
+elevation-matched proxy column (2,813 m / 24 deg / 14.2 km): winter bias
+−71.4 → −33.6 cm (halved, deliberately NOT driven to zero — n=1 high-alpine
+truth; glacier wind redistribution is not attributable to a precip factor).
+The 5 in-INCA-bbox valley stations (all ≤1,464 m) are bit-identical under the
+boost (RMSE ~10.6 cm, 0 % degradation).  The factor is declared in
+index.json's `calibration` block and in every snapshot's theta.  Post-beta:
+INCA topo / wider-bbox re-download to revive dz-dependent levers
+(lapse/precip-gradient currently have no lever at synthetic stations).
+
+## Calibration harness
 
 `calibrate.py` implements the station-column shortcut: full-winter
 `jax.value_and_grad` through `lax.scan` on just the station columns

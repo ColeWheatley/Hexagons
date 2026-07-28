@@ -37,6 +37,12 @@ class Theta(NamedTuple):
     albedo_melt_tau_h: float = 100.0
     turb_exchange: float = 2.3e-3       # neutral bulk coefficient C_H = C_E
     cloud_emiss: float = 0.963
+    # --- calibrated 2026-07-29 (bounded fit, see README "Calibration state"):
+    # elevation-dependent precip boost 1 + b*clamp((z-z0)/1km, 0, 1.5),
+    # capped; identity below z0 so valley stations are untouched.
+    alpine_precip_boost: float = 0.7    # b; bounded fit 2026-07-29 (see README)
+    alpine_boost_z0_m: float = 1800.0
+    alpine_boost_cap: float = 1.8       # max total boost factor
     # --- fixed ---
     phase_halfwidth_C: float = 0.5
     precip_factor_lo: float = 0.7

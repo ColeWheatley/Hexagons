@@ -154,7 +154,8 @@ def build_index(tile_count: int, manifest_profile: str, present_slots,
                 latest_t: np.datetime64, cache_key: str = "pf-1.0.0",
                 url_template: str = "powfinder/{layer}/{yyyy}/{mm}/{dd}/{hh}.pfl",
                 include_avalanche: bool = True,
-                avalanche_summary_path: str | None = None) -> dict:
+                avalanche_summary_path: str | None = None,
+                calibration: dict | None = None) -> dict:
     layers = []
     for name, spec in LAYERS.items():
         if not spec["display"]:
@@ -194,6 +195,7 @@ def build_index(tile_count: int, manifest_profile: str, present_slots,
         "engine_layers": sorted(n for n, s in LAYERS.items()
                                 if not s["display"]),
         **({"layers_coverage": layers_coverage} if layers_coverage else {}),
+        **({"calibration": calibration} if calibration else {}),
     }
 
 

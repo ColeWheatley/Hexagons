@@ -70,7 +70,12 @@ def downscale(fr, glcs_t, sun_t, cloud_t, static, th: Theta):
 
     pf = jnp.clip(1.0 + th.precip_beta_per_m * static.dz_node,
                   th.precip_factor_lo, th.precip_factor_hi)
-    rr = fr[tid, 3] * pf * th.precip_mult
+    # bounded high-alpine boost (INCA under-catch): identity below z0
+    f_alp = jnp.minimum(
+        1.0 + th.alpine_precip_boost
+        * jnp.clip((static.elev - th.alpine_boost_z0_m) / 1000.0, 0.0, 1.5),
+        th.alpine_boost_cap)
+    rr = fr[tid, 3] * pf * f_alp * th.precip_mult
     f_snow = jnp.clip((th.phase_center_C + th.phase_halfwidth_C - twb)
                       / (2.0 * th.phase_halfwidth_C), 0.0, 1.0)
     snowf = rr * f_snow

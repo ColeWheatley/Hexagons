@@ -164,9 +164,23 @@ def main():
         av_summary = os.path.abspath(os.path.join(
             HERE, "..", "avalanche_work", "out", "avalanche",
             "layer_summary.json"))
+        calib = {
+            "alpine_precip_boost": theta.alpine_precip_boost,
+            "form": "precip *= min(1 + b*clip((elev_m - 1800)/1000, 0, 1.5), 1.8)",
+            "provenance": "bounded fit 2026-07-29: b=0.7 halves the Pitztaler "
+                          "Gletscher (2864 m) proxy bias (-71.4 -> -33.6 cm at "
+                          "the elevation-matched column, 2813 m/24deg, 14.2 km) "
+                          "while leaving the 5 in-bbox valley stations "
+                          "(<=1464 m) bit-identical (RMSE 10.6 cm); fit to "
+                          "5 valley + 1 glacier station, winter 2025/26 — "
+                          "deliberately NOT driven to zero (n=1 high-alpine "
+                          "truth; wind redistribution not attributable to a "
+                          "precip factor)",
+        } if theta.alpine_precip_boost else None
         idx = sidecar.build_index(n_tiles, profile, present_slots,
                                   times[n_hours - 1],
-                                  avalanche_summary_path=av_summary)
+                                  avalanche_summary_path=av_summary,
+                                  calibration=calib)
         sidecar.write_index(out_base, idx)
         print(f"sidecars + index.json at {out_base}")
 
