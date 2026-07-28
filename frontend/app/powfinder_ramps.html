@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PowFinder ramps — dev preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+    :root { color-scheme: dark; }
+    body {
+        margin: 0;
+        padding: 24px;
+        background: #0b0d12;
+        color: #e8ecf1;
+        font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+    h1 { font-size: 1.1rem; font-weight: 700; margin: 0 0 4px; }
+    p.sub { margin: 0 0 24px; color: #9aa4b2; font-size: .85rem; }
+    .ramp {
+        margin-bottom: 28px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+    .ramp.reserved { opacity: .55; border-style: dashed; }
+    .ramp-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 8px;
+    }
+    .ramp-name { font-weight: 700; font-size: .95rem; }
+    .ramp-name .row-index { color: #6b7480; font-weight: 400; font-size: .8rem; margin-left: 6px; }
+    .ramp-kind { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: #ff6b9d; }
+    .gradient-bar {
+        height: 28px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.15);
+        /* Checkerboard shows through wherever the ramp is transparent
+           (byte 0 = NODATA, and the steepness ramp's <30 degree bin). */
+        background-image:
+            linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%, #333),
+            linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%, #333);
+        background-size: 12px 12px;
+        background-position: 0 0, 6px 6px;
+    }
+    .gradient-bar > .fill { width: 100%; height: 100%; border-radius: 5px; }
+    .lut-strip {
+        image-rendering: pixelated;
+        width: 100%;
+        height: 14px;
+        margin-top: 4px;
+        border-radius: 4px;
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+    .ticks {
+        position: relative;
+        height: 16px;
+        margin-top: 4px;
+        font-size: .68rem;
+        color: #b7c0cc;
+    }
+    .ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+    .ticks span:first-child { transform: translateX(0); }
+    .ticks span:last-child { transform: translateX(-100%); }
+    .reserved-note { font-size: .78rem; color: #6b7480; }
+    #status { margin-top: 8px; font-size: .75rem; color: #6b7480; }
+</style>
+</head>
+<body>
+<h1>PowFinder colormap LUT — dev preview</h1>
+<p class="sub">
+    Every bar below is drawn two ways from the same source data
+    (<code>sidecar_colormap.js</code>): the top strip is the CSS
+    <code>linear-gradient</code> from <code>rampStops(id).css</code>, the
+    thin strip underneath is a 256px-wide pixel row read straight out of
+    <code>buildLutData()</code> for that ramp's row. They should look
+    identical — divergence means the CSS string and the LUT bytes have
+    drifted apart.
+</p>
+<div id="ramps"></div>
+<div id="status">loading…</div>
+
+<script type="module">
+import { RAMP_IDS, RAMP_COUNT, buildLutData, rampRow, rampStops } from './sidecar_colormap.js';
+
+const container = document.getElementById('ramps');
+const lut = buildLutData();
+
+function lutRowCanvas(row) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 1;
+    canvas.className = 'lut-strip';
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(256, 1);
+    for (let x = 0; x < 256; x++) {
+        const src = (row * 256 + x) * 4;
+        const dst = x * 4;
+        imageData.data[dst] = lut[src];
+        imageData.data[dst + 1] = lut[src + 1];
+        imageData.data[dst + 2] = lut[src + 2];
+        imageData.data[dst + 3] = lut[src + 3];
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+}
+
+for (const id of RAMP_IDS) {
+    const row = rampRow(id);
+    const stops = rampStops(id);
+
+    const el = document.createElement('div');
+    el.className = 'ramp';
+    el.innerHTML = `
+        <div class="ramp-header">
+            <span class="ramp-name">${id}<span class="row-index">row ${row}</span></span>
+            <span class="ramp-kind">${stops.categorical ? 'categorical' : 'continuous'}</span>
+        </div>
+        <div class="gradient-bar"><div class="fill" style="background:${stops.css};"></div></div>
+        <div class="ticks">
+            ${stops.ticks.map(t => `<span style="left:${t.at}%;">${t.label}</span>`).join('')}
+        </div>
+    `;
+    el.querySelector('.gradient-bar').after(lutRowCanvas(row));
+    container.appendChild(el);
+}
+
+for (let row = RAMP_IDS.length; row < RAMP_COUNT; row++) {
+    const el = document.createElement('div');
+    el.className = 'ramp reserved';
+    el.innerHTML = `
+        <div class="ramp-header">
+            <span class="ramp-name">reserved<span class="row-index">row ${row}</span></span>
+        </div>
+        <div class="gradient-bar"></div>
+        <p class="reserved-note">No ramp assigned — LUT row is fully transparent. Ships as a
+        future layer + an index.json entry, no shader change (§2.5).</p>
+    `;
+    container.appendChild(el);
+}
+
+document.getElementById('status').textContent =
+    `rendered ${RAMP_IDS.length} defined ramps + ${RAMP_COUNT - RAMP_IDS.length} reserved rows ` +
+    `(RAMP_COUNT=${RAMP_COUNT})`;
+// Surfaced for headless verification (node/CDP) without scraping computed styles.
+window.__powfinderRampsReady = true;
+</script>
+</body>
+</html>
