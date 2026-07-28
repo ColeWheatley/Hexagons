@@ -127,6 +127,14 @@ def main():
         layer="avalanche",
         contract="hazard-byte-harmonized-v2",
         backend="alpha",
+        caveats=[
+            "alpha backend has weak slab-driven temporal variation (severity "
+            "p50 spans ~93-100 storm-to-lean); day-to-day scrub variation is "
+            "carried mostly by the bulletin prior",
+            "alpha footprints deliberately over-paint vs calibrated MPM "
+            "physics (measured MPM containment 0.996-1.000, MPM covers "
+            "3-33% of alpha area) - conservative, never understating",
+        ],
         emit_hour=config.EMIT_HOUR,
         fields=dict(
             release=dict(shift=7, bits=1, aggregate="or"),

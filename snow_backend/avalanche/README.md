@@ -133,6 +133,24 @@ Outputs: `snow_backend/avalanche_work/out/avalanche/YYYY/MM/DD/12.pfl` (+
 Caches (~200 MB) build on first run in `snow_backend/avalanche_work/cache/`;
 `avalanche_work/` is gitignored.
 
+## Known limitations (measured, do not oversell)
+
+- **Thin temporal differentiation of the alpha backend**: across the winter
+  retro, runout severity p50 spans only 93–100 between a 0.81 m storm cycle
+  and a 0.13 m lean spell — the energy line's slab response is weak by
+  construction. **Most visible day-to-day scrub variation comes from the
+  bulletin prior** (×0.5 low-danger to ×1.25 high-danger), not the flow
+  model. Real condition response arrives with real snowpack slab and the
+  MPM backend.
+- **The beta ships the alpha backend uniformly** (team-lead ruling
+  2026-07-29): mixing MPM days into the scrub timeline would shrink
+  footprints 3–33× (measured MPM-in-alpha containment 0.996–1.000, IoU
+  0.03–0.33 on 7 zones) and read as a conditions change rather than a
+  backend change. The alpha layer deliberately over-paints relative to the
+  calibrated MPM physics — conservative, never understating. A full MPM
+  winter retro (generation 3, same contract) is approved and queued for
+  after the beta deploy.
+
 ## Known deviations from the design doc
 
 - Slab modulation is a seed-energy lift (30 m × clamp(slab−0.5, 0, 1)) instead
