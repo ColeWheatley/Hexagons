@@ -134,6 +134,7 @@ import {
     parseSidecarIndex,
     parseSidecarBody,
     buildPyramid,
+    coverageFor,
     coverageHas,
     epochHourToUrl,
     crc32,
@@ -146,6 +147,27 @@ import {
     hexRingPositions,
 } from './hex_pick.mjs';
 import { PowfinderPopup, readAllLayers, buildPopupViewModel } from './powfinder_popup.mjs';
+import { SidecarStore } from './sidecar_store.mjs';
+import { mountPowfinderUi, OFF_LAYER_ID, STEEPNESS_LAYER_ID } from './powfinder_ui.mjs';
+import { createPowFinderScrubber } from './powfinder_scrubber.mjs';
+import { rampRow } from './sidecar_colormap.mjs';
+
+// PowFinder sidecar base path (design doc §6, glue phase). Dev serves the
+// generated fixture tree (frontend/app/powfinder_fixtures/, gitignored,
+// `node scripts/make_sidecar_fixtures.mjs`) at this prefix; swap this one
+// constant to 'powfinder/' at deploy so the same store/UI code points at the
+// real backend-baked sidecar tree instead. Both index.json and every sidecar
+// URL (index.json's url_template output) are fetched relative to this.
+const POWFINDER_BASE = 'powfinder_fixtures/';
+
+// Channel assignment mirrors sidecar_atlas.mjs's CHANNEL_INDEX (design doc
+// §1.5, a fixed architectural constant) — duplicated here rather than
+// exported from that module, matching this repo's small-constant
+// duplication convention for frozen P1.3/P2.1 modules (see that file's own
+// header, tile_worker.js's pyramid constants, powfinder_popup.mjs's
+// SQH_DOMAIN/DEPTH_DOMAIN). test/sidecar_powfinder_wiring.test.mjs is the
+// right place to add a keep-in-sync guard if this ever drifts.
+const POWFINDER_CHANNEL_INDEX = Object.freeze({ sqh: 0, depth: 1, avalanche: 2, surface: 3 });
 
 const G = window.GosperCore;
 const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
@@ -608,9 +630,29 @@ class PistonViewer {
             // sidecar consumers (P2.1's store) should check this before
             // installing anything into the atlas.
             disabled: false,
-            hasPendingWork: () => this.powfinder.fetchInFlight,
+            // Glue-phase additions (design doc §6 P2.1-P2.4 integration):
+            // the real parsed index, store, mounted UI/scrubber, and every
+            // layer's most recently installed pyramid (readAllLayers'
+            // popup source, §3.4). pendingPyramids mirrors sqhPyramid's own
+            // stopgap, generalized to any layer whose install lands before
+            // the atlas exists yet — see instantiateTile.
+            index: null,
+            store: null,
+            ui: null,
+            scrubber: null,
+            activeLayerId: STEEPNESS_LAYER_ID,
+            pyramids: {},
+            pendingPyramids: null,
+            hasPendingWork: () => this.powfinder.fetchInFlight || Boolean(this.powfinder.store?.hasPendingWork()),
         };
-        this._loadPowfinderFixture();
+        // `?pf-fixture=1` keeps P1.3's single-hardcoded-hour path available
+        // for isolated dev testing; every normal boot takes the real
+        // index/store/UI/scrubber path below.
+        if (new URLSearchParams(window.location.search).get('pf-fixture') === '1') {
+            this._loadPowfinderFixture();
+        } else {
+            this._bootPowfinder();
+        }
 
         // PowFinder tap-a-hex pick (design doc §3.4 / §6 P2.4). Same tap-vs-
         // drag threshold pattern as initTouchMomentumTracking above: a
@@ -756,6 +798,188 @@ class PistonViewer {
         }
     }
 
+    // PowFinder real boot (glue phase, wiring P2.1's store and P2.2/P2.3's
+    // UI/scrubber together): fetch+parse the real index.json, stand up the
+    // SidecarStore against the real worker job pipeline, and mount the
+    // layer picker/legend/scrubber against it. Supersedes
+    // _loadPowfinderFixture's single-hardcoded-hour stopgap above as the
+    // default boot path (see the constructor's `pf-fixture` dev-flag
+    // branch). On any failure here (missing/rejected index.json, no
+    // manifest) PowFinder chrome simply never mounts and stays hidden —
+    // index.html ships every mount point `hidden` — exactly the §5.6
+    // graceful-degradation contract _loadPowfinderFixture already follows.
+    async _bootPowfinder() {
+        try {
+            // this.manifest loads asynchronously in initWorld(), kicked off
+            // right after this method — wait for it rather than fetching a
+            // second copy (same bounded wait as _loadPowfinderFixture).
+            for (let waited = 0; !this.manifest && waited < 10000; waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            if (!this.manifest) throw new Error('manifest never loaded');
+
+            const indexRes = await fetch(`${POWFINDER_BASE}index.json`);
+            if (!indexRes.ok) throw new Error(`index.json ${indexRes.status}`);
+            const index = parseSidecarIndex(await indexRes.json(), this.manifest);
+            if (!index.ok) throw new Error(`index rejected: ${index.reason}`);
+            this.powfinder.index = index;
+
+            this.powfinder.store = new SidecarStore({
+                postJob: ({ type, ...data }) => this.postWorkerJob(type, data),
+                index,
+                tileCount: this.manifest.tiles.length,
+                isMovingView: () => this.isMovingView,
+                connection: navigator.connection || null,
+                sidecarBase: POWFINDER_BASE,
+            });
+            this.powfinder.store.onInstall = (layerId, epochHour, bytes) => {
+                this._onSidecarInstall(layerId, epochHour, bytes);
+            };
+
+            this._mountPowfinderChrome(index);
+        } catch (err) {
+            // Missing/unbaked index.json on a fresh checkout, a rejected
+            // profile/tile-count/bitmask, or a manifest that never loaded —
+            // never fatal, the app just renders plain terrain with the
+            // PowFinder chrome left in its shipped `hidden` state.
+            console.warn('[powfinder] real sidecar boot skipped:', err.message);
+        } finally {
+            this.powfinder.fetchInFlight = false;
+            // design doc §1.7: "An async sidecar arrival must call
+            // frameScheduler.wake('sidecar') or it will never paint."
+            this.frameScheduler?.wake('sidecar');
+        }
+    }
+
+    // Mount the layer picker/legend (P2.2) and time scrubber (P2.3) against
+    // the real parsed index, wired to the one controller contract both
+    // modules were built against: setLayer() drives the shader uniforms
+    // (_applyPowfinderLayerVisuals), this.powfinder.store, and the
+    // scrubber's onActiveLayerChanged() hook in one place.
+    _mountPowfinderChrome(index) {
+        const layerChangeListeners = new Set();
+        const controller = {
+            layers: index.layers,
+            getLayer: () => this.powfinder.activeLayerId,
+            setLayer: (id) => {
+                if (id === this.powfinder.activeLayerId) return;
+                this.powfinder.activeLayerId = id;
+                this._applyPowfinderLayerVisuals(id);
+                if (id !== OFF_LAYER_ID && id !== STEEPNESS_LAYER_ID) {
+                    this.powfinder.store?.setLayer(id);
+                }
+                this.powfinder.scrubber?.onActiveLayerChanged();
+                for (const fn of layerChangeListeners) fn(id);
+                this.needsRender = true;
+                this.frameScheduler?.wake('sidecar');
+            },
+            onLayerChange: (fn) => {
+                layerChangeListeners.add(fn);
+                return () => layerChangeListeners.delete(fn);
+            },
+        };
+        this.powfinder.ui = mountPowfinderUi(controller);
+        // STEEPNESS_LAYER_ID is the default (matches the pre-PowFinder
+        // gradientMode=1.0 default set in the constructor) — apply its
+        // visuals once so the legend-row visibility agrees with what's
+        // already on screen, with zero rendering change on boot.
+        this._applyPowfinderLayerVisuals(this.powfinder.activeLayerId);
+
+        const scrubMount = document.getElementById('powfinder-time');
+        if (!scrubMount) return;
+        this.powfinder.scrubber = createPowFinderScrubber({
+            mount: scrubMount,
+            index,
+            // Real per-layer accessor (sidecar_format.mjs), not
+            // buildStubCoverageFor — see that stand-in's own doc comment:
+            // "only the caller's one line of wiring changes."
+            coverageFor: (layerId) => coverageFor(index, layerId),
+            getActiveLayerId: () => this.powfinder.activeLayerId,
+            onCommit: (epochHour) => {
+                this.powfinder.store?.setTimestamp(epochHour);
+                this.needsRender = true;
+                this.frameScheduler?.wake('sidecar');
+            },
+            onScrubHint: ({ stride, direction }) => {
+                this.powfinder.store?.setScrubStride(stride);
+                this.powfinder.store?.setScrubDirection(direction);
+            },
+            latestUrl: `${POWFINDER_BASE}latest.json`,
+        });
+        // Seed the store with the scrubber's initial (LIVE) timestamp so the
+        // very first layer pick fetches immediately instead of waiting on a
+        // scrub — setTimestamp alone never dispatches without an active
+        // layer too, so this is a harmless no-op until one is picked.
+        this.powfinder.store?.setTimestamp(this.powfinder.scrubber.getEpochHour());
+    }
+
+    // One-hot channel/mode/ramp uniform write for `layerId`, plus the
+    // pre-existing static steepness .legend-item rows' visibility (hidden
+    // while a real data layer's own #powfinder-legend is showing, restored
+    // for STEEP/OFF — #powfinder-legend itself is toggled by powfinder_ui.mjs,
+    // this only ever touches `.legend`'s direct-child rows, never its
+    // nested ones). gradientMode is the pre-existing slope-gradient toggle
+    // (see the "Gradient Toggle" UI wiring above) — STEEP reuses it
+    // directly ("zero new rendering code", §3.2); every other state runs
+    // the aerial-toned base the sidecar tint modulates over.
+    _applyPowfinderLayerVisuals(layerId) {
+        const su = this.sharedMaterialUniforms;
+        const staticLegendItems = document.querySelectorAll('.legend > .legend-item');
+        if (layerId === STEEPNESS_LAYER_ID) {
+            this.gradientMode = 1.0;
+            su.sidecarMode.value = 0.0;
+            staticLegendItems.forEach(el => { el.hidden = false; });
+        } else if (layerId === OFF_LAYER_ID) {
+            this.gradientMode = 0.0;
+            su.sidecarMode.value = 0.0;
+            staticLegendItems.forEach(el => { el.hidden = false; });
+        } else {
+            const layer = (this.powfinder.index?.layers || []).find(l => l.id === layerId);
+            if (!layer) return;
+            this.gradientMode = 0.0;
+            su.sidecarMode.value = layer.encoding === 'packed_bits' ? 2.0 : 1.0;
+            const channel = POWFINDER_CHANNEL_INDEX[layerId] ?? 0;
+            su.sidecarChannel.value.set(
+                channel === 0 ? 1 : 0, channel === 1 ? 1 : 0,
+                channel === 2 ? 1 : 0, channel === 3 ? 1 : 0,
+            );
+            su.sidecarRamp.value.x = rampRow(layer.ramp || layer.id);
+            staticLegendItems.forEach(el => { el.hidden = true; });
+        }
+        this.needsRender = true;
+    }
+
+    // SidecarStore install callback (design doc §1.4/§1.7): light up every
+    // already-resident tile whose atlas slot just received real bytes (same
+    // retroactive-relight shape _loadPowfinderFixture uses above for its
+    // own single sqh install, generalized to any layer and to an
+    // atlas-not-yet-created state via pendingPyramids — see
+    // instantiateTile), keep the layer's pyramid resident for the
+    // tap-a-hex popup's readAllLayers (§3.4 — "all cached layers already in
+    // RAM"), and wake the frame scheduler so the existing sidecarMix
+    // crossfade (animate()) gets a chance to actually paint the fresh tint.
+    _onSidecarInstall(layerId, epochHour, pyramid) {
+        this.powfinder.pyramids[layerId] = pyramid;
+        if (!this.powfinder.atlas) {
+            this.powfinder.pendingPyramids = this.powfinder.pendingPyramids || {};
+            this.powfinder.pendingPyramids[layerId] = pyramid;
+        } else {
+            this.powfinder.atlas.installLayer(layerId, pyramid);
+            for (const [key, tile] of this.tiles) {
+                const slot = this.powfinder.atlas.slotFor(key);
+                if (slot === null) continue;
+                const rowBase = slot * this.powfinder.atlas.rowsPerTile;
+                const valid = this.powfinder.atlas.hasData(slot) ? 1 : 0;
+                this._applySidecarBinding(tile.material, rowBase, valid);
+                for (const cloned of tile.clonedMaterials || []) {
+                    this._applySidecarBinding(cloned, rowBase, valid);
+                }
+            }
+        }
+        this.needsRender = true;
+        this.frameScheduler?.wake('sidecar');
+    }
+
     // PowFinder tap-a-hex pick + info popup (design doc §3.4 / §6 P2.4).
     // Ground-plane solve, address resolution, and value decoding all live in
     // hex_pick.mjs / powfinder_popup.mjs (pure, node-tested); this method is
@@ -811,11 +1035,12 @@ class PistonViewer {
 
         // readAllLayers implements the design doc's P2.1 store `readAll(slot,
         // address)` shape against whatever PowFinder pyramids are actually
-        // resident right now — currently just `sqh` (P1.3's single-fixture
-        // stopgap; P2.1's real store lands separately and slots in here with
-        // no interface change, only more non-null entries in `pyramids`).
+        // resident right now: every layer _onSidecarInstall has received
+        // from the real store, plus (dev-flag path only) the P1.3
+        // single-fixture stopgap's sqhPyramid — spread second so real data
+        // wins if both happen to be populated.
         const layers = readAllLayers({
-            pyramids: { sqh: this.powfinder.sqhPyramid },
+            pyramids: { sqh: this.powfinder.sqhPyramid, ...this.powfinder.pyramids },
             slot: address.slot,
             address: address.address,
         });
@@ -4772,6 +4997,15 @@ class PistonViewer {
             this.sharedMaterialUniforms.sidecarAtlas.value = this.powfinder.atlas.texture;
             if (this.powfinder.sqhPyramid) {
                 this.powfinder.atlas.installLayer('sqh', this.powfinder.sqhPyramid);
+            }
+            // Real store installs (_onSidecarInstall) that landed before any
+            // tile existed to receive them — same stopgap shape as
+            // sqhPyramid above, generalized to every layer id.
+            if (this.powfinder.pendingPyramids) {
+                for (const [layerId, bytes] of Object.entries(this.powfinder.pendingPyramids)) {
+                    this.powfinder.atlas.installLayer(layerId, bytes);
+                }
+                this.powfinder.pendingPyramids = null;
             }
         }
         const sidecarAtlas = this.powfinder.atlas;
