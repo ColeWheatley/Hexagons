@@ -158,7 +158,7 @@ import { rampRow } from './sidecar_colormap.mjs';
 // constant to 'powfinder/' at deploy so the same store/UI code points at the
 // real backend-baked sidecar tree instead. Both index.json and every sidecar
 // URL (index.json's url_template output) are fetched relative to this.
-const POWFINDER_BASE = 'powfinder_fixtures/';
+const POWFINDER_BASE = ''; // production: index.json + powfinder/{layer}/ live at the app root; dev fixtures via ?pf-fixture=1
 
 // Channel assignment mirrors sidecar_atlas.mjs's CHANNEL_INDEX (design doc
 // §1.5, a fixed architectural constant) — duplicated here rather than
