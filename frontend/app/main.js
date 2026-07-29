@@ -855,6 +855,12 @@ class PistonViewer {
                 });
                 this.powfinder.pickRing = new THREE.LineLoop(geometry, material);
                 this.powfinder.pickRing.renderOrder = 999;
+                // The vertex shader displaces Y by up to a piston's worth of
+                // metres; the geometry's raw (undisplaced, y=0) bounding
+                // sphere is not a safe proxy for on-screen visibility, the
+                // same reasoning the shared LOD instances are frustumCulled
+                // = false for (design doc §0.4 / §3.4's own picking section).
+                this.powfinder.pickRing.frustumCulled = false;
                 this.scene.add(this.powfinder.pickRing);
             } else {
                 this.powfinder.pickRing.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
