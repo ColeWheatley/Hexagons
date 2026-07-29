@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PowFinder time scrubber — dev preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="powfinder_scrubber.css">
+<style>
+    :root { color-scheme: dark; }
+    body {
+        margin: 0;
+        padding: 24px;
+        background: #0b0d12;
+        color: #e8ecf1;
+        font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+        min-height: 100vh;
+        /* Mirrors the real app's #powfinder-dock: bottom-anchored, safe-area
+           aware, so the amber HISTORY border and 56px targets are checked in
+           a realistic layout rather than floating mid-page. */
+        display: flex;
+        flex-direction: column;
+    }
+    h1 { font-size: 1.05rem; font-weight: 700; margin: 0 0 4px; }
+    p.sub { margin: 0 0 16px; color: #9aa4b2; font-size: .82rem; max-width: 62ch; }
+    .controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+        padding: 12px;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+    .controls button, .controls select {
+        font: inherit;
+        font-size: .78rem;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.15);
+        background: rgba(255,255,255,0.05);
+        color: #e8ecf1;
+        cursor: pointer;
+    }
+    .controls button:hover, .controls select:hover { border-color: #ff6b9d; }
+    #status {
+        font-size: .72rem;
+        color: #6b7480;
+        font-family: monospace;
+        white-space: pre-wrap;
+        margin-bottom: 20px;
+    }
+    /* Fake dock/stage — same idea as index.html's #powfinder-dock, just a
+       plain div here since this harness never touches the real index.html. */
+    #stage {
+        margin-top: auto;
+        max-width: 420px;
+        width: 100%;
+    }
+    #stage.wide { max-width: 700px; }
+</style>
+</head>
+<body>
+<h1>PowFinder time scrubber — dev preview</h1>
+<p class="sub">
+    Mounts <code>createPowFinderScrubber</code> from <code>powfinder_scrubber.mjs</code>
+    against the real dev fixtures (<code>powfinder_fixtures/index.json</code>), with a
+    hand-built synthetic <code>layers_coverage.avalanche</code> override (the fixture
+    generator doesn't emit one yet — see P0.1) so the daily-cadence branch is checkable
+    here too. Not part of the shipped app; not linked from index.html.
+</p>
+<div class="controls">
+    <label>Layer:
+        <select id="layer-select">
+            <option value="sqh">sqh (hourly)</option>
+            <option value="avalanche">avalanche (daily, synthetic)</option>
+        </select>
+    </label>
+    <button id="btn-hole">Scrub into a coverage hole</button>
+    <button id="btn-live-tick">Simulate a new latest.json hour</button>
+    <button id="btn-narrow">390px width</button>
+    <button id="btn-wide">700px width</button>
+</div>
+<div id="status">loading…</div>
+<div id="stage"></div>
+
+<script type="module">
+import { parseSidecarIndex } from './sidecar_format.mjs';
+import { createPowFinderScrubber, buildStubCoverageFor } from './powfinder_scrubber.mjs';
+
+const status = document.getElementById('status');
+const stage = document.getElementById('stage');
+const layerSelect = document.getElementById('layer-select');
+
+function log(msg) { status.textContent = msg; }
+
+const [manifestRes, indexRes] = await Promise.all([
+    fetch('tile_manifest.json'),
+    fetch('powfinder_fixtures/index.json'),
+]);
+const manifest = await manifestRes.json();
+const rawIndexJson = await indexRes.json();
+const index = parseSidecarIndex(rawIndexJson, manifest);
+if (!index.ok) {
+    log('parseSidecarIndex failed: ' + index.reason);
+    throw new Error(index.reason);
+}
+
+// Synthetic layers_coverage.avalanche: keep only every 24th present hour of
+// the real fixture's hourly bitmask, mirroring the real backend's "daily
+// 12:00 UTC" shape closely enough to exercise the stride-inference branch.
+// Clearly synthetic — the real fixture generator doesn't produce this field
+// yet (P0.1 follow-up covers wiring it for real).
+function buildSyntheticAvalancheCoverage(baseIndex) {
+    const { count, present, startEpochHour } = baseIndex.coverage;
+    const out = new Uint8Array(Math.ceil(count / 8));
+    let kept = 0;
+    // Present at hour-of-day 12 for any day whose 12:00 slot exists in the
+    // base hourly bitmask (i.e. isn't inside one of the fixture's holes).
+    for (let slot = 12; slot < count; slot += 24) {
+        const byte = present[slot >> 3];
+        const bit = (byte >> (slot & 7)) & 1;
+        if (bit) {
+            out[slot >> 3] |= (1 << (slot & 7));
+            kept++;
+        }
+    }
+    return { present: out, count, startEpochHour, kept };
+}
+const synthAvalanche = buildSyntheticAvalancheCoverage(index);
+const layersCoverage = {
+    avalanche: {
+        present: btoa(String.fromCharCode(...synthAvalanche.present)),
+        count: synthAvalanche.count,
+    },
+};
+const coverageFor = buildStubCoverageFor(index, layersCoverage);
+
+let activeLayerId = 'sqh';
+// The fixtures' own latest.json never changes on disk, so "simulate a new
+// latest.json hour" is modeled as a mutable value this harness controls,
+// fed through the exact same fetchLatest hook a real deployment would wire
+// to an actual fetch('latest.json') — the button below drives the real
+// LIVE/HISTORY polling path (controller.refreshLatest()), not a shortcut.
+let simulatedLatest = Math.floor(Date.parse(rawIndexJson.latest) / 3600000);
+const controller = createPowFinderScrubber({
+    mount: (() => { const m = document.createElement('div'); m.id = 'powfinder-time'; m.hidden = true; stage.appendChild(m); return m; })(),
+    index,
+    coverageFor,
+    getActiveLayerId: () => activeLayerId,
+    onCommit: (epochHour, info) => {
+        log(`commit epochHour=${epochHour} approx=${info.approx} mode=${info.mode}\n` + statusLine());
+    },
+    onScrubHint: (hint) => {
+        // Visible in devtools console for manual verification of §1.8's
+        // stride/direction contract; not asserted by this harness itself.
+        console.debug('[scrubber] onScrubHint', hint);
+    },
+    fetchLatest: async () => simulatedLatest,
+});
+window.__powfinderScrubber = controller;
+window.__powfinderIndex = index;
+
+function statusLine() {
+    return `layer=${activeLayerId} epochHour=${controller.getEpochHour()} mode=${controller.getMode()}`;
+}
+log('ready\n' + statusLine());
+window.__powfinderScrubberReady = true;
+
+layerSelect.addEventListener('change', () => {
+    activeLayerId = layerSelect.value;
+    // The real integration point: whoever owns the layer picker (a
+    // different task) must call this whenever the active layer changes, so
+    // the LIVE anchor re-resolves against the new layer's own coverage
+    // rather than the previous layer's exact hour (see onActiveLayerChanged's
+    // doc comment in powfinder_scrubber.mjs).
+    controller.onActiveLayerChanged();
+    log('layer switched\n' + statusLine());
+});
+
+document.getElementById('btn-hole').addEventListener('click', () => {
+    // holeAStart in make_sidecar_fixtures.mjs is floor(hours*0.35); with the
+    // default 240-hour fixture that's slot 84 — dead center of a real hole.
+    controller.setEpochHour(index.coverage.startEpochHour + 88);
+    log('scrubbed into fixture hole A\n' + statusLine());
+});
+
+document.getElementById('btn-live-tick').addEventListener('click', async () => {
+    const maxEpochHour = index.coverage.startEpochHour + index.coverage.count - 1;
+    simulatedLatest = Math.min(simulatedLatest + 1, maxEpochHour);
+    await controller.refreshLatest(); // real polling path: advances only if currently LIVE
+    log(`bumped simulated latest.json to ${simulatedLatest}\n` + statusLine());
+});
+
+document.getElementById('btn-narrow').addEventListener('click', () => { stage.classList.remove('wide'); });
+document.getElementById('btn-wide').addEventListener('click', () => { stage.classList.add('wide'); });
+</script>
+</body>
+</html>
