@@ -44,6 +44,48 @@ export function sanitizeStoredView(view) {
     return { schema: 1, target, camera };
 }
 
+// PowFinder shareable layer (design doc §3.7, §6 P2.5). Layer ids are
+// backend-published data (index.json's layers[], §1.2 — "the frontend
+// hardcodes nothing about a layer except which ramps exist"), so this
+// module cannot validate `pf` against a fixed enum; it validates *shape*
+// only, which is exactly what stands between a hostile URL and injecting
+// something unexpected into the DOM/URL. 'off' is the reserved sentinel for
+// "no active layer" (§3.2's "✕" pill / disabled state).
+const PF_LAYER_PATTERN = /^(?:off|[a-z][a-z0-9_-]{0,31})$/;
+
+export function sanitizePfLayer(value) {
+    return typeof value === 'string' && PF_LAYER_PATTERN.test(value) ? value : null;
+}
+
+// The PowFinder timestamp (`t`) is deliberately NOT a sanitizePublicSettings
+// field — see that function's doc comment for why. This sanitizer exists so
+// view_state.js's URL-only pf/t handling shares one validation source with
+// the layer sanitizer above, without the timestamp ever touching the
+// persisted-settings schema.
+//
+// Epoch hour (hours since the Unix epoch), matching sidecar_format.mjs's
+// toEpochHour()/coverageHas() convention. The bound is generous (~200
+// years either side of 1970) purely to reject garbage/overflow; index.json's
+// own coverage bitmask is the real range authority, not this function.
+const PF_TIMESTAMP_LIMIT_HOURS = 1_750_000;
+
+export function sanitizePfTimestamp(value) {
+    // Explicit type/shape gate rather than a bare `Number(value)` coercion:
+    // `Number(null)` is 0 and `Number('')` is 0, both of which are otherwise
+    // in-range integers -- silently turning "no timestamp" (null/absent, the
+    // live-mode sentinel elsewhere in this contract) into epoch hour 0 would
+    // be exactly the kind of quiet misread this sanitizer exists to prevent.
+    let hour;
+    if (typeof value === 'number') {
+        hour = value;
+    } else if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+        hour = Number(value);
+    } else {
+        return null;
+    }
+    return Number.isInteger(hour) && Math.abs(hour) <= PF_TIMESTAMP_LIMIT_HOURS ? hour : null;
+}
+
 export function sanitizePublicSettings(settings) {
     if (!settings || typeof settings !== 'object') return null;
     const hazeDistanceKm = settings.hazeDistanceKm;
@@ -64,7 +106,20 @@ export function sanitizePublicSettings(settings) {
         !Number.isInteger(highTextureDistanceM) || highTextureDistanceM < 0 ||
         highTextureDistanceM > 5000 || highTextureDistanceM % 100 !== 0 ||
         (gradientMode !== 0 && gradientMode !== 1)) return null;
-    return { hazeDistanceKm, highTextureDistanceM, gradientMode };
+
+    const result = { hazeDistanceKm, highTextureDistanceM, gradientMode };
+    // pfLayer is optional (older/non-PowFinder envelopes simply omit it) but
+    // must be well-formed when present — a malformed value rejects the
+    // whole settings object rather than being silently dropped, matching
+    // this function's existing all-or-nothing philosophy (see
+    // sanitizeStoredEnvelope's own "reject rather than silently retain a
+    // surprising partial value" rule just below).
+    if (settings.pfLayer !== undefined) {
+        const pfLayer = sanitizePfLayer(settings.pfLayer);
+        if (pfLayer === null) return null;
+        result.pfLayer = pfLayer;
+    }
+    return result;
 }
 
 export function sanitizeStoredEnvelope(value) {

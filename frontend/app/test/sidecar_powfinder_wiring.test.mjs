@@ -63,3 +63,44 @@ test('unloadTile documents why nothing releases (static atlas slots)', () => {
     const body = main.slice(start, start + 400);
     assert.match(body, /PowFinder/);
 });
+
+// CRC32 manifest self-disable guard (design doc §6 P2.5 amendment): a
+// rebake that reorders tiles while keeping the same profile string and
+// tile count is invisible to parseSidecarIndex's coupling guard. Every
+// sidecar's PFL1 header carries manifestHash; this must be compared against
+// the CRC32 of the manifest bytes the frontend actually fetched, and a
+// mismatch must self-disable loudly rather than paint misaligned data.
+test('_loadManifestWithRetry retains the raw manifest bytes and computes manifestCrc32', () => {
+    const start = main.indexOf('async _loadManifestWithRetry(scope) {');
+    assert.ok(start > -1);
+    const body = main.slice(start, main.indexOf('\n    async initWorld(', start));
+    assert.match(body, /const bytes = await res\.arrayBuffer\(\);/,
+        'must read raw bytes, not res.text(), so the CRC32 matches the backend\'s zlib.crc32(file bytes)');
+    assert.match(body, /this\.manifestCrc32 = crc32\(new Uint8Array\(bytes\)\);/);
+});
+
+test('_loadPowfinderFixture checks manifestHashMatches before installing a pyramid, and self-disables loudly on mismatch', () => {
+    const start = main.indexOf('async _loadPowfinderFixture() {');
+    assert.ok(start > -1);
+    const body = main.slice(start, main.indexOf('\n    initTouchMomentumTracking(', start));
+
+    assert.match(body, /if \(!manifestHashMatches\(body\.header, this\.manifestCrc32\)\) \{/,
+        'the guard must run after parseSidecarBody succeeds, before buildPyramid');
+    // The guard must precede the pyramid build/install it protects.
+    assert.ok(
+        body.indexOf('manifestHashMatches(body.header, this.manifestCrc32)') <
+        body.indexOf('buildPyramid(body.body, tileCount'),
+        'the manifestHash check must gate pyramid construction, not run after it',
+    );
+    assert.match(body, /this\.powfinder\.disabled = true;/, 'a mismatch must set a durable disabled flag');
+    assert.match(body, /console\.error\(/, 'a mismatch must be loud (console.error), not a warn-and-continue');
+    assert.match(body, /if \(this\.powfinder\.disabled\) return;/,
+        'once disabled this session, a later fixture load must not re-enable or re-install');
+});
+
+test('powfinder state carries a disabled flag, default false, documented as the self-disable guard\'s target', () => {
+    const start = main.indexOf('this.powfinder = {');
+    assert.ok(start > -1);
+    const body = main.slice(start, main.indexOf('\n        };', start));
+    assert.match(body, /disabled: false,/);
+});

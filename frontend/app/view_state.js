@@ -7,6 +7,8 @@ import { initProjection, latLonToWorld, worldToLatLon } from './coordinate_utili
 import {
     hasExplicitViewParams,
     readPersistedEnvelope,
+    sanitizePfLayer,
+    sanitizePfTimestamp,
     sanitizePublicSettings,
     sanitizeStoredView,
     VIEW_STORAGE_VERSION,
@@ -140,6 +142,7 @@ export class ShareableViewState {
     buildUrl() {
         const state = this.getState();
         const url = new URL(window.location.href);
+        this.writePfParams(url);
         if (!state) return url;
         url.searchParams.set('view', SCHEMA_VERSION);
         url.searchParams.set('at', formatPoint({
@@ -149,6 +152,41 @@ export class ShareableViewState {
             lat: state.camera.lat, lon: state.camera.lon, sceneY: state.camera.sceneY_m,
         }));
         return url;
+    }
+
+    // PowFinder shareable state (design doc §3.7). `pf` is the active layer
+    // id, or 'off' when disabled — present whenever the viewer implements
+    // getPowFinderShareState(). `t` is the active epoch-hour timestamp,
+    // present only outside live mode (epochHour !== null): "a shared link
+    // says either 'here, now' or 'here, at this exact hour'." This is a
+    // no-op (leaves any existing pf/t params untouched) until a PowFinder
+    // controller implements getPowFinderShareState on the viewer — kept
+    // decoupled so P2.5 does not hard-depend on P2.1/P2.2 landing first.
+    writePfParams(url) {
+        const pf = this.viewer.getPowFinderShareState?.();
+        if (pf === undefined) return;
+        const pfLayer = pf ? sanitizePfLayer(pf.layer) : null;
+        if (pfLayer !== null) url.searchParams.set('pf', pfLayer);
+        else url.searchParams.delete('pf');
+
+        const pfTimestamp = pf && pf.epochHour !== null && pf.epochHour !== undefined
+            ? sanitizePfTimestamp(pf.epochHour) : null;
+        if (pfTimestamp !== null) url.searchParams.set('t', String(pfTimestamp));
+        else url.searchParams.delete('t');
+    }
+
+    // Reads `pf`/`t` off an arbitrary URL and, if valid, dispatches them to
+    // the viewer. Independent of the camera view=/at=/eye= triple by design
+    // — a link can share just a layer/timestamp with no camera override,
+    // and this must still apply on a view-schema mismatch or a legacy URL.
+    // Returns whether a layer was found and applied.
+    applyPfParams(url) {
+        const pfLayer = sanitizePfLayer(url.searchParams.get('pf'));
+        if (pfLayer === null) return false;
+        const pfTimestamp = url.searchParams.has('t')
+            ? sanitizePfTimestamp(url.searchParams.get('t')) : null;
+        this.viewer.applyPowFinderShareState?.({ layer: pfLayer, epochHour: pfTimestamp });
+        return true;
     }
 
     replaceUrl() {
@@ -162,10 +200,17 @@ export class ShareableViewState {
     }
 
     getPublicSettings() {
+        // The PowFinder layer choice persists to localStorage (design doc
+        // §3.7); the timestamp deliberately does not, so only `pf.layer` is
+        // read here — never `pf.epochHour`. See view_persistence.js's
+        // sanitizePublicSettings doc comment for why the timestamp isn't
+        // even a field this function's schema accepts.
+        const pf = this.viewer.getPowFinderShareState?.();
         return sanitizePublicSettings({
             hazeDistanceKm: Math.round((this.viewer.atmosphereSettings?.hazeDistance || 0) / 1000),
             highTextureDistanceM: this.viewer.highTextureDistanceM,
             gradientMode: this.viewer.gradientMode,
+            ...(pf?.layer !== undefined ? { pfLayer: pf.layer } : {}),
         });
     }
 
@@ -248,13 +293,19 @@ export class ShareableViewState {
         } catch (_) {
             return false;
         }
-        if (url.searchParams.get('view') !== SCHEMA_VERSION) return false;
+        const pfApplied = this.applyPfParams(url);
+        if (url.searchParams.get('view') !== SCHEMA_VERSION) return pfApplied;
         const target = parsePoint(url.searchParams.get('at'));
         const camera = parsePoint(url.searchParams.get('eye'));
         return this.applyPoints(target, camera);
     }
 
     async restoreFromUrl() {
+        // pf/t apply independently of the camera view=/at=/eye= triple (see
+        // applyPfParams) -- do this unconditionally so a URL sharing only a
+        // layer/timestamp still works even when it takes the "no explicit
+        // view" branch below.
+        this.applyPfParams(new URL(window.location.href));
         if (!this.hasExplicitViewUrl()) {
             await initProjection(); // prepare GPS output for the first user move
             const stored = readPersistedEnvelope(this.storage())?.view;
