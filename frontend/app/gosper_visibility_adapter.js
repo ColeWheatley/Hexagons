@@ -273,6 +273,31 @@ export class GosperVisibilityAdapter {
         this._decodedByIsland[this._resolveIsland(keyOrIslandIndex)] = null;
     }
 
+    /**
+     * Read-only per-unit decoded arrays for one island (design doc §3.4 /
+     * P2.4 tap-a-hex popup): the skirt deltas/slopes (`d1..d3`, `s1..s3`,
+     * attached separately from the depth records — see attachDecodedIsland)
+     * plus the unit-depth terrain normal components (`nx`, `nz`, encoded
+     * 0..255 for `component*2-1`, same convention `tile_worker.js`'s
+     * `buildLevelBuffers` and `main.js`'s vertex shader already decode for
+     * `instanceNormal`). Returns null when the island has no decoded payload
+     * attached yet (tile not resident) or the payload predates unit deltas
+     * (GSP1 records without `decoded.unit`). Callers must not mutate the
+     * returned typed arrays — they are the adapter's live backing storage.
+     */
+    getDecodedUnit(keyOrIslandIndex) {
+        const island = this._resolveIsland(keyOrIslandIndex);
+        const decoded = this._decodedByIsland[island];
+        if (!decoded || !decoded.unit) return null;
+        const unitDepth = decoded.depths?.[GOSPER_MAX_DEPTH];
+        return {
+            d1: decoded.unit.d1, d2: decoded.unit.d2, d3: decoded.unit.d3,
+            s1: decoded.unit.s1, s2: decoded.unit.s2, s3: decoded.unit.s3,
+            nx: unitDepth?.nx ?? null,
+            nz: unitDepth?.nz ?? null,
+        };
+    }
+
     /** Scene Y = (sourceElevation - floor) * factor + offset. */
     setVerticalTransform({ factor = 1, floor = 0, offset = 0 } = {}) {
         for (const [name, value] of Object.entries({ factor, floor, offset })) {

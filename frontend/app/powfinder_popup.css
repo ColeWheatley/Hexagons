@@ -17,3 +17,162 @@
  * This file is concatenated into the single hashed style bundle by build.mjs
  * (APP_STYLESHEETS), in listed order after powfinder_scrubber.css.
  */
+
+/* Mobile default: bottom sheet, full width, thumb-reachable, above the
+   bottom-third PowFinder dock (#powfinder-dock, P2.2/P2.3) so a picked cell
+   never fights the layer picker / scrubber for the same screen band. */
+.powfinder-popup {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    max-height: min(62vh, 520px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 16px 16px 0 0;
+    padding: 10px 16px max(16px, env(safe-area-inset-bottom));
+    font-family: 'Outfit', system-ui, sans-serif;
+    color: #f5f8fa;
+    /* Reveal is `hidden = false` in JS only (index.html's mount contract) --
+       this rule only ever fires while that attribute is already absent. */
+    transition: transform 0.18s ease-out;
+}
+
+.powfinder-popup[hidden] {
+    display: none;
+}
+
+.powfinder-popup__handle {
+    width: 40px;
+    height: 4px;
+    margin: 4px auto 10px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.28);
+    touch-action: none;
+}
+
+/* Glove rule: 56x56 minimum hit target, PowFinder pink accent (the
+   engineering HUD keeps its blue -- house style, powfinder.css header). */
+.powfinder-popup__close {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 56px;
+    height: 56px;
+    border: none;
+    background: transparent;
+    color: rgba(245, 248, 250, 0.72);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.powfinder-popup__close:hover,
+.powfinder-popup__close:focus-visible {
+    color: #ff6b9d;
+}
+
+.powfinder-popup__summary {
+    font: 700 1.05rem/1.3 'Outfit', sans-serif;
+    letter-spacing: 0.01em;
+    padding: 0 48px 12px 4px;
+    color: #fff;
+}
+
+.powfinder-popup__rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 4px;
+}
+
+.powfinder-popup__row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 4px;
+    font-size: 0.85rem;
+}
+
+.powfinder-popup__row-label {
+    color: rgba(245, 248, 250, 0.68);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.powfinder-popup__row-value {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: #fff;
+}
+
+.powfinder-popup__row-value--empty {
+    color: rgba(245, 248, 250, 0.4);
+    font-weight: 400;
+}
+
+.powfinder-popup__row-bar {
+    grid-column: 1 / -1;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+}
+
+/* The bar fill's colour is the ramp's own brand gradient (§2.5 "powder" row,
+   POWDER_STOPS in sidecar_colormap.mjs) so the bar and the map tint read as
+   the same scale -- "the number and the pixel agree" (§3.4). */
+.powfinder-popup__row-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #141a24 0%, #2f6a90 42.5%, #8f66c4 63.75%, #ff6b9d 85%, #ffd3e8 100%);
+}
+
+.powfinder-popup__meta {
+    height: 8px;
+}
+
+/* Non-negotiable, non-dismissible (§3.4) -- kept at full readable contrast
+   deliberately; this must never be styled toward invisibility. */
+.powfinder-popup__disclaimer {
+    margin: 4px 4px 2px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: rgba(245, 248, 250, 0.82);
+}
+
+/* Anchored card from tablet width up: no more thumb-reachable-bottom-third
+   constraint once the viewport is wide enough for the pointer to reach the
+   corner directly. Sits above the legend, away from the layer picker/dock. */
+@media (min-width: 768px) {
+    .powfinder-popup {
+        left: auto;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: max(96px, env(safe-area-inset-bottom));
+        width: 340px;
+        max-height: 70vh;
+        border-radius: 12px;
+        padding: 10px 18px 16px;
+    }
+
+    .powfinder-popup__handle {
+        display: none;
+    }
+}
+
+@media (max-width: 390px) {
+    .powfinder-popup__summary {
+        font-size: 0.95rem;
+    }
+
+    .powfinder-popup__row {
+        font-size: 0.8rem;
+    }
+}
