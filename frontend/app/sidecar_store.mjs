@@ -60,28 +60,37 @@ class SidecarRetry {
     }
 }
 
-// Prefetch window depths. Re-spec'd per P2.1 amendment 2 (team-lead binding
-// ruling): measured production gzip ratios (8-40 KB/hour, 11-62x smaller
-// than the design doc §1.8 table's raw-size assumption) leave far more
-// bandwidth budget than that table was sized against, and depth != cost --
-// in-flight fetches stay capped at MAX_CONCURRENT_SIDECAR_JOBS and installs
-// stay one-per-settle regardless of how deep the cache window goes; the
-// real budget is atlas texture uploads, not network. Deepened accordingly
-// (idle: +/-12 cached hours at stride 1, per the amendment's own example;
-// drag: doubled in step). saveData/2g/3g clamp is explicitly retained at
-// +/-1 by the same ruling.
-const IDLE_PREFETCH_DEPTH = 12;  // D=0: prefetch T +/- S .. T +/- 12S
-const DRAG_PREFETCH_DEPTH = 12;  // D!=0: prefetch T+D*S .. T+12*D*S, + one backstop
-const SAVE_DATA_PREFETCH_DEPTH = 1; // clamp under saveData / 2g / 3g
+// Prefetch window depths. Re-spec'd by frontend-design, "§1.8 re-spec,
+// prefetch depth, 2026-07-29" (binding, supersedes P2.1 amendment 2's
+// +/-12 numbers below): depth (how many timestamps stay warm in the LRU)
+// and concurrency (how many jobs are in flight) are separate quantities --
+// the actual constraint on most devices is the texture *dispatch* budget
+// (worker_lanes.js: texture lane is 1 worker unless workerCount>=5;
+// capability_profile.js: maxTextureJobs is 1 on low/mid profiles), not
+// bandwidth. Sidecar jobs never consume that budget -- MAX_CONCURRENT_SIDECAR_JOBS
+// below is the store's OWN counter, entirely separate from main.js's
+// activeTextureJobs -- so depth can stay generous while concurrency stays
+// tight. "ahead"/"behind" are relative to scrub direction; idle has no
+// direction so both sides get the same (smaller) depth.
+const IDLE_DEPTH = 6;              // D===0: T +/- 1..6 * S, symmetric
+const DRAG_AHEAD_DEPTH = 12;       // D!==0: direction of travel, T + D*1..12*S
+const DRAG_BEHIND_DEPTH = 2;       // D!==0: opposite direction, overshoot backstop
+const SLOW_NETWORK_AHEAD_DEPTH = 4;  // 2g/3g/slow-2g (measurement -> scale down)
+const SLOW_NETWORK_BEHIND_DEPTH = 2;
+// saveData is a stated preference, not a measurement -> stop speculating
+// entirely (ahead=behind=0, on-demand only); see prefetchDepths() below.
 
-function constrainedNetwork(connection) {
-    // Same condition as capability_profile.js's resolveCapabilityProfile,
-    // duplicated locally (that module isn't a P2.1 touch point) rather than
-    // widening its exports for one boolean check.
-    return connection?.saveData === true
-        || connection?.effectiveType === 'slow-2g'
-        || connection?.effectiveType === '2g'
-        || connection?.effectiveType === '3g';
+/** Ruling 1/Q2: saveData clamps to 0 (on-demand only, a user preference);
+ * effectiveType 2g/3g/slow-2g scales to 4/2 (a measurement); otherwise
+ * depth depends only on whether the scrubber is actively dragging. */
+function prefetchDepths(connection, dragging) {
+    if (connection?.saveData === true) return { ahead: 0, behind: 0 };
+    if (connection?.effectiveType === 'slow-2g' || connection?.effectiveType === '2g' || connection?.effectiveType === '3g') {
+        return { ahead: SLOW_NETWORK_AHEAD_DEPTH, behind: SLOW_NETWORK_BEHIND_DEPTH };
+    }
+    return dragging
+        ? { ahead: DRAG_AHEAD_DEPTH, behind: DRAG_BEHIND_DEPTH }
+        : { ahead: IDLE_DEPTH, behind: IDLE_DEPTH };
 }
 
 export class SidecarStore {
@@ -346,26 +355,37 @@ export class SidecarStore {
         const T = this.activeTimestamp;
         const S = this.scrubStride || 1;
         const D = this.scrubDirection || 0;
-        const depthCap = constrainedNetwork(this.connection) ? SAVE_DATA_PREFETCH_DEPTH : Infinity;
+        const dragging = D !== 0;
+        const { ahead, behind } = prefetchDepths(this.connection, dragging);
+        const aheadSign = dragging ? Math.sign(D) : 1;
+        const behindSign = -aheadSign;
 
+        // Ruling 4: nearest-to-active first, direction-biased -- interleave
+        // ahead/behind by distance so the hour the user is about to reach
+        // dispatches before ones further out (queue order = priority order,
+        // since _drainQueue always takes from the front).
         const candidates = [];
-        if (D === 0) {
-            const depth = Math.min(IDLE_PREFETCH_DEPTH, depthCap);
-            for (let k = 1; k <= depth; k++) {
-                candidates.push(T - k * S, T + k * S);
-            }
-        } else {
-            const depth = Math.min(DRAG_PREFETCH_DEPTH, depthCap);
-            for (let k = 1; k <= depth; k++) candidates.push(T + D * k * S);
-            candidates.push(T - D * S); // single cheap backstop for an overshoot correction
+        const maxDepth = Math.max(ahead, behind);
+        for (let k = 1; k <= maxDepth; k++) {
+            if (k <= ahead) candidates.push(T + aheadSign * k * S);
+            if (k <= behind) candidates.push(T + behindSign * k * S);
         }
 
+        const windowKeys = new Set();
         for (const hour of candidates) {
             // Layer-aware skip (team-lead's consistency requirement): a
             // sparse layer's own bitmask decides what's worth prefetching,
             // never a hardcoded per-layer-id special case.
             if (!coverageHas(this.index, hour, layerId)) continue;
+            windowKeys.add(this._key(layerId, hour));
             this._enqueue({ layerId, epochHour: hour, isPrefetch: true });
         }
+
+        // Ruling 3: every re-plan (timestamp/layer/stride/direction change)
+        // drops queued-but-not-started prefetches that fall outside the new
+        // window. Already-dispatched jobs (in _activeJobs) are not touched --
+        // they run to completion and still populate the LRU, since they're
+        // already paid for. The active (non-prefetch) job is never pruned.
+        this._queue = this._queue.filter((d) => !d.isPrefetch || windowKeys.has(this._key(d.layerId, d.epochHour)));
     }
 }
