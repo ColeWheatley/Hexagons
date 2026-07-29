@@ -2,7 +2,13 @@ export const WORKER_LANE = Object.freeze({ GEOMETRY: 'geometry', TEXTURE: 'textu
 export const MAX_TEXTURE_DECODERS = 2;
 
 export function workerLaneForJob(type) {
-    return type === 'LOAD_TEXTURE' ? WORKER_LANE.TEXTURE : WORKER_LANE.GEOMETRY;
+    // The texture lane already tolerates chunky decode bursts and is
+    // throttled during motion — the right home for sidecar decode too, and
+    // critically not the lane geometry rebuilds contend for (design doc
+    // §1.4): a sidecar fetch must never delay a tile appearing during a pan.
+    return (type === 'LOAD_TEXTURE' || type === 'LOAD_SIDECAR')
+        ? WORKER_LANE.TEXTURE
+        : WORKER_LANE.GEOMETRY;
 }
 
 export function workerLaneSizes(workerBudget = 4) {

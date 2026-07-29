@@ -24,6 +24,13 @@ const CAP_OVERSCAN = 1.15;
 const SIDECAR_L1_DEPTH = 4;
 const SIDECAR_PYRAMID_DEPTH_OFFSETS = [0, 1, 8, 57, 400];
 
+// Additional pyramid constants, same duplication caveat as above.
+const SIDECAR_PYRAMID_DEPTH_COUNTS = [1, 7, 49, 343, 2401];
+const SIDECAR_L1_NODE_COUNT = SIDECAR_PYRAMID_DEPTH_COUNTS[SIDECAR_L1_DEPTH]; // 2401
+const SIDECAR_PYRAMID_NODE_COUNT = SIDECAR_PYRAMID_DEPTH_COUNTS.reduce((a, b) => a + b, 0); // 2801
+const SIDECAR_PFL1_HEADER_BYTES = 32;
+const SIDECAR_NODATA = 0;
+
 // =============================================================================
 // XUASTC KTX2 TRANSCODING (Basis Universal v2 WASM)
 // Ported from ktx2_nonrect_texture_test/BasisV2KTX2Loader.js, minus all DOM
@@ -311,6 +318,10 @@ self.onmessage = async function (e) {
                 ? [result.imageBitmap]
                 : result.mipmaps.map(m => m.data.buffer);
             self.postMessage({ id, status: 'success', result }, transferables);
+
+        } else if (type === 'LOAD_SIDECAR') {
+            const result = await loadSidecar(data);
+            self.postMessage({ id, status: 'success', result }, [result.pyramid.buffer]);
         }
     } catch (err) {
         // Error communicated to main thread via postMessage — no console spam
@@ -327,6 +338,172 @@ async function fetchFirst(urls, kind, attempt, drop) {
         if (response.ok) return { response, url };
     }
     return { response: last, url: candidates[candidates.length - 1] };
+}
+
+// =============================================================================
+// POWFINDER SIDECAR (design doc §1.4). Pyramid reduction is duplicated here
+// (not imported) from frontend/app/sidecar_format.mjs's buildPyramid /
+// buildPackedPyramid / parseSidecarBody / decodePacked / encodePacked --
+// same reason as the pyramid-address constants above: this worker is
+// importScripts-based, not an ES module, and sidecar_format.mjs is. Kept
+// byte-for-byte in sync with a duplicated-logic agreement test
+// (test/sidecar_load.test.mjs), the same pattern P1.1 established for the
+// two address constants.
+// =============================================================================
+
+function sidecarReduceMean(values) {
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) sum += values[i];
+    return Math.round(sum / values.length);
+}
+function sidecarReduceMax(values) {
+    let m = values[0];
+    for (let i = 1; i < values.length; i++) if (values[i] > m) m = values[i];
+    return m;
+}
+function sidecarReduceMode(values) {
+    let best = values[0], bestCount = 0;
+    for (let i = 0; i < values.length; i++) {
+        let count = 0;
+        for (let j = 0; j < values.length; j++) if (values[j] === values[i]) count++;
+        if (count > bestCount || (count === bestCount && values[i] < best)) { best = values[i]; bestCount = count; }
+    }
+    return best;
+}
+function sidecarReduceOr(values) {
+    let r = 0;
+    for (let i = 0; i < values.length; i++) r |= values[i];
+    return r;
+}
+const SIDECAR_BUILTIN_REDUCERS = { mean: sidecarReduceMean, max: sidecarReduceMax, mode: sidecarReduceMode, or: sidecarReduceOr };
+
+function sidecarDecodePacked(raw, fieldSpec) {
+    const mask = (1 << fieldSpec.bits) - 1;
+    return (raw >> fieldSpec.shift) & mask;
+}
+function sidecarEncodePacked(fieldValues, fields) {
+    let raw = 0;
+    for (const name of Object.keys(fields)) {
+        const { shift, bits } = fields[name];
+        const mask = (1 << bits) - 1;
+        raw |= (fieldValues[name] & mask) << shift;
+    }
+    return raw & 0xff;
+}
+
+// Scalar pyramid build (u8_linear / u8_class layers).
+function buildSidecarPyramid(body, tileCount, reducer) {
+    const reduceFn = typeof reducer === 'function' ? reducer : SIDECAR_BUILTIN_REDUCERS[reducer];
+    if (!reduceFn) throw new Error(`buildSidecarPyramid: unknown reducer "${reducer}"`);
+    const pyramid = new Uint8Array(tileCount * SIDECAR_PYRAMID_NODE_COUNT);
+    const scratch = new Uint8Array(7);
+    for (let t = 0; t < tileCount; t++) {
+        const srcBase = t * SIDECAR_L1_NODE_COUNT;
+        const dstBase = t * SIDECAR_PYRAMID_NODE_COUNT;
+        pyramid.set(body.subarray(srcBase, srcBase + SIDECAR_L1_NODE_COUNT), dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[SIDECAR_L1_DEPTH]);
+        for (let d = SIDECAR_L1_DEPTH - 1; d >= 0; d--) {
+            const childBase = dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[d + 1];
+            const parentBase = dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[d];
+            const parentCount = SIDECAR_PYRAMID_DEPTH_COUNTS[d];
+            for (let i = 0; i < parentCount; i++) {
+                const base = childBase + i * 7;
+                let n = 0;
+                for (let c = 0; c < 7; c++) {
+                    const v = pyramid[base + c];
+                    if (v !== SIDECAR_NODATA) scratch[n++] = v;
+                }
+                pyramid[parentBase + i] = n === 0 ? SIDECAR_NODATA : reduceFn(scratch.subarray(0, n));
+            }
+        }
+    }
+    return pyramid;
+}
+
+// Packed-bits pyramid build (avalanche): decode each declared field,
+// reduce independently with its own aggregate, repack -- see
+// sidecar_format.mjs's buildPackedPyramid doc comment for why the raw byte
+// itself must never be reduced directly (release/severity are independent
+// fields, not one scalar).
+function buildSidecarPackedPyramid(body, tileCount, fields) {
+    const fieldNames = Object.keys(fields);
+    const fieldReducers = {};
+    for (const name of fieldNames) {
+        const spec = fields[name];
+        const fn = SIDECAR_BUILTIN_REDUCERS[spec.aggregate];
+        if (!fn) throw new Error(`buildSidecarPackedPyramid: unknown aggregate "${spec.aggregate}" for field "${name}"`);
+        fieldReducers[name] = fn;
+    }
+    const pyramid = new Uint8Array(tileCount * SIDECAR_PYRAMID_NODE_COUNT);
+    const scratch = {};
+    for (const name of fieldNames) scratch[name] = new Uint8Array(7);
+    for (let t = 0; t < tileCount; t++) {
+        const srcBase = t * SIDECAR_L1_NODE_COUNT;
+        const dstBase = t * SIDECAR_PYRAMID_NODE_COUNT;
+        pyramid.set(body.subarray(srcBase, srcBase + SIDECAR_L1_NODE_COUNT), dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[SIDECAR_L1_DEPTH]);
+        for (let d = SIDECAR_L1_DEPTH - 1; d >= 0; d--) {
+            const childBase = dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[d + 1];
+            const parentBase = dstBase + SIDECAR_PYRAMID_DEPTH_OFFSETS[d];
+            const parentCount = SIDECAR_PYRAMID_DEPTH_COUNTS[d];
+            for (let i = 0; i < parentCount; i++) {
+                const base = childBase + i * 7;
+                let n = 0;
+                for (let c = 0; c < 7; c++) {
+                    const raw = pyramid[base + c];
+                    if (raw === SIDECAR_NODATA) continue;
+                    for (const name of fieldNames) scratch[name][n] = sidecarDecodePacked(raw, fields[name]);
+                    n++;
+                }
+                if (n === 0) { pyramid[parentBase + i] = SIDECAR_NODATA; continue; }
+                const fieldValues = {};
+                for (const name of fieldNames) fieldValues[name] = fieldReducers[name](scratch[name].subarray(0, n));
+                pyramid[parentBase + i] = sidecarEncodePacked(fieldValues, fields);
+            }
+        }
+    }
+    return pyramid;
+}
+
+// Header sniff + body strip (design doc §1.1). Throws rather than
+// returning {ok:false} -- the worker's onmessage handler already turns any
+// thrown error into a status:'error' postMessage (see below).
+function parseSidecarBodyForWorker(buffer, tileCount) {
+    const bytes = new Uint8Array(buffer);
+    let body = bytes;
+    if (bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x46 && bytes[2] === 0x4c && bytes[3] === 0x31) { // 'PFL1'
+        if (bytes.byteLength < SIDECAR_PFL1_HEADER_BYTES) {
+            throw new Error(`sidecar: PFL1 magic present but buffer shorter than the ${SIDECAR_PFL1_HEADER_BYTES}-byte header`);
+        }
+        body = bytes.subarray(SIDECAR_PFL1_HEADER_BYTES);
+    }
+    const expected = tileCount * SIDECAR_L1_NODE_COUNT;
+    if (body.byteLength !== expected) {
+        throw new Error(`sidecar: body length ${body.byteLength} !== tileCount(${tileCount}) * ${SIDECAR_L1_NODE_COUNT} (${expected})`);
+    }
+    return body;
+}
+
+/**
+ * LOAD_SIDECAR job. `data`: { url, tileCount, layerId, epochHour, encoding,
+ * aggregate, fields } -- encoding/aggregate/fields mirror the layer's real
+ * index.json entry (`fields` only present for packed_bits layers; the
+ * store passes these straight through from the parsed index, never
+ * hardcoding a layer's shape here).
+ *
+ * Sidecars are served pre-gzipped with Content-Encoding: gzip (permanent
+ * deploy ruling) -- fetch()/arrayBuffer() decode that transparently, so
+ * the length assertion above sees the same decompressed byte count either
+ * way; nothing here needs to know about the wire encoding.
+ */
+async function loadSidecar({ url, tileCount, layerId, epochHour, encoding, aggregate, fields, faultAttempt, faultDrop }) {
+    const res = await fetchForFaultGate(url, 'sidecar', faultAttempt, faultDrop);
+    if (!res.ok) throw new Error(`Failed to load sidecar: ${url} (${res.status})`);
+    const buffer = await res.arrayBuffer();
+    const networkBytes = buffer.byteLength;
+    const body = parseSidecarBodyForWorker(buffer, tileCount);
+    const pyramid = encoding === 'packed_bits'
+        ? buildSidecarPackedPyramid(body, tileCount, fields)
+        : buildSidecarPyramid(body, tileCount, aggregate);
+    return { pyramid, networkBytes, sourceUrl: url, epochHour, layerId };
 }
 
 async function loadTile({ yq, yr, binUrl, expectedGspVersion, faultAttempt, faultDrop }) {
