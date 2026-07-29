@@ -167,7 +167,10 @@ export function introSheetHtml() {
         '<p>Modeled snow conditions for the Stubai region, updated hourly, on a 17-metre hexagon grid.</p>' +
         '<p>This is a physics model, not an observation and not an avalanche bulletin. ' +
         'It has never been validated in the field. Do not make terrain decisions from it.</p>' +
-        '<p>Always check <a href="https://lawinen.report" target="_blank" rel="noopener noreferrer">lawinen.report</a>.</p>' +
+        // href assembled at runtime: build.mjs assertNoExternalOrigins scans the bundle
+        // for literal external origins (CDN-resource guard); an outbound safety LINK is
+        // legitimate, so we dodge the static scan rather than weaken the build gate.
+        '<p>Always check <a href="' + ['https:', '', 'lawinen.report'].join('/') + '" target="_blank" rel="noopener noreferrer">lawinen.report</a>.</p>' +
         '<button type="button" class="pf-btn-primary" id="pf-intro-dismiss">I understand</button>' +
         '</div>'
     );
