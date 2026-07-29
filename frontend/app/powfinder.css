@@ -20,3 +20,195 @@
  * This file is concatenated into the single hashed style bundle by build.mjs
  * (APP_STYLESHEETS), in listed order after style.css.
  */
+
+/* --- Shared dock: position/stacking only (P2.2 owns this per the mount
+   comment in index.html); #powfinder-time's *content* is P2.3's. Bottom
+   third, thumb-reachable, above the nav overlay/legend's z-index (4). --- */
+#powfinder-dock {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right));
+    z-index: 5;
+    pointer-events: none; /* re-enabled per-child below so empty gaps don't eat map gestures */
+}
+#powfinder-dock[hidden] { display: none; }
+#powfinder-time, #powfinder-layers { pointer-events: auto; }
+
+/* --- Layer picker (§3.2): one horizontally-scrollable row of 56px pills.
+   Reuses no existing CSS class -- .pill-toggle/.pill-btn in index.html turn
+   out to be inline-styled-only with no shared rules, so a fresh `pf-pill`
+   name avoids implying a shared component that doesn't actually exist. --- */
+#powfinder-layers[hidden] { display: none; }
+#powfinder-layers {
+    background: rgba(20, 20, 20, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 4px;
+}
+.pf-pill-row {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.pf-pill-row::-webkit-scrollbar { display: none; }
+
+.pf-pill {
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 56px;
+    min-height: 56px;
+    padding: 4px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: #ccc;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 10px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s;
+}
+.pf-pill:hover { background: rgba(255, 255, 255, 0.06); }
+.pf-pill:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; }
+.pf-pill-active {
+    color: #fff;
+    border-bottom-color: #ff6b9d;
+    text-shadow: 0 0 8px rgba(255, 107, 157, .65);
+}
+
+.pf-pill-loading {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 4px;
+    height: 2px;
+    border-radius: 1px;
+    background: linear-gradient(90deg, transparent, #ff6b9d, transparent);
+    background-size: 200% 100%;
+    animation: pf-loading-sweep 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .pf-pill-loading { animation: none; background: #ff6b9d; opacity: .6; }
+}
+@keyframes pf-loading-sweep {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* --- Legend rows (§3.5), nested inside the existing `.legend glass-panel`.
+   Reuses .legend-item/.swatch (style.css) for row rhythm/sizing so the
+   sidecar rows and the pre-existing static steepness rows read as one
+   list. --- */
+#powfinder-legend[hidden] { display: none; }
+.pf-legend-header {
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: #fff;
+    font-size: .7rem;
+}
+.pf-legend-bar {
+    width: 140px;
+    height: 10px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, .15);
+}
+.pf-legend-ticks {
+    display: flex;
+    justify-content: space-between;
+    width: 140px;
+    font-size: .6rem;
+    color: rgba(235, 240, 244, .72);
+}
+.pf-legend-swatches { display: flex; flex-direction: column; gap: 2px; }
+.pf-legend-note, .pf-legend-footer {
+    font-size: .58rem;
+    color: rgba(235, 240, 244, .55);
+    font-style: italic;
+}
+
+/* --- Beta labeling (§3.6): the wordmark pill is pre-landed markup
+   (index.html's .beta-pill span inside #main-panel .subtitle) -- this is
+   the only styling it needs. --- */
+.beta-pill {
+    display: inline-block;
+    background: rgba(255, 107, 157, 0.12);
+    color: #ff6b9d;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    vertical-align: middle;
+}
+
+/* --- First-run beta sheet (§3.6 item 5) --- */
+#powfinder-intro[hidden] { display: none; }
+#powfinder-intro {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+.pf-sheet-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, .55);
+}
+.pf-sheet {
+    position: relative;
+    width: min(420px, 100%);
+    margin: 0 max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-family: 'Outfit', sans-serif;
+    color: #eee;
+    line-height: 1.4;
+}
+.pf-sheet-header {
+    font-size: 1.1rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.pf-sheet p { margin: 0; font-size: .85rem; color: rgba(235, 240, 244, .85); }
+.pf-sheet a { color: #ff6b9d; }
+.pf-btn-primary {
+    align-self: stretch;
+    min-height: 56px;
+    margin-top: 4px;
+    background: #ff6b9d;
+    color: #14101a;
+    border: none;
+    border-radius: 10px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+.pf-btn-primary:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* Compact layouts follow the same breakpoint style.css already uses for
+   .legend/.legend-item (:348-351) -- shrink type/gaps, never a hit target. */
+@media (max-width: 390px) {
+    .pf-legend-bar, .pf-legend-ticks { width: 108px; }
+    .pf-legend-header, .pf-legend-footer, .pf-legend-note { font-size: .55rem; }
+    .pf-pill { font-size: .78rem; padding: 4px 12px; }
+}
