@@ -139,6 +139,13 @@ import {
     crc32,
     manifestHashMatches,
 } from './sidecar_format.mjs';
+import {
+    isTapGesture,
+    pickGroundCell,
+    resolveHexAddress,
+    hexRingPositions,
+} from './hex_pick.mjs';
+import { PowfinderPopup, readAllLayers, buildPopupViewModel } from './powfinder_popup.mjs';
 
 const G = window.GosperCore;
 const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
@@ -605,6 +612,38 @@ class PistonViewer {
         };
         this._loadPowfinderFixture();
 
+        // PowFinder tap-a-hex pick (design doc §3.4 / §6 P2.4). Same tap-vs-
+        // drag threshold pattern as initTouchMomentumTracking above: a
+        // pointerdown -> pointerup pair under 8px/300ms, with MapControls
+        // not mid-gesture, is a tap; anything else is left to MapControls.
+        // Attached to the canvas only (not window/document), so tapping any
+        // other UI chrome never triggers a pick. The `controls` 'start' and
+        // window `keydown` listeners below are *additional* listeners on
+        // top of the ones already registered earlier in this constructor —
+        // not edits to them — and exist only to dismiss an open popup on
+        // map pan / Escape, per §3.4's "Sheet dismisses on ... map pan, or
+        // Escape".
+        this._powfinderPickDown = null;
+        this.renderer.domElement.addEventListener('pointerdown', (event) => {
+            if (event.pointerType === 'mouse' && event.button !== 0) return;
+            this._powfinderPickDown = { x: event.clientX, y: event.clientY, t: performance.now() };
+        }, { passive: true });
+        this.renderer.domElement.addEventListener('pointerup', (event) => {
+            const down = this._powfinderPickDown;
+            this._powfinderPickDown = null;
+            if (!down || this.isUserInteracting) return;
+            const tapped = isTapGesture({
+                dx: event.clientX - down.x,
+                dy: event.clientY - down.y,
+                durationMs: performance.now() - down.t,
+            });
+            if (tapped) this.pickPowFinderCell(event.clientX, event.clientY);
+        }, { passive: true });
+        this.controls.addEventListener('start', () => { this.powfinder?.popup?.hide(); });
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') this.powfinder?.popup?.hide();
+        });
+
         this.initWorld();
         this.frameScheduler = new IdleRenderScheduler({
             requestAnimationFrame: requestAnimationFrame.bind(window),
@@ -715,6 +754,155 @@ class PistonViewer {
             // frameScheduler.wake('sidecar') or it will never paint."
             this.frameScheduler?.wake('sidecar');
         }
+    }
+
+    // PowFinder tap-a-hex pick + info popup (design doc §3.4 / §6 P2.4).
+    // Ground-plane solve, address resolution, and value decoding all live in
+    // hex_pick.mjs / powfinder_popup.mjs (pure, node-tested); this method is
+    // only the THREE/DOM wiring the pointer listeners above call: build a
+    // ray from the tap point, delegate the iterated pick + address lookup,
+    // read whatever sidecar bytes are resident, and show the popup + ring.
+    // The popup DOM binding and the ring mesh are built lazily on first use
+    // so the constructor tail stays a plain listener-registration block.
+    pickPowFinderCell(clientX, clientY) {
+        if (!this.manifest || !this.tiles || !this.unitIndexMap || !this.manifestGrid) return;
+
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        const ndc = {
+            x: ((clientX - rect.left) / rect.width) * 2 - 1,
+            y: -((clientY - rect.top) / rect.height) * 2 + 1,
+        };
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, this.camera);
+
+        const sample = pickGroundCell({
+            ray: { origin: raycaster.ray.origin, direction: raycaster.ray.direction },
+            sampleElevation: (x, z) => this.sampleTerrainSourceElevation(x, z),
+            floor: this.floorState.value,
+            heightFactor: this.heightFactor,
+        });
+        if (!sample || !Number.isFinite(sample.sourceElevation)) return;
+
+        const address = resolveHexAddress({
+            axial: sample.axial,
+            tq: sample.tq,
+            tr: sample.tr,
+            tiles: this.tiles,
+            unitIndexMap: this.unitIndexMap,
+            atlasSlotFor: (key) => (this.powfinder.atlas ? this.powfinder.atlas.slotFor(key) : null),
+        });
+        if (!address) return;
+
+        // Slope: mean of the tapped unit's three decoded edge slopes, the
+        // same degrees-already convention driving the existing steepness
+        // gradient shader (main.js's gradientColor()). Aspect is a
+        // deliberate scope trim (design doc §7 non-goal escape valve: "ship
+        // the popup without slope[/aspect] ... elevation, the layer values,
+        // and the disclaimer are the load-bearing content") — this task has
+        // no ground-truth reference to verify a derived compass bearing
+        // against, and a wrong compass direction is worse than none in a
+        // safety-adjacent popup.
+        let slopeDeg = null;
+        const decodedUnit = this.visibilityAdapter?.getDecodedUnit?.(address.tileKey);
+        if (decodedUnit?.s1 && address.unitIdx < decodedUnit.s1.length) {
+            slopeDeg = (decodedUnit.s1[address.unitIdx] + decodedUnit.s2[address.unitIdx] + decodedUnit.s3[address.unitIdx]) / 3;
+        }
+
+        // readAllLayers implements the design doc's P2.1 store `readAll(slot,
+        // address)` shape against whatever PowFinder pyramids are actually
+        // resident right now — currently just `sqh` (P1.3's single-fixture
+        // stopgap; P2.1's real store lands separately and slots in here with
+        // no interface change, only more non-null entries in `pyramids`).
+        const layers = readAllLayers({
+            pyramids: { sqh: this.powfinder.sqhPyramid },
+            slot: address.slot,
+            address: address.address,
+        });
+        const viewModel = buildPopupViewModel({ elevationM: sample.sourceElevation, slopeDeg, layers });
+
+        if (!this.powfinder.popup) {
+            const mount = document.getElementById('powfinder-popup');
+            if (!mount) return;
+            this.powfinder.popup = new PowfinderPopup({ document, mount });
+        }
+        this.powfinder.popup.show(viewModel);
+
+        // Highlight ring: L1 node centre (design doc §3.4), scaled to the L1
+        // flat-to-flat size (16.93 m). Positioned with the exact same
+        // offsets()/axialToWorld() primitives GosperVisibilityAdapter itself
+        // uses for node centres, plus the tile's own scene origin
+        // (manifestGrid.lx/lz, set once in initWorld) — no private adapter
+        // state touched, no new main.js import beyond what's already here.
+        const off = G.offsets(TILE_LEVEL);
+        const repUnit = address.l1Index * 7;
+        const repDq = off[repUnit * 2];
+        const repDr = off[repUnit * 2 + 1];
+        const [rwx, rwy] = G.axialToWorld(repDq, repDr);
+        const manifestTile = this.manifestGrid.get(address.tileKey);
+        if (manifestTile) {
+            const tile = this.tiles.get(address.tileKey);
+            const repUnitIdx = this.unitIndexMap.get(((repDq + 128) << 8) | (repDr + 128));
+            const repElevation = (repUnitIdx !== undefined && tile?.unitHeights)
+                ? tile.unitHeights[repUnitIdx]
+                : sample.sourceElevation;
+            const ringX = manifestTile.lx + rwx;
+            const ringZ = manifestTile.lz - rwy;
+            const radius = G.levelSize(1) / Math.sqrt(3); // L1 circumradius, ~9.78 m
+            const positions = hexRingPositions({ centerX: ringX, centerZ: ringZ, radius });
+
+            if (!this.powfinder.pickRing) {
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                const material = new THREE.ShaderMaterial({
+                    // uHeightFactor/uFloorOffset are the *same* shared
+                    // uniform objects animate() already writes every frame
+                    // (writeUniformIfChanged(this.sharedMaterialUniforms.
+                    // heightFactor/.floorOffset, ...)) — reusing them by
+                    // object identity is how this ring "follows the piston
+                    // when tilting" with zero new per-frame update code
+                    // (design doc §0.7's established shared-uniform pattern).
+                    uniforms: {
+                        uHeightFactor: this.sharedMaterialUniforms.heightFactor,
+                        uFloorOffset: this.sharedMaterialUniforms.floorOffset,
+                        uBaseElevation: { value: repElevation },
+                        uColor: { value: new THREE.Color(0xff6b9d) },
+                    },
+                    vertexShader: `
+                        uniform float uHeightFactor;
+                        uniform float uFloorOffset;
+                        uniform float uBaseElevation;
+                        void main() {
+                            vec3 pos = position;
+                            pos.y = (uBaseElevation - uFloorOffset) * uHeightFactor;
+                            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform vec3 uColor;
+                        void main() { gl_FragColor = vec4(uColor, 1.0); }
+                    `,
+                    depthTest: false,
+                    transparent: true,
+                });
+                this.powfinder.pickRing = new THREE.LineLoop(geometry, material);
+                this.powfinder.pickRing.renderOrder = 999;
+                // The vertex shader displaces Y by up to a piston's worth of
+                // metres; the geometry's raw (undisplaced, y=0) bounding
+                // sphere is not a safe proxy for on-screen visibility, the
+                // same reasoning the shared LOD instances are frustumCulled
+                // = false for (design doc §0.4 / §3.4's own picking section).
+                this.powfinder.pickRing.frustumCulled = false;
+                this.scene.add(this.powfinder.pickRing);
+            } else {
+                this.powfinder.pickRing.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                this.powfinder.pickRing.material.uniforms.uBaseElevation.value = repElevation;
+            }
+            this.powfinder.pickRing.visible = true;
+        }
+
+        this.needsRender = true;
+        this.frameScheduler?.wake('sidecar');
     }
 
     initTouchMomentumTracking() {
