@@ -288,7 +288,7 @@ function prefetchedHours(postJob, base) {
         .sort((a, b) => a - b);
 }
 
-test('D=0 (idle) prefetches T +/- S .. T +/- 12S (amendment 2: deepened window)', async () => {
+test('D=0 (idle) prefetches T +/- S .. T +/- 6S (§1.8 re-spec 2026-07-29: ahead/behind, not one shared cap)', async () => {
     const postJob = fakePostJob();
     const store = new SidecarStore({ postJob, index: fakeIndex({ hours: 48 }), tileCount: TILE_COUNT });
     const base = store.index.coverage.startEpochHour;
@@ -300,11 +300,11 @@ test('D=0 (idle) prefetches T +/- S .. T +/- 12S (amendment 2: deepened window)'
     await drainAll(postJob, store);
 
     const offsets = prefetchedHours(postJob, base);
-    // 20 (active) plus prefetch at 8..19 and 21..32.
-    assert.deepEqual(offsets, Array.from({ length: 25 }, (_, i) => 8 + i));
+    // 20 (active) plus prefetch at 14..19 and 21..26 (idle depth 6/6).
+    assert.deepEqual(offsets, Array.from({ length: 13 }, (_, i) => 14 + i));
 });
 
-test('D!=0 (dragging) prefetches T+D*S..T+12*D*S plus a backstop at T-D*S', async () => {
+test('D!=0 (dragging) prefetches T+D*S..T+12*D*S ahead plus T-D*S..T-2*D*S behind', async () => {
     const postJob = fakePostJob();
     const store = new SidecarStore({ postJob, index: fakeIndex({ hours: 48 }), tileCount: TILE_COUNT });
     const base = store.index.coverage.startEpochHour;
@@ -316,8 +316,8 @@ test('D!=0 (dragging) prefetches T+D*S..T+12*D*S plus a backstop at T-D*S', asyn
     await drainAll(postJob, store);
 
     const offsets = prefetchedHours(postJob, base);
-    // active(20) + forward 21..32 + backstop 19.
-    assert.deepEqual(offsets, Array.from({ length: 14 }, (_, i) => 19 + i));
+    // behind(18,19) + active(20) + ahead(21..32): drag depths are 12 ahead / 2 behind.
+    assert.deepEqual(offsets, Array.from({ length: 15 }, (_, i) => 18 + i));
 });
 
 test('D!=0 with negative direction mirrors the same window backward', async () => {
@@ -332,8 +332,8 @@ test('D!=0 with negative direction mirrors the same window backward', async () =
     await drainAll(postJob, store);
 
     const offsets = prefetchedHours(postJob, base);
-    // active(30) + backward 18..29 + backstop 31.
-    assert.deepEqual(offsets, Array.from({ length: 14 }, (_, i) => 18 + i));
+    // ahead(29..18, 12 back) + active(30) + behind(31,32).
+    assert.deepEqual(offsets, Array.from({ length: 15 }, (_, i) => 18 + i));
 });
 
 test('prefetch skips hours the active layer\'s own coverage marks absent', async () => {
@@ -376,7 +376,7 @@ test('setLayer infers scrubStride from the layer\'s own coverage bitmask density
     assert.equal(store.scrubStride, 24, 'daily layer infers stride 24 from its bitmask, not the string "avalanche"');
 });
 
-test('saveData / constrained network clamps idle prefetch depth to +/-1', async () => {
+test('saveData stops speculation entirely: only the active hour dispatches (§1.8 re-spec Q2)', async () => {
     const postJob = fakePostJob();
     const store = new SidecarStore({ postJob, index: fakeIndex({ hours: 48 }), tileCount: TILE_COUNT, connection: { saveData: true } });
     const base = store.index.coverage.startEpochHour;
@@ -388,10 +388,10 @@ test('saveData / constrained network clamps idle prefetch depth to +/-1', async 
     await drainAll(postJob, store);
 
     const offsets = prefetchedHours(postJob, base);
-    assert.deepEqual(offsets, [19, 20, 21]); // no +/-2
+    assert.deepEqual(offsets, [20]); // on-demand only, saveData is a preference not a measurement
 });
 
-test('effectiveType 2g/3g/slow-2g clamps the same as saveData', async () => {
+test('effectiveType 2g/3g/slow-2g scales to 4 ahead / 2 behind (a measurement, not disabled)', async () => {
     for (const effectiveType of ['slow-2g', '2g', '3g']) {
         const postJob = fakePostJob();
         const store = new SidecarStore({ postJob, index: fakeIndex({ hours: 48 }), tileCount: TILE_COUNT, connection: { effectiveType } });
@@ -401,8 +401,27 @@ test('effectiveType 2g/3g/slow-2g clamps the same as saveData', async () => {
         store.setTimestamp(base + 20);
         await flush();
         await drainAll(postJob, store);
-        assert.deepEqual(prefetchedHours(postJob, base), [19, 20, 21], `effectiveType=${effectiveType}`);
+        assert.deepEqual(prefetchedHours(postJob, base), [18, 19, 20, 21, 22, 23, 24], `effectiveType=${effectiveType}`);
     }
+});
+
+test('a re-plan (timestamp change) prunes queued-but-not-started prefetches outside the new window (Ruling 3)', async () => {
+    const postJob = fakePostJob();
+    const store = new SidecarStore({ postJob, index: fakeIndex({ hours: 96 }), tileCount: TILE_COUNT });
+    const base = store.index.coverage.startEpochHour;
+    store.setLayer('sqh');
+    store.setScrubStride(1);
+    store.setScrubDirection(0);
+    store.setTimestamp(base + 20); // plans window 14..26; concurrency cap 2 leaves most of it queued, not dispatched
+    await flush();
+
+    store.setTimestamp(base + 60); // far outside the old window -- re-plan must drop the stale queued entries
+    await flush();
+    await drainAll(postJob, store);
+
+    const offsets = prefetchedHours(postJob, base);
+    assert.ok(!offsets.includes(15), 'a queued-but-not-dispatched hour from the abandoned window must not fetch');
+    assert.ok(offsets.includes(60), 'the new active hour must still fetch');
 });
 
 // -----------------------------------------------------------------------
@@ -429,6 +448,49 @@ test('new jobs are suspended while isMovingView, and resume() drains the queue o
     // means some of those legitimately dispatch alongside it).
     assert.ok(postJob.calls.length >= 1, 'dispatched once settled');
     assert.equal(postJob.calls.filter((c) => c.payload.epochHour === base + 1).length, 1, 'the active hour dispatches exactly once');
+});
+
+// -----------------------------------------------------------------------
+// setLayer stride inference (amendment 3): scrubStride defaults from the
+// newly-active layer's own coverage bitmask density (sidecar_format.mjs's
+// inferCoverageStride), never a hardcoded per-layer-id guess.
+// -----------------------------------------------------------------------
+
+test("setLayer infers scrubStride from the layer's own coverage bitmask, not the layer id", async () => {
+    const postJob = fakePostJob();
+    const hours = 96;
+    const startEpochHour = Math.floor(Date.parse('2026-01-01T00:00:00Z') / 3600000);
+    // avalanche present only every 24th hour (daily 12:00-style cadence);
+    // sqh present every hour.
+    const avalancheSlots = [12, 36, 60, 84];
+    const avalancheBytes = new Uint8Array(Math.ceil(hours / 8));
+    for (const s of avalancheSlots) avalancheBytes[s >> 3] |= (1 << (s & 7));
+    const sqhBytes = new Uint8Array(Math.ceil(hours / 8)).fill(0xff);
+
+    const index = {
+        ok: true,
+        urlTemplate: 'powfinder/{layer}/{yyyy}/{mm}/{dd}/{hh}.pfl',
+        coverage: { startIso: '2026-01-01T00:00:00Z', startEpochHour, stepHours: 1, count: hours, present: sqhBytes },
+        latest: new Date((startEpochHour + 84) * 3600000).toISOString(),
+        layers: [
+            { id: 'sqh', encoding: 'u8_linear', aggregate: 'mean' },
+            { id: 'avalanche', encoding: 'packed_bits', fields: { severity: { shift: 0, bits: 7, aggregate: 'max' } } },
+        ],
+        layersCoverage: { avalanche: { count: hours, present: avalancheBytes } },
+        engineLayers: [],
+    };
+
+    const store = new SidecarStore({ postJob, index, tileCount: TILE_COUNT });
+    store.setLayer('sqh');
+    assert.equal(store.scrubStride, 1, 'hourly layer -> stride 1');
+
+    store.setLayer('avalanche');
+    assert.equal(store.scrubStride, 24, "daily layer -> stride 24, inferred from avalanche's own bitmask");
+
+    // An explicit setScrubStride() call (the scrubber's hour/day track
+    // toggle) still overrides the inferred default afterward.
+    store.setScrubStride(1);
+    assert.equal(store.scrubStride, 1);
 });
 
 // -----------------------------------------------------------------------
