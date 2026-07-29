@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PowFinder P2.2 — layer picker / legend / beta sheet preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="powfinder.css">
+<style>
+    /* Preview-harness-only chrome, not shipped: layout for the two side-by-side
+       scenarios and the axe-core report panel. Everything inside
+       .device-frame mirrors the real index.html structure this module mounts
+       into, so a screenshot here is representative of the real app. */
+    html, body { margin: 0; background: #05070a; color: #eee; font-family: 'Outfit', system-ui, sans-serif; }
+    h1 { font-size: 1rem; margin: 16px; }
+    .scenarios { display: flex; flex-wrap: wrap; gap: 24px; padding: 0 16px 16px; align-items: flex-start; }
+    .scenario { }
+    .scenario h2 { font-size: .8rem; color: #9aa4b2; margin: 0 0 8px; }
+    .device-frame {
+        position: relative;
+        width: 390px;
+        height: 700px;
+        border: 1px solid rgba(255,255,255,.15);
+        border-radius: 16px;
+        overflow: hidden;
+        /* Stand-in for "the app still renders terrain": a plain gradient,
+           since this harness intentionally does not load three.js/main.js
+           (that would pull in the full viewer -- out of scope for a UI-only
+           unit). The point being verified is that this layer keeps
+           rendering when PowFinder is off/disabled, not what it looks like. */
+        background: linear-gradient(160deg, #2b3a2f, #4a5a3e 55%, #6b7a52);
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+    .controls button {
+        font-family: 'Outfit', sans-serif; font-size: .7rem; padding: 6px 10px;
+        border-radius: 6px; border: 1px solid rgba(255,255,255,.2); background: #1a1d22; color: #ddd; cursor: pointer;
+    }
+    #axe-report { margin: 16px; padding: 12px; background: #12151a; border-radius: 8px; font: 12px/1.5 monospace; white-space: pre-wrap; max-width: 900px; }
+    #axe-report.ok { color: #34d399; }
+    #axe-report.fail { color: #f87171; }
+</style>
+</head>
+<body>
+<h1>PowFinder P2.2 preview — layer picker, legend, first-run sheet (390 x 700, real style.css + powfinder.css)</h1>
+
+<div class="scenarios">
+    <div class="scenario">
+        <h2>index.json present -- 4 layers shipped</h2>
+        <div class="device-frame" id="frame-enabled">
+            <div class="legend glass-panel" aria-label="Slope legend">
+                <div id="powfinder-legend" data-owner="P2.2" hidden></div>
+                <div class="legend-item"><div class="swatch" style="background:#000;"></div>&lt; 30° TEXTURE</div>
+                <div class="legend-item"><div class="swatch" style="background:#33cc33;"></div> 30-35° GREEN</div>
+                <div class="legend-item"><div class="swatch" style="background:#e6e633;"></div> 35-40° YELLOW</div>
+                <div class="legend-item"><div class="swatch" style="background:#ff9900;"></div> 40-45° ORANGE · 45°+ RED/VIOLET</div>
+            </div>
+            <div id="powfinder-dock" data-owner="P2.2+P2.3" hidden>
+                <div id="powfinder-time" data-owner="P2.3" hidden></div>
+                <div id="powfinder-layers" data-owner="P2.2" hidden></div>
+            </div>
+            <div id="powfinder-intro" data-owner="P2.2" hidden></div>
+        </div>
+        <div class="controls" id="controls-enabled"></div>
+    </div>
+
+    <div class="scenario">
+        <h2>index.json absent -- self-disabled (§5.6)</h2>
+        <div class="device-frame" id="frame-disabled">
+            <div class="legend glass-panel" aria-label="Slope legend">
+                <div id="powfinder-legend" data-owner="P2.2" hidden></div>
+                <div class="legend-item"><div class="swatch" style="background:#000;"></div>&lt; 30° TEXTURE</div>
+                <div class="legend-item"><div class="swatch" style="background:#33cc33;"></div> 30-35° GREEN</div>
+                <div class="legend-item"><div class="swatch" style="background:#e6e633;"></div> 35-40° YELLOW</div>
+                <div class="legend-item"><div class="swatch" style="background:#ff9900;"></div> 40-45° ORANGE · 45°+ RED/VIOLET</div>
+            </div>
+            <div id="powfinder-dock" data-owner="P2.2+P2.3" hidden>
+                <div id="powfinder-time" data-owner="P2.3" hidden></div>
+                <div id="powfinder-layers" data-owner="P2.2" hidden></div>
+            </div>
+            <div id="powfinder-intro" data-owner="P2.2" hidden></div>
+        </div>
+        <p style="max-width:390px;font-size:.75rem;color:#9aa4b2;">Expect: no pills, no legend rows, no
+        first-run sheet, terrain-frame still visible -- byte-identical to a plain terrain viewer (§5.6).</p>
+    </div>
+</div>
+
+<div id="axe-report">axe-core: running…</div>
+
+<script type="module">
+// This page has two #powfinder-layers/#powfinder-legend/#powfinder-intro
+// (one per scenario frame), which is invalid HTML (duplicate ids) but is
+// the simplest way to show both side by side for a screenshot.
+// mountPowfinderUi() only ever calls `doc.getElementById(id)`, so a tiny
+// object satisfying that one method, scoped to each frame via
+// querySelector, is enough to mount two independent instances correctly.
+import { mountPowfinderUi, OFF_LAYER_ID } from './powfinder_ui.mjs';
+
+function scopedDoc(root) {
+    return {
+        getElementById: id => root.querySelector(`#${id}`),
+        addEventListener: (...a) => document.addEventListener(...a),
+        removeEventListener: (...a) => document.removeEventListener(...a),
+    };
+}
+
+function makeMockController(layers) {
+    let active = OFF_LAYER_ID;
+    const listeners = [];
+    return {
+        layers,
+        getLayer: () => active,
+        setLayer(id) { active = id; listeners.forEach(fn => fn(active)); },
+        onLayerChange(fn) {
+            listeners.push(fn);
+            return () => { const i = listeners.indexOf(fn); if (i > -1) listeners.splice(i, 1); };
+        },
+    };
+}
+
+const LAYERS = [
+    { id: 'sqh', label: 'Snow quality', ramp: 'powder', short: 'SQH' },
+    { id: 'depth', label: 'Snow depth', ramp: 'depth', short: 'HS' },
+    { id: 'avalanche', label: 'Avalanche', ramp: 'hazard', short: 'AVY' },
+    { id: 'surface', label: 'Surface state', ramp: 'surface', short: 'SFC' },
+];
+
+// `?skipIntro=1` pre-seeds the "seen" flag so a screenshot can show the
+// picker/legend without the first-run sheet covering them; default (no
+// param) always shows the sheet, matching a real first visit.
+if (new URLSearchParams(location.search).has('skipIntro')) {
+    try { localStorage.setItem('powfinder.introSeen.v1', '1'); } catch {}
+} else {
+    try { localStorage.removeItem('powfinder.introSeen.v1'); } catch {}
+}
+
+const enabledFrame = document.getElementById('frame-enabled');
+const disabledFrame = document.getElementById('frame-disabled');
+
+const enabledController = makeMockController(LAYERS);
+const enabledHandle = mountPowfinderUi(enabledController, { doc: scopedDoc(enabledFrame) });
+
+mountPowfinderUi(makeMockController([]), { doc: scopedDoc(disabledFrame) });
+
+// Buttons to exercise every pill for the "enabled" scenario (manual/visual
+// verification + gives axe-core more rendered states to check).
+const controls = document.getElementById('controls-enabled');
+for (const layer of [...LAYERS, { id: 'steepness', short: 'STEEP' }, { id: 'off', short: 'OFF' }]) {
+    const btn = document.createElement('button');
+    btn.textContent = `Set: ${layer.short}`;
+    btn.addEventListener('click', () => enabledController.setLayer(layer.id));
+    controls.appendChild(btn);
+}
+const reopenIntro = document.createElement('button');
+reopenIntro.textContent = 'Reopen intro sheet';
+reopenIntro.addEventListener('click', () => {
+    try { localStorage.removeItem('powfinder.introSeen.v1'); } catch {}
+    location.reload();
+});
+controls.appendChild(reopenIntro);
+
+// Land on the avalanche layer by default -- the busiest legend state
+// (categorical swatches + runout note + safety footer), most useful for a
+// first screenshot.
+enabledController.setLayer('avalanche');
+
+window.__powfinderPreviewReady = true;
+
+// --- axe-core accessibility check (devDependency; see P0.2/this task's
+// acceptance criteria). No jsdom/puppeteer in this repo, so this preview is
+// driven headlessly the same way powfinder_ramps.html was (P0.2): a local
+// static server + headless Chrome + --dump-dom, reading the summary this
+// script writes into #axe-report.
+const axeScript = document.createElement('script');
+axeScript.src = 'node_modules/axe-core/axe.min.js';
+axeScript.onload = async () => {
+    const results = await axe.run(document, {
+        // The pre-existing engineering HUD (#main-panel, .console-panel,
+        // etc.) is not loaded in this harness and is out of scope for P2.2;
+        // restrict the scan to what this module actually owns/touches.
+        include: [['.legend'], ['#powfinder-dock'], ['#powfinder-intro']],
+    });
+    const el = document.getElementById('axe-report');
+    if (results.violations.length === 0) {
+        el.className = 'ok';
+        el.textContent = `axe-core: 0 violations (${results.passes.length} rules passed).`;
+    } else {
+        el.className = 'fail';
+        el.textContent = `axe-core: ${results.violations.length} violation(s):\n\n` +
+            results.violations.map(v => `[${v.impact}] ${v.id}: ${v.description}\n  nodes: ${v.nodes.map(n => n.target.join(' ')).join(', ')}`).join('\n\n');
+    }
+    window.__axeDone = true;
+    window.__axeViolationCount = results.violations.length;
+};
+document.body.appendChild(axeScript);
+</script>
+</body>
+</html>
