@@ -376,8 +376,12 @@ def test_sidecar_registry_decode(tmp_path):
     # wet: hex 0 class 3 (wet), hex 1 class 1 (dry)
     write_layer("wet", (3, 1))
 
-    hex_to_cells = [[np.array([0]), np.array([1])] + [np.array([], dtype=int)] * (config.TILE_BYTES - 2)]
-    reg = registry.SidecarRegistry(tmp_path, hex_to_cells, (1, 2))
+    # Gather index: hex 0 -> cell 0, hex 1 -> cell 1, rest invalid.
+    idx = np.zeros((1, config.TILE_BYTES, 1), dtype=np.int64)
+    idx[0, 1, 0] = 1
+    valid = np.zeros((1, config.TILE_BYTES, 1), dtype=bool)
+    valid[0, :2, 0] = True
+    reg = registry.SidecarRegistry(tmp_path, idx, valid, (1, 2))
     f = reg.fields_for(when, dem=None)
     assert f["slab"][0, 0] == pytest.approx(2.54, abs=0.01)
     assert f["slab"][0, 1] == 0.0

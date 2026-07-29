@@ -16,6 +16,22 @@ from . import (
 _CTX = {}
 
 
+def _select_registry(idx, valid, shape):
+    """Real snowpack sidecars when available, synthetic otherwise.
+
+    AVALANCHE_SIDECAR_DIR overrides the default (snow_backend/data/sidecars);
+    AVALANCHE_FORCE_SYNTHETIC=1 forces the labeled stub (debug/comparison)."""
+    from pathlib import Path
+
+    if os.environ.get("AVALANCHE_FORCE_SYNTHETIC"):
+        return registry.SyntheticRegistry()
+    d = os.environ.get("AVALANCHE_SIDECAR_DIR")
+    sdir = Path(d) if d else (config.REPO / "snow_backend/data/sidecars")
+    if (sdir / "slab").exists() and (sdir / "wet").exists():
+        return registry.SidecarRegistry(sdir, idx, valid, shape)
+    return registry.SyntheticRegistry()
+
+
 def _init_worker():
     """Load shared inputs once per worker process."""
     t = terrain.prepare()
@@ -23,7 +39,7 @@ def _init_worker():
     idx, valid = hexpack.build_gather_index(t["transform"], t["dem"].shape)
     _CTX.update(
         dem=t["dem"], labels=labels, idx=idx, valid=valid,
-        registry=registry.SyntheticRegistry(),
+        registry=_select_registry(idx, valid, t["dem"].shape),
         cols=columns.load_terrain_columns(),
         timeline=bulletin.load_timeline(),
     )

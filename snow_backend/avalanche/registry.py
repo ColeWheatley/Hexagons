@@ -81,10 +81,25 @@ class SidecarRegistry:
 
     synthetic = False
 
-    def __init__(self, sidecar_dir, hex_to_cells, mosaic_shape):
+    def __init__(self, sidecar_dir, idx, valid, mosaic_shape):
+        """idx/valid: the hexpack gather index ((n_tiles, 2401, k) flat mosaic
+        cell indices + validity). The scatter inverts it: each hex writes its
+        sampled cells. Cells no hex covers — the 4 km reach margin outside the
+        197-tile footprint, whose release zones exist precisely to throw
+        hazard INTO the footprint — are filled from the nearest hex-covered
+        cell (one-time EDT; geometry is static)."""
         self.dir = Path(sidecar_dir)
-        self.hex_to_cells = hex_to_cells  # from hexpack.build_gather_index
+        self.idx = idx
+        self.valid = valid
         self.shape = mosaic_shape
+        covered = np.zeros(mosaic_shape, dtype=bool)
+        covered.ravel()[idx[valid]] = True
+        from scipy.ndimage import distance_transform_edt
+
+        near = distance_transform_edt(
+            ~covered, return_distances=False, return_indices=True
+        )
+        self._near_flat = (near[0] * mosaic_shape[1] + near[1]).ravel()
 
     def _read_layer(self, when, layer):
         # PFL convention: <base>/<layer>/YYYY/MM/DD/HH.pfl (32 B header + body).
@@ -96,6 +111,14 @@ class SidecarRegistry:
             raise FileNotFoundError(f"no {layer} sidecar: {p}")
         return pfl.read_sidecar(p)["body"]
 
+    def _to_mosaic(self, hex_vals, dtype):
+        """(n_tiles, 2401) hex values -> 5 m mosaic: scatter each hex onto its
+        sampled cells, then nearest-hex fill for the uncovered margin."""
+        flat = np.zeros(self.shape[0] * self.shape[1], dtype=dtype)
+        expand = np.broadcast_to(hex_vals[..., None], self.idx.shape)
+        flat[self.idx[self.valid]] = expand[self.valid]
+        return flat[self._near_flat].reshape(self.shape)
+
     def fields_for(self, when, dem):
         from snow_backend import pfl_enums
 
@@ -106,16 +129,21 @@ class SidecarRegistry:
         slab_b = self._read_layer(when, "slab")  # u8_linear [0, 508] cm
         wet_b = self._read_layer(when, "wet")    # u8_class WET_CLASSES
         lo, hi, _units = pfl_enums.U8_LINEAR_DOMAINS["slab"]
-        slab_hex = np.nan_to_num(pfl_enums.u8_linear_decode(slab_b, lo, hi)) / 100.0
-        wet_hex = wet_b == pfl_enums.WET_CLASS_WET
+        slab_hex = (np.nan_to_num(pfl_enums.u8_linear_decode(slab_b, lo, hi)) / 100.0
+                    ).astype(np.float32)
+        wet_hex = (wet_b == pfl_enums.WET_CLASS_WET).astype(np.uint8)
 
-        slab = np.zeros(self.shape, dtype=np.float32)
-        wet = np.zeros(self.shape, dtype=bool)
-        for t in range(slab_b.shape[0]):
-            for h, cells in enumerate(self.hex_to_cells[t]):
-                slab.ravel()[cells] = slab_hex[t, h]
-                wet.ravel()[cells] |= bool(wet_hex[t, h])
-        return dict(slab=slab, wet=wet, meta=dict(synthetic=False))
+        slab = self._to_mosaic(slab_hex, np.float32)
+        wet = self._to_mosaic(wet_hex, np.uint8).astype(bool)
+        return dict(
+            slab=slab, wet=wet,
+            meta=dict(
+                synthetic=False, source=str(self.dir),
+                margin_fill="nearest-hex EDT",
+                slab_hex_p50_cm=round(float(np.percentile(slab_hex, 50)) * 100, 1),
+                wet_hex_frac=round(float(wet_hex.mean()), 4),
+            ),
+        )
 
 
 def retro_dates():
