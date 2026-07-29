@@ -4857,6 +4857,8 @@ class PistonViewer {
     // visible geometry consumer; fetched-only and manifest-only pages do not
     // inflate it.
     _updateTexBadge() {
+        return; // disabled for PowFinder beta: badge covered the lower-left UI
+        // eslint-disable-next-line no-unreachable
         if (!this._texBadgeEl) {
             const el = document.createElement('div');
             el.id = 'tex-debug-badge';
