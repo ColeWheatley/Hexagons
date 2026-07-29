@@ -22,3 +22,304 @@
  * This file is concatenated into the single hashed style bundle by build.mjs
  * (APP_STYLESHEETS), in listed order after powfinder.css.
  */
+
+#powfinder-time {
+    font-family: 'Outfit', system-ui, sans-serif;
+    color: #f1f5f9;
+}
+
+/* ---------- Collapsed bar: "● LIVE   Sat 14 Feb  09:00   ⌄" ---------- */
+
+.pf-scrub-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 56px;
+    padding: 10px 16px;
+    background: rgba(20, 20, 20, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: inherit;
+    font: inherit;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    text-align: left;
+}
+
+.pf-scrub-bar:hover { border-color: rgba(255, 107, 157, 0.35); }
+.pf-scrub-bar:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; }
+
+.pf-scrub-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+}
+
+.pf-scrub-dot.is-live {
+    background: #ff6b9d;
+    animation: pf-scrub-pulse 2s ease-in-out infinite;
+    cursor: default;
+}
+
+.pf-scrub-dot.is-history {
+    background: #f59e0b;
+    cursor: pointer;
+    /* Bigger than its visual size so "tap the dot to return to LIVE" is a
+     * real target, not a 9px trap — the visible dot sits centered inside. */
+    box-shadow: 0 0 0 12px transparent;
+}
+
+@keyframes pf-scrub-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+.pf-scrub-label {
+    flex: 1;
+    min-width: 0;
+    /* HISTORY's relative-age suffix ("...18 days ago") must never be
+     * clipped — "timestamp always on screen" (design doc §3.3) applies to
+     * the whole readout, not just the date/time part. Wraps to a second
+     * line on narrow widths instead of an ellipsis; .pf-scrub-bar's
+     * min-height (not a fixed height) already accommodates that. */
+    overflow-wrap: break-word;
+    font-variant-numeric: tabular-nums;
+}
+
+.pf-scrub-chevron {
+    flex: none;
+    opacity: 0.6;
+    font-size: 0.9rem;
+}
+
+/* ---------- Expanded panel ---------- */
+
+.pf-scrub-panel {
+    margin-top: 6px;
+    padding: 14px 16px 16px;
+    background: rgba(20, 20, 20, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* ---------- Month chips ---------- */
+
+.pf-scrub-months {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.pf-scrub-months::-webkit-scrollbar { display: none; }
+
+.pf-scrub-month-chip {
+    flex: none;
+    min-width: 56px;
+    min-height: 56px;
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    color: #94a3b8;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+}
+
+.pf-scrub-month-chip:hover { border-color: rgba(255, 107, 157, 0.35); color: #f1f5f9; }
+.pf-scrub-month-chip:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; }
+
+.pf-scrub-month-chip.is-active {
+    background: rgba(255, 107, 157, 0.16);
+    border-color: #ff6b9d;
+    color: #fff;
+    box-shadow: inset 0 -2px 0 #ff6b9d;
+}
+
+/* ---------- Day track + availability rail ---------- */
+
+.pf-scrub-day-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pf-scrub-day-track {
+    position: relative;
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    touch-action: none;
+    cursor: pointer;
+}
+
+.pf-scrub-day-track:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; border-radius: 8px; }
+
+.pf-scrub-rail {
+    position: relative;
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.pf-scrub-rail-tick {
+    position: absolute;
+    top: 0;
+    width: 3px;
+    height: 6px;
+    border-radius: 2px;
+    transform: translateX(-50%);
+}
+
+.pf-scrub-rail-tick.is-present { background: #ff6b9d; }
+.pf-scrub-rail-tick.is-gap { background: rgba(255, 255, 255, 0.12); }
+
+.pf-scrub-day-thumb {
+    position: absolute;
+    top: 50%;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #fff;
+    border: 3px solid #ff6b9d;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.pf-scrub-day-labels {
+    position: relative;
+    height: 14px;
+    font-size: 0.65rem;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}
+
+.pf-scrub-day-label {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+}
+
+/* ---------- Hour track + steppers ---------- */
+
+.pf-scrub-hour-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.pf-scrub-step {
+    flex: none;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: #f1f5f9;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+
+.pf-scrub-step:hover { border-color: rgba(255, 107, 157, 0.4); }
+.pf-scrub-step:active { background: rgba(255, 107, 157, 0.16); }
+.pf-scrub-step:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; }
+
+.pf-scrub-hour-track {
+    position: relative;
+    flex: 1;
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    touch-action: none;
+    cursor: pointer;
+}
+
+.pf-scrub-hour-track:focus-visible { outline: 2px solid #ff6b9d; outline-offset: 2px; border-radius: 8px; }
+
+.pf-scrub-hour-track::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.pf-scrub-hour-thumb {
+    position: absolute;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    border: 3px solid #ff6b9d;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.pf-scrub-hour-readout {
+    text-align: center;
+    font-size: 0.8rem;
+    font-family: monospace;
+    color: #94a3b8;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Daily-cadence layers (design doc review: inferred from the coverage
+ * bitmask — see inferLayerStrideHours in powfinder_scrubber.mjs, not an
+ * id check) hide the hour row entirely via the `hidden` attribute set from
+ * JS; no rule needed here beyond the browser's default [hidden] handling. */
+
+/* ---------- HISTORY mode: the one piece of chrome outside the scrubber ----------
+ * Scoped to this file-owned body class (never a bare selector) so it cannot
+ * collide with P2.2's dock rules. Sits at the true viewport top edge, above
+ * (i.e. not pushed down by) the safe-area inset — a status-bar-like signal
+ * that must survive under a notch, not respect it. Rendered as a fixed
+ * overlay rather than a `body` border: `#canvas-container` is an absolutely
+ * positioned, viewport-filling element with no positioned ancestor between
+ * it and the initial containing block, so a plain `body { border-top }`
+ * would silently sit *underneath* it. */
+body.pf-scrub-history::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #f59e0b;
+    z-index: 9999;
+    pointer-events: none;
+}
+
+@media (max-width: 420px) {
+    .pf-scrub-label { font-size: 0.78rem; }
+    .pf-scrub-months { gap: 5px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pf-scrub-dot.is-live { animation: none; }
+}
