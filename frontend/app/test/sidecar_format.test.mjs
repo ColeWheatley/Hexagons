@@ -23,6 +23,7 @@ import {
     parseSidecarIndex,
     coverageHas,
     coverageFor,
+    inferCoverageStride,
     nearestPresentHour,
     epochHourToUrl,
     decodePacked,
@@ -629,6 +630,19 @@ test('sparse-layer snapping: an avalanche-absent hour between two present SQH ho
     assert.equal(nearestPresentHour(index, base + 13, 'avalanche'), base + 12);
     // Landing exactly on the present hour returns itself.
     assert.equal(nearestPresentHour(index, base + 12, 'avalanche'), base + 12);
+});
+
+test('inferCoverageStride reads cadence from bitmask density, never a hardcoded layer id (P2.1 amendment 3)', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 72, presentSlots: Array.from({ length: 72 }, (_, i) => i), // sqh: every hour
+        layersCoverage: { avalanche: { presentSlots: [12, 36, 60] } }, // daily, 24h apart
+    });
+    const index = parseSidecarIndex(json, manifest);
+
+    assert.equal(inferCoverageStride(coverageFor(index, 'sqh')), 1, 'hourly layer infers stride 1');
+    assert.equal(inferCoverageStride(coverageFor(index, 'avalanche')), 24, 'daily layer infers stride 24 from its own bitmask, not its id');
+    assert.equal(inferCoverageStride(null), 1);
+    assert.equal(inferCoverageStride({ count: 0, present: new Uint8Array(0) }), 1);
 });
 
 test('a truncated per-layer bitmask is dropped (falls back to base coverage), not a whole-index rejection', () => {

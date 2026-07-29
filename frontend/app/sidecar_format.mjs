@@ -509,6 +509,39 @@ export function coverageHas(index, epochHour, layerId) {
 }
 
 /**
+ * Infer a layer's native sampling cadence (hours between produced samples)
+ * from its own coverage bitmask density, rather than a caller's hardcoded
+ * per-layer-id guess (P2.1 amendment 3, team-lead binding ruling: a daily
+ * layer like avalanche must infer stride 24 from its *bitmask*, never from
+ * `layerId === 'avalanche'`). Takes the modal gap between consecutively-set
+ * bits, so a handful of missing/outage hours doesn't skew an otherwise-hourly
+ * layer's inferred stride away from 1.
+ *
+ * @param {{count: number, present: Uint8Array} | null} coverage a
+ *   coverageFor() result. Returns 1 (hourly, the safe default) when there
+ *   are fewer than two present bits to measure a gap from.
+ */
+export function inferCoverageStride(coverage) {
+    if (!coverage || coverage.count <= 0) return 1;
+    const gapCounts = new Map();
+    let prev = -1;
+    for (let slot = 0; slot < coverage.count; slot++) {
+        if (!bitAt(coverage.present, slot)) continue;
+        if (prev >= 0) {
+            const gap = slot - prev;
+            gapCounts.set(gap, (gapCounts.get(gap) || 0) + 1);
+        }
+        prev = slot;
+    }
+    let bestGap = 1;
+    let bestCount = 0;
+    for (const [gap, count] of gapCounts) {
+        if (count > bestCount) { bestGap = gap; bestCount = count; }
+    }
+    return bestCount > 0 ? bestGap : 1;
+}
+
+/**
  * Nearest present epochHour to `epochHour`, expanding outward one slot at a
  * time. On an exact tie (equal distance on both sides) the earlier hour
  * wins. Returns null if the index (or the given layer's coverage) has no
