@@ -136,6 +136,8 @@ import {
     buildPyramid,
     coverageHas,
     epochHourToUrl,
+    crc32,
+    manifestHashMatches,
 } from './sidecar_format.mjs';
 
 const G = window.GosperCore;
@@ -366,6 +368,7 @@ class PistonViewer {
 
         this.tiles = new Map(); // Key: "yq_yr" (island lattice) -> Tile Object
         this.manifest = null;
+        this.manifestCrc32 = null; // set by _loadManifestWithRetry; see the PowFinder self-disable guard
         this.tileStates = new Map(); // key -> 'loading' | 'failed'
         this.loadQueue = [];
         this.geometryRebuildQueue = [];
@@ -592,6 +595,12 @@ class PistonViewer {
             atlas: null,
             sqhPyramid: null,
             fetchInFlight: true,
+            // Set true, permanently for the session, by the manifest
+            // self-disable guard in _loadPowfinderFixture (design doc §6
+            // P2.5 amendment) on a sidecar/manifest CRC32 mismatch. Future
+            // sidecar consumers (P2.1's store) should check this before
+            // installing anything into the atlas.
+            disabled: false,
             hasPendingWork: () => this.powfinder.fetchInFlight,
         };
         this._loadPowfinderFixture();
@@ -649,6 +658,29 @@ class PistonViewer {
             const tileCount = this.manifest.tiles.length;
             const body = parseSidecarBody(raw, tileCount);
             if (!body.ok) throw new Error(`fixture body: ${body.reason}`);
+
+            // Manifest self-disable guard (design doc §6 P2.5 amendment).
+            // parseSidecarIndex's profile/tile-count checks above cannot see
+            // a rebake that reorders tiles while keeping the same profile
+            // string and count; the sidecar's own PFL1 header manifestHash
+            // (the CRC32 the backend baked against) closes that door. A
+            // mismatch means this sidecar and the resident terrain disagree
+            // about tile order -- painting it would silently misalign every
+            // tile's data by one slot. Loud, permanent, and terminal for the
+            // session: PowFinder stays off and the app renders plain terrain
+            // (§5.6's graceful-degradation contract), exactly as for a
+            // missing/rejected index.json.
+            if (!manifestHashMatches(body.header, this.manifestCrc32)) {
+                this.powfinder.disabled = true;
+                console.error(
+                    `[powfinder] sidecar/manifest hash mismatch (sidecar manifestHash=${body.header.manifestHash}, `
+                    + `fetched manifest crc32=${this.manifestCrc32}) — a rebake likely reordered tiles behind an `
+                    + 'unchanged profile/tile-count; self-disabling PowFinder for this session.',
+                );
+                return;
+            }
+            if (this.powfinder.disabled) return; // an earlier fixture already tripped the guard this session
+
             const pyramid = buildPyramid(body.body, tileCount, 'mean');
 
             if (this.powfinder.atlas) {
@@ -1465,6 +1497,7 @@ class PistonViewer {
         }
 
         this.manifest = null;
+        this.manifestCrc32 = null;
         this.textureContract = null;
         this.binaryContract = {};
         this.manifestGrid = null;
@@ -2023,8 +2056,15 @@ class PistonViewer {
                 { cache: 'no-store', signal: scope.signal },
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
-            const text = await res.text();
+            // Read raw bytes rather than res.text() so this.manifestCrc32 is
+            // the CRC32 of the exact bytes the backend baked sidecars
+            // against -- the PowFinder manifest self-disable guard (design
+            // doc §6 P2.5 amendment) compares it against each sidecar's
+            // PFL1 header manifestHash in _loadPowfinderFixture below.
+            const bytes = await res.arrayBuffer();
+            const text = new TextDecoder().decode(bytes);
             const manifest = JSON.parse(text);
+            this.manifestCrc32 = crc32(new Uint8Array(bytes));
             this.loadingScreen.manifestLoaded(text.length);
             this._validateManifestContract(manifest);
             this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });

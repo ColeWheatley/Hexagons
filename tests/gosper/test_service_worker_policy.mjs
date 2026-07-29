@@ -67,6 +67,18 @@ await dispatch(bootstrap);
 await dispatch(bootstrap);
 assert.equal(calls.filter(url => url === bootstrap).length, 1, 'versioned bootstrap imagery is cache-first');
 
+// PowFinder sidecar bytes (design doc §1.1/§6 P2.5): .pfl joins the same
+// ?v=-versioned terrain-asset class as .bin/.gsp/.ktx2/.webp, so it gets
+// cache-first behaviour and the same rebake-triggered runtime-epoch wipe
+// for free -- no new cache, no new invalidation path.
+const sidecar = 'https://viewer.example/powfinder/sqh/2026/02/14/09.pfl?v=pf-1.0.0';
+await dispatch(sidecar);
+await dispatch(sidecar);
+assert.equal(calls.filter(url => url === sidecar).length, 1, 'versioned sidecar bytes are cache-first');
+
+const unversionedSidecar = 'https://viewer.example/powfinder/sqh/2026/02/14/09.pfl';
+assert.equal(await dispatch(unversionedSidecar), null, 'unversioned sidecar requests are never intercepted');
+
 const unversioned = 'https://viewer.example/tiles_bin/gosper_1_2.bin';
 assert.equal(await dispatch(unversioned), null, 'unversioned terrain is never intercepted');
 

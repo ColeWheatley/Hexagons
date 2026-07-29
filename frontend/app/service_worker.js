@@ -25,8 +25,20 @@ function isStaticShellAsset(url) {
 }
 
 function isVersionedTerrainAsset(url) {
+    // .pfl = PowFinder sidecar bytes (design doc §1.1/§6 P2.5). Sidecars are
+    // `?v=`-versioned exactly like every other terrain asset here, so the
+    // existing runtime-epoch invalidation (updateRuntimeEpoch, below) covers
+    // them for free -- a rebake that changes tile_manifest.json still blows
+    // away any stale cached .pfl bytes along with .bin/.gsp/.ktx2/.webp.
+    // Sidecars are served pre-gzipped with Content-Encoding: gzip in
+    // production; that is transparent to both fetch() and Cache Storage —
+    // neither this handler nor cacheFirst() below needs to know or care,
+    // since the browser's HTTP stack decodes Content-Encoding for a cached
+    // response exactly as it does for a live one (spec-guaranteed, and
+    // confirmed by an in-browser offline-cache check — see the P2.5 handoff
+    // notes / network-panel screenshot).
     return url.searchParams.has('v')
-        && /\.(?:bin|gsp|ktx2|webp)$/.test(url.pathname);
+        && /\.(?:bin|gsp|ktx2|webp|pfl)$/.test(url.pathname);
 }
 
 async function cacheFirst(request, cacheName) {

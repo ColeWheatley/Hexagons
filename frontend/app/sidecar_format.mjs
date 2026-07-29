@@ -491,6 +491,67 @@ export function epochHourToUrl(template, layerId, epochHour) {
 }
 
 // -----------------------------------------------------------------------
+// CRC32 (manifest self-disable guard, design doc §6 P2.5 amendment)
+// -----------------------------------------------------------------------
+
+// Standard CRC-32 (IEEE 802.3 / zlib / PNG polynomial 0xEDB88320) — the same
+// checksum the backend computes over the raw tile_manifest.json FILE BYTES
+// for the PFL1 header's `manifestHash` field (ruled; ref value for the
+// current beta-stubai manifest: 3511903013 — snow_backend/pfl_enums.py's
+// manifest_hash(), cross-checked against Node's own zlib.crc32 in this
+// module's test). Table-based implementation matches
+// scripts/make_sidecar_fixtures.mjs's independent one byte-for-byte — three
+// implementations (that one, Python's zlib, and this one) now agree on the
+// reference value.
+const CRC32_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
+    }
+    return table;
+})();
+
+/**
+ * CRC32 (IEEE 802.3) of `bytes`, as an unsigned 32-bit integer.
+ * @param {Uint8Array|ArrayBuffer} bytes
+ * @returns {number}
+ */
+export function crc32(bytes) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let crc = 0xffffffff;
+    for (let i = 0; i < view.length; i++) {
+        crc = CRC32_TABLE[(crc ^ view[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * The one silent-misalignment door parseSidecarIndex's profile/tile-count
+ * coupling guard leaves open (design doc §6 P2.5 amendment): those two
+ * checks can't detect a rebake that reorders tiles while keeping the same
+ * profile string and tile count. Every sidecar's optional PFL1 header
+ * carries `manifestHash` — the CRC32 of the manifest bytes the BACKEND baked
+ * against (see parseSidecarBody). If it disagrees with the CRC32 of the
+ * manifest bytes the FRONTEND actually fetched, the sidecar and the
+ * resident terrain disagree about tile order and must never be painted
+ * together.
+ *
+ * Returns true (safe to use) when there is no header to check at all — a
+ * headerless sidecar (the documented fallback contract, §1.1) has nothing
+ * to verify against.
+ *
+ * @param {{manifestHash: number}|null} header  parseSidecarBody's `.header`
+ * @param {number} manifestCrc32  crc32() of the actually-fetched manifest bytes
+ * @returns {boolean}
+ */
+export function manifestHashMatches(header, manifestCrc32) {
+    if (!header) return true;
+    return header.manifestHash === (manifestCrc32 >>> 0);
+}
+
+// -----------------------------------------------------------------------
 // Packed-bits decode/encode (avalanche layer, and any future packed layer)
 // -----------------------------------------------------------------------
 

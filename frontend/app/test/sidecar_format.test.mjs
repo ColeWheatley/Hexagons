@@ -28,6 +28,8 @@ import {
     encodePacked,
     bytesToBase64,
     toEpochHour,
+    crc32,
+    manifestHashMatches,
 } from '../sidecar_format.mjs';
 
 // -----------------------------------------------------------------------
@@ -694,4 +696,48 @@ test('make_sidecar_fixtures: deliberate coverage holes and a NODATA region are p
     if (tileIndex > 0) {
         assert.notEqual(pyr[(tileIndex - 1) * PYRAMID_NODE_COUNT + PYRAMID_DEPTH_OFFSETS[L1_DEPTH] + nodeStart], undefined);
     }
+});
+
+// -----------------------------------------------------------------------
+// CRC32 / manifest self-disable guard (design doc §6 P2.5 amendment)
+// -----------------------------------------------------------------------
+
+test('crc32 matches Node zlib.crc32 on arbitrary bytes', () => {
+    for (const input of ['', 'a', 'the quick brown fox', 'PFL1', ' ÿ']) {
+        const bytes = Buffer.from(input, 'utf8');
+        assert.equal(crc32(bytes), zlib.crc32(bytes) >>> 0, JSON.stringify(input));
+    }
+    // Uint8Array and ArrayBuffer inputs must agree.
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 250, 251, 252]);
+    assert.equal(crc32(bytes), crc32(bytes.buffer));
+});
+
+test('crc32 of the real tile_manifest.json reproduces the ruled reference value', async () => {
+    const manifestPath = fileURLToPath(new URL('../tile_manifest.json', import.meta.url));
+    const manifestBytes = await readFile(manifestPath);
+    const value = crc32(new Uint8Array(manifestBytes));
+    assert.equal(value, zlib.crc32(manifestBytes) >>> 0);
+    // Ruled reference value for the current beta-stubai manifest
+    // (snow_backend/pfl_enums.py, confirmed by three independent
+    // implementations — see this module's crc32() doc comment).
+    assert.equal(value, 3511903013);
+});
+
+test('manifestHashMatches: true for a headerless sidecar (nothing to check)', () => {
+    assert.equal(manifestHashMatches(null, 3511903013), true);
+});
+
+test('manifestHashMatches: true when the sidecar header agrees with the fetched manifest', () => {
+    assert.equal(manifestHashMatches({ manifestHash: 3511903013 }, 3511903013), true);
+});
+
+test('manifestHashMatches: false when a rebake skew reorders tiles behind the same profile/tile-count', () => {
+    // This is exactly the failure mode parseSidecarIndex's profile/tile-count
+    // guard cannot see: same header shape, different manifest bytes baked
+    // against.
+    assert.equal(manifestHashMatches({ manifestHash: 3511903013 }, 999999999), false);
+});
+
+test('manifestHashMatches: compares as unsigned 32-bit (a signed-vs-unsigned header read must not false-positive)', () => {
+    assert.equal(manifestHashMatches({ manifestHash: 3511903013 }, -783064283), true); // -783064283 >>> 0 === 3511903013
 });
