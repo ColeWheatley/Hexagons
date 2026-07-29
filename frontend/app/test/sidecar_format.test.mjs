@@ -22,6 +22,8 @@ import {
     parseSidecarBody,
     parseSidecarIndex,
     coverageHas,
+    coverageFor,
+    inferCoverageStride,
     nearestPresentHour,
     epochHourToUrl,
     decodePacked,
@@ -407,10 +409,15 @@ test('parseSidecarBody: PFL1 magic present but buffer shorter than the header is
 // parseSidecarIndex: profile / tile-count / bitmask validation
 // -----------------------------------------------------------------------
 
-function buildIndexFixture({ tileCount = 6, hours = 10, presentSlots = [0, 1, 2, 5, 6, 9], profile = 'test-profile-x', startIso = '2026-01-01T00:00:00Z', stepHours = 1 } = {}) {
+function bitmaskFor(presentSlots, count) {
+    const bytes = new Uint8Array(Math.ceil(count / 8));
+    for (const slot of presentSlots) bytes[slot >> 3] |= (1 << (slot & 7));
+    return bytes;
+}
+
+function buildIndexFixture({ tileCount = 6, hours = 10, presentSlots = [0, 1, 2, 5, 6, 9], profile = 'test-profile-x', startIso = '2026-01-01T00:00:00Z', stepHours = 1, layersCoverage = null } = {}) {
     const manifest = { release: { profile }, tiles: new Array(tileCount).fill(0).map((_, i) => ({ i })) };
-    const presentBytes = new Uint8Array(Math.ceil(hours / 8));
-    for (const slot of presentSlots) presentBytes[slot >> 3] |= (1 << (slot & 7));
+    const presentBytes = bitmaskFor(presentSlots, hours);
     const json = {
         schema: 1,
         generated_at: '2026-02-14T09:04:00Z',
@@ -424,6 +431,18 @@ function buildIndexFixture({ tileCount = 6, hours = 10, presentSlots = [0, 1, 2,
         latest: startIso,
         layers: [{ id: 'sqh', label: 'Snow quality', encoding: 'u8_linear', domain: [0, 100], units: 'SQH', aggregate: 'mean', ramp: 'powder', nodata: 0, short: 'SQH' }],
     };
+    if (layersCoverage) {
+        json.layers_coverage = {};
+        for (const [layerId, spec] of Object.entries(layersCoverage)) {
+            if (spec.raw) { json.layers_coverage[layerId] = spec.raw; continue; }
+            const layerCount = spec.count ?? hours;
+            json.layers_coverage[layerId] = {
+                present: bytesToBase64(bitmaskFor(spec.presentSlots, layerCount)),
+                count: layerCount,
+                note: spec.note,
+            };
+        }
+    }
     return { manifest, json };
 }
 
@@ -540,6 +559,127 @@ test('nearestPresentHour returns null when nothing is present', () => {
     const { manifest, json } = buildIndexFixture({ hours: 5, presentSlots: [] });
     const index = parseSidecarIndex(json, manifest);
     assert.equal(nearestPresentHour(index, index.coverage.startEpochHour), null);
+});
+
+// -----------------------------------------------------------------------
+// layers_coverage (P2.1 scope-add): per-layer coverage overrides for sparse
+// layers, e.g. avalanche running once/day rather than hourly. Real shape:
+// snow_backend/snowpack/sidecar.py build_index()'s `layers_coverage`.
+// -----------------------------------------------------------------------
+
+test('parseSidecarIndex decodes layers_coverage with the same validation as the base mask', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 24, presentSlots: Array.from({ length: 24 }, (_, i) => i), // sqh: every hour
+        layersCoverage: { avalanche: { presentSlots: [12], note: 'daily 12:00 UTC' } },
+    });
+    const index = parseSidecarIndex(json, manifest);
+    assert.equal(index.ok, true);
+    assert.ok(index.layersCoverage.avalanche);
+    assert.equal(index.layersCoverage.avalanche.count, 24);
+    assert.equal(index.layersCoverage.avalanche.note, 'daily 12:00 UTC');
+});
+
+test('coverageFor returns the layer override when present, and the base coverage otherwise', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 24, presentSlots: Array.from({ length: 24 }, (_, i) => i),
+        layersCoverage: { avalanche: { presentSlots: [12] } },
+    });
+    const index = parseSidecarIndex(json, manifest);
+    const avy = coverageFor(index, 'avalanche');
+    assert.equal(avy.count, 24);
+    assert.notEqual(avy.present, index.coverage.present); // a different (override) bitmask
+    assert.equal(avy.startEpochHour, index.coverage.startEpochHour); // start/step inherited from base
+
+    // sqh has no override -> falls back to the base coverage object exactly.
+    const sqh = coverageFor(index, 'sqh');
+    assert.equal(sqh, index.coverage);
+    // No layerId at all -> base coverage too.
+    assert.equal(coverageFor(index), index.coverage);
+});
+
+test('coverageHas/nearestPresentHour are layer-aware: an hour present for sqh can be absent for avalanche', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 24, presentSlots: Array.from({ length: 24 }, (_, i) => i), // sqh: every hour present
+        layersCoverage: { avalanche: { presentSlots: [12] } }, // avalanche: only 12:00
+    });
+    const index = parseSidecarIndex(json, manifest);
+    const base = index.coverage.startEpochHour;
+
+    // Base (no layerId) and sqh (no override): every hour present.
+    assert.equal(coverageHas(index, base + 10), true);
+    assert.equal(coverageHas(index, base + 10, 'sqh'), true);
+    // avalanche: only hour 12 is present, even though sqh has data at hour 10.
+    assert.equal(coverageHas(index, base + 10, 'avalanche'), false);
+    assert.equal(coverageHas(index, base + 12, 'avalanche'), true);
+});
+
+test('sparse-layer snapping: an avalanche-absent hour between two present SQH hours snaps to the avalanche-present 12:00, not the SQH hour', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 24, presentSlots: Array.from({ length: 24 }, (_, i) => i), // sqh: every hour present
+        layersCoverage: { avalanche: { presentSlots: [12] } }, // avalanche: only daily 12:00
+    });
+    const index = parseSidecarIndex(json, manifest);
+    const base = index.coverage.startEpochHour;
+
+    // Without a layerId, hour 11 is already present (sqh/base) -> returns itself.
+    assert.equal(nearestPresentHour(index, base + 11), base + 11);
+    // With layerId 'avalanche', hour 11 has no avalanche data -- must snap to
+    // the one real avalanche-present hour (12), NOT to the sqh-present
+    // hour it's already sitting on. This is the whole point of the
+    // layer-aware overload: ignoring layerId here would wrongly return
+    // base+11 since the (layer-blind) base bitmask says that hour exists.
+    assert.equal(nearestPresentHour(index, base + 11, 'avalanche'), base + 12);
+    assert.equal(nearestPresentHour(index, base + 13, 'avalanche'), base + 12);
+    // Landing exactly on the present hour returns itself.
+    assert.equal(nearestPresentHour(index, base + 12, 'avalanche'), base + 12);
+});
+
+test('inferCoverageStride reads cadence from bitmask density, never a hardcoded layer id (P2.1 amendment 3)', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 72, presentSlots: Array.from({ length: 72 }, (_, i) => i), // sqh: every hour
+        layersCoverage: { avalanche: { presentSlots: [12, 36, 60] } }, // daily, 24h apart
+    });
+    const index = parseSidecarIndex(json, manifest);
+
+    assert.equal(inferCoverageStride(coverageFor(index, 'sqh')), 1, 'hourly layer infers stride 1');
+    assert.equal(inferCoverageStride(coverageFor(index, 'avalanche')), 24, 'daily layer infers stride 24 from its own bitmask, not its id');
+    assert.equal(inferCoverageStride(null), 1);
+    assert.equal(inferCoverageStride({ count: 0, present: new Uint8Array(0) }), 1);
+});
+
+test('a truncated per-layer bitmask is dropped (falls back to base coverage), not a whole-index rejection', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 24, presentSlots: [0, 1, 2],
+        layersCoverage: { avalanche: { raw: { present: bytesToBase64(new Uint8Array(1)), count: 24 } } }, // needs ceil(24/8)=3 bytes, only 1 given
+    });
+    const originalWarn = console.warn; console.warn = () => {};
+    let index;
+    try {
+        index = parseSidecarIndex(json, manifest);
+    } finally { console.warn = originalWarn; }
+
+    assert.equal(index.ok, true, 'the base index is otherwise valid and must not be rejected');
+    assert.equal(index.layersCoverage.avalanche, undefined, 'the malformed override is dropped');
+    // Falls back to base coverage for that layer.
+    assert.equal(coverageFor(index, 'avalanche'), index.coverage);
+});
+
+test('a per-layer entry with a bad count or unparsable bitmask is dropped the same way', () => {
+    const { manifest, json } = buildIndexFixture({
+        hours: 10, presentSlots: [0],
+        layersCoverage: {
+            avalanche: { raw: { present: bytesToBase64(new Uint8Array(2)), count: -1 } },
+            surface: { raw: { present: 'not valid base64 !!!', count: 10 } },
+        },
+    });
+    const originalWarn = console.warn; console.warn = () => {};
+    let index;
+    try {
+        index = parseSidecarIndex(json, manifest);
+    } finally { console.warn = originalWarn; }
+    assert.equal(index.ok, true);
+    assert.equal(index.layersCoverage.avalanche, undefined);
+    assert.equal(index.layersCoverage.surface, undefined);
 });
 
 // -----------------------------------------------------------------------

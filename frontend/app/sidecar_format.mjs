@@ -406,6 +406,40 @@ export function parseSidecarIndex(json, manifest) {
         return { ok: false, reason: 'truncated-bitmask' };
     }
 
+    // Per-layer coverage overrides (P2.1 scope-add — not in the original
+    // design doc; the real backend emits this for sparse layers, e.g.
+    // avalanche running once/day at 12:00 UTC rather than hourly:
+    // snow_backend/snowpack/sidecar.py build_index()'s `layers_coverage`).
+    // A layer absent here simply has no override and falls back to the base
+    // `coverage` above — see coverageFor(). Each entry gets the SAME
+    // base64/count/truncation validation as the base mask; a malformed
+    // per-layer entry only drops that one layer's override (falls back to
+    // base coverage, with a warning) rather than rejecting the whole index
+    // — the base coverage is otherwise valid and unaffected.
+    const layersCoverage = {};
+    if (json.layers_coverage && typeof json.layers_coverage === 'object') {
+        for (const [layerId, entry] of Object.entries(json.layers_coverage)) {
+            const layerCount = Number(entry?.count);
+            if (!Number.isInteger(layerCount) || layerCount < 0) {
+                console.warn(`[sidecar_format] layers_coverage.${layerId}: bad count, ignoring override`);
+                continue;
+            }
+            let layerPresent;
+            try {
+                layerPresent = base64ToBytes(entry.present);
+            } catch {
+                console.warn(`[sidecar_format] layers_coverage.${layerId}: bad bitmask, ignoring override`);
+                continue;
+            }
+            const layerExpectedBytes = Math.ceil(layerCount / 8);
+            if (layerPresent.byteLength < layerExpectedBytes) {
+                console.warn(`[sidecar_format] layers_coverage.${layerId}: bitmask truncated (expected >= ${layerExpectedBytes} bytes for ${layerCount} hours, got ${layerPresent.byteLength}), ignoring override`);
+                continue;
+            }
+            layersCoverage[layerId] = { count: layerCount, present: layerPresent, note: entry.note };
+        }
+    }
+
     return {
         ok: true,
         schema: json.schema,
@@ -432,6 +466,27 @@ export function parseSidecarIndex(json, manifest) {
         // build_index()). Passed through defensively — absent in older or
         // hand-built index.json fixtures, so it defaults to [].
         engineLayers: Array.isArray(json.engine_layers) ? json.engine_layers : [],
+        layersCoverage,
+    };
+}
+
+/**
+ * The effective coverage block for `layerId` — its own layers_coverage
+ * override if it has a valid one, otherwise the base coverage. start/step
+ * always come from the base coverage; only count/present can be overridden
+ * (the real backend's layers_coverage shape has no start/step of its own).
+ * Pass no layerId (or one with no override) to get the base coverage back.
+ */
+export function coverageFor(index, layerId) {
+    if (!index?.ok) return null;
+    const override = layerId ? index.layersCoverage?.[layerId] : null;
+    if (!override) return index.coverage;
+    return {
+        startIso: index.coverage.startIso,
+        startEpochHour: index.coverage.startEpochHour,
+        stepHours: index.coverage.stepHours,
+        count: override.count,
+        present: override.present,
     };
 }
 
@@ -439,23 +494,65 @@ export function parseSidecarIndex(json, manifest) {
  * Does the parsed index have data for `epochHour` (hours since Unix epoch)?
  * False for a slot that does not land exactly on the index's hour grid, is
  * out of the covered range, or is present-but-unset in the bitmask.
+ *
+ * @param {number} epochHour
+ * @param {string} [layerId] when given and the layer has a layers_coverage
+ *   override (e.g. a daily-only layer), checks THAT layer's bitmask instead
+ *   of the base hourly one — see coverageFor(). Omit for the base coverage.
  */
-export function coverageHas(index, epochHour) {
-    if (!index?.ok) return false;
-    const { coverage } = index;
+export function coverageHas(index, epochHour, layerId) {
+    const coverage = coverageFor(index, layerId);
+    if (!coverage) return false;
     const slot = (epochHour - coverage.startEpochHour) / coverage.stepHours;
     if (!Number.isInteger(slot) || slot < 0 || slot >= coverage.count) return false;
     return bitAt(coverage.present, slot);
 }
 
 /**
+ * Infer a layer's native sampling cadence (hours between produced samples)
+ * from its own coverage bitmask density, rather than a caller's hardcoded
+ * per-layer-id guess (P2.1 amendment 3, team-lead binding ruling: a daily
+ * layer like avalanche must infer stride 24 from its *bitmask*, never from
+ * `layerId === 'avalanche'`). Takes the modal gap between consecutively-set
+ * bits, so a handful of missing/outage hours doesn't skew an otherwise-hourly
+ * layer's inferred stride away from 1.
+ *
+ * @param {{count: number, present: Uint8Array} | null} coverage a
+ *   coverageFor() result. Returns 1 (hourly, the safe default) when there
+ *   are fewer than two present bits to measure a gap from.
+ */
+export function inferCoverageStride(coverage) {
+    if (!coverage || coverage.count <= 0) return 1;
+    const gapCounts = new Map();
+    let prev = -1;
+    for (let slot = 0; slot < coverage.count; slot++) {
+        if (!bitAt(coverage.present, slot)) continue;
+        if (prev >= 0) {
+            const gap = slot - prev;
+            gapCounts.set(gap, (gapCounts.get(gap) || 0) + 1);
+        }
+        prev = slot;
+    }
+    let bestGap = 1;
+    let bestCount = 0;
+    for (const [gap, count] of gapCounts) {
+        if (count > bestCount) { bestGap = gap; bestCount = count; }
+    }
+    return bestCount > 0 ? bestGap : 1;
+}
+
+/**
  * Nearest present epochHour to `epochHour`, expanding outward one slot at a
  * time. On an exact tie (equal distance on both sides) the earlier hour
- * wins. Returns null if the index has no present hours at all.
+ * wins. Returns null if the index (or the given layer's coverage) has no
+ * present hours at all.
+ *
+ * @param {number} epochHour
+ * @param {string} [layerId] see coverageHas — layer-aware when given.
  */
-export function nearestPresentHour(index, epochHour) {
-    if (!index?.ok) return null;
-    const { coverage } = index;
+export function nearestPresentHour(index, epochHour, layerId) {
+    const coverage = coverageFor(index, layerId);
+    if (!coverage) return null;
     if (coverage.count <= 0) return null;
     const targetSlot = Math.round((epochHour - coverage.startEpochHour) / coverage.stepHours);
     for (let radius = 0; radius <= coverage.count; radius++) {
