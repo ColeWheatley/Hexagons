@@ -274,6 +274,24 @@ def _exact_pages_and_tiles(inventory: dict, binary_dir: Path):
     return tiles, pages
 
 
+_LAST_UPLOAD_RETRY_SWEEP = 0.0
+_UPLOAD_RETRY_SWEEP_INTERVAL_SECONDS = 30.0
+
+
+def _requeue_durable_upload_failures(uploader) -> None:
+    """Sweep durably-failed uploads (3 attempts exhausted, e.g. a network outage)
+    back into the pending queue, so a live run recovers on its own instead of
+    only retrying at process startup."""
+    global _LAST_UPLOAD_RETRY_SWEEP
+    now = time.monotonic()
+    if now - _LAST_UPLOAD_RETRY_SWEEP < _UPLOAD_RETRY_SWEEP_INTERVAL_SECONDS:
+        return
+    _LAST_UPLOAD_RETRY_SWEEP = now
+    retried = uploader.retry_failed()
+    if retried:
+        print(f"upload: requeued {retried} durable failures")
+
+
 def run(inventory_path: Path) -> None:
     inventory = bake_inventory.load_inventory(inventory_path)
     validate_runtime_inventory(inventory)
@@ -325,6 +343,7 @@ def run(inventory_path: Path) -> None:
             "local": str(binary_dir / filename),
             "logical": f"tiles_bin/{filename}",
         }])
+        _requeue_durable_upload_failures(uploader)
 
     _run_geometry(
         inventory_path, inventory, dem_path, gradient_path, binary_dir,
@@ -368,6 +387,7 @@ def run(inventory_path: Path) -> None:
                 }
                 for tier, path in _paths.items()
             ])
+            _requeue_durable_upload_failures(uploader)
 
     results = waffle.bake_global_texture_pages(
         force=False,
