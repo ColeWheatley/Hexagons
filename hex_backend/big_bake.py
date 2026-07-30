@@ -281,7 +281,11 @@ _UPLOAD_RETRY_SWEEP_INTERVAL_SECONDS = 30.0
 def _requeue_durable_upload_failures(uploader) -> None:
     """Sweep durably-failed uploads (3 attempts exhausted, e.g. a network outage)
     back into the pending queue, so a live run recovers on its own instead of
-    only retrying at process startup."""
+    only retrying at process startup.
+
+    Cole runs Rechner off a phone tether, so mid-run WiFi drops are routine,
+    not exceptional — this sweep is what lets a bake ride those out unattended
+    instead of needing him to babysit the desktop all day."""
     global _LAST_UPLOAD_RETRY_SWEEP
     now = time.monotonic()
     if now - _LAST_UPLOAD_RETRY_SWEEP < _UPLOAD_RETRY_SWEEP_INTERVAL_SECONDS:
@@ -289,7 +293,7 @@ def _requeue_durable_upload_failures(uploader) -> None:
     _LAST_UPLOAD_RETRY_SWEEP = now
     retried = uploader.retry_failed()
     if retried:
-        print(f"upload: requeued {retried} durable failures")
+        print(f"upload: requeued {retried} durable failures (phone-tether WiFi drop, expected -- retrying unattended)")
 
 
 def run(inventory_path: Path) -> None:
@@ -332,7 +336,7 @@ def run(inventory_path: Path) -> None:
         )
         retried = uploader.retry_failed()
         if retried:
-            print(f"upload: requeued {retried} durable failures")
+            print(f"upload: requeued {retried} durable failures (phone-tether WiFi drop, expected -- retrying unattended)")
         uploader.start()
 
     def geometry_completed(key):
