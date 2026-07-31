@@ -50,6 +50,11 @@ from waffle_iron import (
 GIB = 1024 ** 3
 EXPECTED_FULL_CORPUS_BYTES = 28_185_093_979
 EXPECTED_FULL_CORPUS_FILES = 3_718
+# The recorded recipe version and the recorded effort must be derived from the
+# same value: page markers on disk embed the effort, so a version string built
+# with a different effort can never match a marker, and every already-baked
+# page then looks stale to a regenerated inventory.
+PRODUCTION_ENCODING_EFFORT = 4
 DEFAULT_BUCKET = "wheatley.cloud"
 DEFAULT_PREFIX = "hexagons/app"
 
@@ -596,10 +601,12 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
             },
             "geometry_recipe": {"version": BAKER_VERSION, "format": "GSP3"},
             "texture_recipe": {
-                "version": texture_page_cache_version(False, DEFAULT_TEXTURE_ENCODING_PROFILE, None),
+                "version": texture_page_cache_version(
+                    False, DEFAULT_TEXTURE_ENCODING_PROFILE, PRODUCTION_ENCODING_EFFORT
+                ),
                 "contract_version": TEXTURE_PAGE_RECIPE_VERSION,
                 "encoding_profile": DEFAULT_TEXTURE_ENCODING_PROFILE,
-                "encoding_effort": 4, "diagnostic_tattoos": False,
+                "encoding_effort": PRODUCTION_ENCODING_EFFORT, "diagnostic_tattoos": False,
                 "bootstrap_px": TEXTURE_BOOTSTRAP_SIZE,
                 "tiers": {tier["name"]: tier["size_px"] for tier in TEXTURE_TIERS},
             },
