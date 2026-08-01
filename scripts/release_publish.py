@@ -41,6 +41,13 @@ class Store:
             sha256_hex: str | None = None) -> None: raise NotImplementedError
     def head(self, key: str) -> dict[str, Any]: raise NotImplementedError
     def get(self, key: str) -> bytes: raise NotImplementedError
+    def list_sizes(self, prefix: str) -> dict[str, int]:
+        """Return {key: size} for every object under prefix, in as few round
+        trips as the backend allows. Used to batch the "is this object
+        already there and the right size" check across thousands of assets
+        instead of one HEAD per asset; callers still HEAD/GET individual
+        objects for anything this can't confirm."""
+        raise NotImplementedError
 
 
 class LocalStore(Store):
@@ -57,6 +64,14 @@ class LocalStore(Store):
         if not target.exists(): raise FileNotFoundError(key)
         return json.loads(target.with_name(target.name + ".meta.json").read_text())
     def get(self, key: str) -> bytes: return self._path(key).read_bytes()
+    def list_sizes(self, prefix: str) -> dict[str, int]:
+        base = self._path(prefix)
+        if not base.is_dir(): return {}
+        return {
+            str(path.relative_to(self.root)): path.stat().st_size
+            for path in base.rglob("*")
+            if path.is_file() and not path.name.endswith(".meta.json")
+        }
 
 
 class AwsStore(Store):
@@ -70,6 +85,18 @@ class AwsStore(Store):
     def head(self, key: str) -> dict[str, Any]:
         return json.loads(self._run(["aws", "s3api", "head-object", "--bucket", self.bucket, "--key", f"{self.prefix}/{key}"]))
     def get(self, key: str) -> bytes: return self._run(["aws", "s3", "cp", self._url(key), "-"])
+    def list_sizes(self, prefix: str) -> dict[str, int]:
+        # The CLI auto-paginates list-objects-v2 internally (one process, many
+        # HTTP calls) and merges every page into one JSON response, so this is
+        # O(1) subprocess spawns instead of O(objects) HEAD calls.
+        full_prefix = f"{self.prefix}/{prefix}"
+        raw = self._run([
+            "aws", "s3api", "list-objects-v2",
+            "--bucket", self.bucket, "--prefix", full_prefix,
+        ])
+        contents = json.loads(raw).get("Contents", [])
+        strip = len(self.prefix) + 1  # drop "<self.prefix>/" to match head()/put() key convention
+        return {entry["Key"][strip:]: int(entry["Size"]) for entry in contents}
 
 
 @dataclass(frozen=True)
@@ -214,15 +241,29 @@ def publish(manifest_path: Path, app_root: Path, store: Store, *, interrupt_afte
         staged_asset = Asset(staged_path, "tile_manifest.json")
         staged_sha = sha256(staged_path)
         decoded_types: set[str] = set()
+        # One bulk listing replaces a per-asset existence/size HEAD: nearly all
+        # of these were already written by progressive upload during the bake,
+        # so this turns tens of thousands of individual round trips (each
+        # paying full aws-CLI/boto3 process startup) into a handful of
+        # paginated list-objects-v2 calls inside a single process.
+        existing = store.list_sizes(f"releases/{release}/")
         for index, asset in enumerate(assets, 1):
             key = f"releases/{release}/{asset.logical}"
             digest = digests[asset.logical]
             suffix = asset.local.suffix.lower()
             sample = suffix in {".bin", ".ktx2", ".webp"} and suffix not in decoded_types
-            upload_asset_idempotent(
-                store, key, asset, IMMUTABLE, digest,
-                verify_payload=sample, decode=sample,
-            )
+            if existing.get(key) != asset.local.stat().st_size:
+                store.put(
+                    asset.local, key, cache_control=IMMUTABLE,
+                    content_type=content_type(asset.local), sha256_hex=digest,
+                )
+                # A fresh upload still gets an individual verify; the bulk
+                # listing above only proves size for what was already there.
+                verify(store, key, asset, IMMUTABLE, digest, decode=False, fetch_payload=False)
+            if sample:
+                # Unchanged from before: one deep payload+hash decode check
+                # per asset type on every publish, regardless of transfer.
+                verify(store, key, asset, IMMUTABLE, digest, decode=True, fetch_payload=True)
             decoded_types.add(suffix)
             if interrupt_after == index: raise RuntimeError("simulated interrupted upload")
         staged_key = f"releases/{release}/tile_manifest.json"
