@@ -57,6 +57,30 @@ class AtomicReleasePublishTest(unittest.TestCase):
             self.assertTrue((root / "s3" / "releases" / first).is_dir())
             self.assertEqual(json.loads(store.get("tile_manifest.json"))["release"]["asset_release"], second)
 
+    def test_bulk_listing_still_reuploads_a_changed_asset_at_a_stale_release_id(self):
+        # A pinned release_override means the same "releases/<id>/" prefix is
+        # reused across calls even though local content changed underneath
+        # it -- list_sizes() must see the size mismatch and force a real
+        # re-upload rather than trusting a stale bulk listing.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); app, manifest = self.fixture(root); store = release_publish.LocalStore(root / "s3")
+            release_publish.publish(manifest, app, store, release_override="pinned")
+            original = store.get("releases/pinned/tiles_bin/gosper_1_2.bin")
+            (app / "tiles_bin" / "gosper_1_2.bin").write_bytes(b"GSP3" + b"replacement-content-different-length")
+            release_publish.publish(manifest, app, store, release_override="pinned")
+            updated = store.get("releases/pinned/tiles_bin/gosper_1_2.bin")
+            self.assertNotEqual(original, updated)
+            self.assertTrue(updated.endswith(b"replacement-content-different-length"))
+
+    def test_list_sizes_matches_head_based_key_convention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); app, manifest = self.fixture(root); store = release_publish.LocalStore(root / "s3")
+            release = release_publish.publish(manifest, app, store)
+            listing = store.list_sizes(f"releases/{release}/")
+            key = f"releases/{release}/tiles_bin/gosper_1_2.bin"
+            self.assertIn(key, listing)
+            self.assertEqual(listing[key], store.head(key)["ContentLength"])
+
     def test_rejects_diagnostic_tattoos_before_any_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); app, manifest = self.fixture(root); payload = json.loads(manifest.read_text())

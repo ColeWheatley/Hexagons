@@ -18,6 +18,13 @@ export const RELEASE_PROFILES = Object.freeze({
         coverageProfile: 'selected-tirol',
         defaultProfilerMode: 'off',
     }),
+    // Rechner production coverage is not a hand-drawn rectangle. The durable
+    // run inventory records the validated orthophoto/DEM intersection.
+    'production-tirol': Object.freeze({
+        mode: 'production',
+        coverageProfile: 'validated-tif-dem-intersection',
+        defaultProfilerMode: 'off',
+    }),
 });
 
 function profilerPolicy(profile, search, devMode = false) {
