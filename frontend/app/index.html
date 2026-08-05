@@ -96,6 +96,25 @@
                     </div>
                 </div>
 
+                <!-- The one non-consumer affordance in the shell: it must stay
+                     visible while dev mode is OFF, so it lives here rather than
+                     in the dev panel. Same single state as the Backquote hotkey,
+                     ?dev=1, and localStorage. Gate-exempt because toggling it
+                     mid-run would dispose the dev DOM the gate asserts against. -->
+                <div class="hud-item"
+                    style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                    <span id="dev-mode-label">Dev mode</span>
+                    <div class="pill-toggle" role="group" aria-labelledby="dev-mode-label" data-ux-gate-exempt
+                        style="display: flex; background: rgba(20, 20, 20, 0.7); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 4px; gap: 4px;">
+                        <button class="pill-btn active"
+                            style="background: #74b9ff; color: #fff; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; font-family: 'Outfit', sans-serif;"
+                            id="dev-mode-off" aria-pressed="true">off</button>
+                        <button class="pill-btn"
+                            style="background: transparent; color: #ccc; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; font-family: 'Outfit', sans-serif;"
+                            id="dev-mode-on" aria-pressed="false">on</button>
+                    </div>
+                </div>
+
                 <div class="hud-item"
                     style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
                     <span>VIEW URL</span>

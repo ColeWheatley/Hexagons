@@ -35,9 +35,44 @@ persistDevMode(initialPolicy.persist);
 
 let devModeEnabled = initialPolicy.enabled;
 let attachPromise = null;
+let boundViewer = null;
+let boundAppVersion = null;
+const changeListeners = new Set();
 
 export function isDevModeEnabled() {
     return devModeEnabled;
+}
+
+/**
+ * Subscribe to dev-mode changes. The listener is called immediately with the
+ * current state so UI can seed itself, then on every subsequent change from
+ * any source (hotkey, pill toggle, programmatic).
+ *
+ * @returns {() => void} unsubscribe
+ */
+export function onDevModeChange(listener) {
+    changeListeners.add(listener);
+    listener(devModeEnabled);
+    return () => changeListeners.delete(listener);
+}
+
+/** Single mutation path shared by the hotkey and any UI control. */
+function applyDevMode(enabled) {
+    if (enabled === devModeEnabled || !boundViewer) return;
+    devModeEnabled = enabled;
+    persistDevMode(enabled ? '1' : '0');
+    if (enabled) {
+        lazyAttach(boundViewer, boundAppVersion);
+    } else {
+        boundViewer.devTools?.dispose();
+        boundViewer.devTools = null;
+    }
+    changeListeners.forEach(listener => listener(enabled));
+}
+
+/** Set dev mode from UI. No-op before initDevMode() has bound the viewer. */
+export function setDevMode(enabled) {
+    applyDevMode(Boolean(enabled));
 }
 
 async function lazyAttach(viewer, appVersion) {
@@ -65,19 +100,12 @@ async function lazyAttach(viewer, appVersion) {
  * is already on. Call once, after `viewer` exists.
  */
 export function initDevMode(viewer, appVersion) {
+    boundViewer = viewer;
+    boundAppVersion = appVersion;
+
     window.addEventListener('keydown', (event) => {
         if (!isDevToggleKey(event) || shouldIgnoreToggleTarget(event.target)) return;
-
-        if (devModeEnabled) {
-            devModeEnabled = false;
-            persistDevMode('0');
-            viewer.devTools?.dispose();
-            viewer.devTools = null;
-        } else {
-            devModeEnabled = true;
-            persistDevMode('1');
-            lazyAttach(viewer, appVersion);
-        }
+        applyDevMode(!devModeEnabled);
     });
 
     if (devModeEnabled) {

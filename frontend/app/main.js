@@ -14,7 +14,7 @@ import {
 import { PerfProfiler } from './perf_profiler.js';
 import { createProfilerForReleaseMode, resolveReleaseMode } from './release_mode.js';
 import { initBenchmark } from './dev/benchmark.js';
-import { initDevMode, isDevModeEnabled } from './dev/dev_entry.js';
+import { initDevMode, isDevModeEnabled, setDevMode, onDevModeChange } from './dev/dev_entry.js';
 import { ShareableViewState } from './view_state.js';
 import {
     VisibilityClass,
@@ -1404,6 +1404,33 @@ class PistonViewer {
                 this.viewState?.commitSettingsChange();
             });
         }
+
+        this.initDevModeToggle();
+    }
+
+    // The pill is one of three entry points to a single dev-mode state (the
+    // others being the Backquote hotkey and ?dev=1), so it subscribes rather
+    // than tracking its own boolean — a hotkey press must move the pill too.
+    initDevModeToggle() {
+        const offBtn = document.getElementById('dev-mode-off');
+        const onBtn = document.getElementById('dev-mode-on');
+        if (!offBtn || !onBtn) return;
+
+        onBtn.addEventListener('click', () => setDevMode(true));
+        offBtn.addEventListener('click', () => setDevMode(false));
+
+        onDevModeChange((enabled) => {
+            const active = enabled ? onBtn : offBtn;
+            const inactive = enabled ? offBtn : onBtn;
+            active.classList.add('active');
+            inactive.classList.remove('active');
+            setPressedButton(active, true);
+            setPressedButton(inactive, false);
+            active.style.background = '#74b9ff';
+            active.style.color = '#fff';
+            inactive.style.background = 'transparent';
+            inactive.style.color = '#ccc';
+        });
     }
 
     applyPublicSettings(settings) {
