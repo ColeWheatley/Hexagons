@@ -48,6 +48,16 @@ const production = resolveReleaseMode(productionDescriptor);
 assert.equal(production.mode, 'production');
 assert.deepEqual(production.profiler, { enabled: false, mode: 'off' });
 
+const rechnerTirolDescriptor = {
+    schema_version: 1,
+    profile: 'production-tirol',
+    mode: 'production',
+    coverage_profile: 'validated-tif-dem-intersection',
+};
+const rechnerTirol = resolveReleaseMode(rechnerTirolDescriptor);
+assert.equal(rechnerTirol.mode, 'production');
+assert.deepEqual(rechnerTirol.profiler, { enabled: false, mode: 'off' });
+
 const productionBench = resolveReleaseMode(productionDescriptor, '?bench=1');
 assert.deepEqual(productionBench.profiler, { enabled: true, mode: 'full' });
 assert.deepEqual(
