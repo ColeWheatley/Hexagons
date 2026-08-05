@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const source = fs.readFileSync(path.join(here, '../../frontend/app/benchmark.js'), 'utf8');
+const source = fs.readFileSync(path.join(here, '../../frontend/app/dev/benchmark.js'), 'utf8');
 const benchmark = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 assert.equal(benchmark.resolveBenchmarkDuration(null, 120), 120);

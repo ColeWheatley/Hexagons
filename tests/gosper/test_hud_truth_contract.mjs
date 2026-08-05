@@ -5,12 +5,21 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.join(here, '../../frontend/app');
-const html = fs.readFileSync(path.join(appDir, 'index.html'), 'utf8');
-const main = fs.readFileSync(path.join(appDir, 'main.js'), 'utf8');
-const allJs = fs.readdirSync(appDir)
+const devDir = path.join(appDir, 'dev');
+
+// The dev/consumer split moved the debug HUD out of index.html and its
+// per-frame writers out of main.js. The markup is still literal HTML, just
+// housed in a template string in dev/dev_panel.js, so the same contract holds
+// over the concatenation of the consumer shell and the dev panel source.
+const readAll = dir => fs.readdirSync(dir)
     .filter(name => name.endsWith('.js') || name.endsWith('.mjs'))
-    .map(name => fs.readFileSync(path.join(appDir, name), 'utf8'))
-    .join('\n');
+    .map(name => fs.readFileSync(path.join(dir, name), 'utf8'));
+
+const devPanel = fs.readFileSync(path.join(devDir, 'dev_panel.js'), 'utf8');
+const devTools = fs.readFileSync(path.join(devDir, 'dev_tools.js'), 'utf8');
+const html = `${fs.readFileSync(path.join(appDir, 'index.html'), 'utf8')}\n${devPanel}`;
+const main = `${fs.readFileSync(path.join(appDir, 'main.js'), 'utf8')}\n${readAll(devDir).join('\n')}`;
+const allJs = [...readAll(appDir), ...readAll(devDir)].join('\n');
 
 for (const staleClaim of [
     'SULZENAU, TIROL',
@@ -58,7 +67,12 @@ for (const liveId of [
     'settled-lod-summary',
 ]) {
     assert.ok(html.includes(`id="${liveId}"`), `live HUD id missing from markup: ${liveId}`);
-    assert.ok(main.includes(`'${liveId}'`), `live HUD id has no main.js writer/listener: ${liveId}`);
+    // getElementById('x') in the consumer shell, querySelector('#x') in the
+    // dev panel — either proves the id has a live writer or listener.
+    assert.ok(
+        main.includes(`'${liveId}'`) || main.includes(`'#${liveId}'`),
+        `live HUD id has no writer/listener: ${liveId}`,
+    );
 }
 
 for (const match of html.matchAll(/<(?:button|input|select)\b[^>]*\bid="([^"]+)"/g)) {
@@ -69,36 +83,42 @@ for (const match of html.matchAll(/<(?:button|input|select)\b[^>]*\bid="([^"]+)"
     );
 }
 
+// Bounded by the next method rather than by '// LOD Pause Toggle', which the
+// dev/consumer split moved *above* this block in main.js.
 const gradientStart = main.indexOf('// Gradient Toggle');
-const gradientHandler = main.slice(
-    gradientStart,
-    main.indexOf('// LOD Pause Toggle', gradientStart),
-);
+assert.ok(gradientStart >= 0, 'main.js must retain the gradient toggle wiring');
+const gradientEnd = main.indexOf('\n    applyPublicSettings(', gradientStart);
+assert.ok(gradientEnd > gradientStart, 'gradient toggle block must stay bounded');
+const gradientHandler = main.slice(gradientStart, gradientEnd);
 assert.equal(
     (gradientHandler.match(/this\.needsRender = true;/g) || []).length,
     2,
     'both gradient buttons must schedule an immediate render',
 );
 
-const collapsibleStart = main.indexOf('\n    initCollapsibleSections() {');
-const collapsibleHandler = main.slice(
-    collapsibleStart,
-    main.indexOf('\n    initLodTruthLabels() {', collapsibleStart),
-);
-assert.ok(
-    collapsibleHandler.includes('this.updateRendererDebugStats();'),
+// Post-split this is a panel -> DevTools callback rather than an inline
+// method, but the guarantee is unchanged: expanding POSITION & DEBUG must
+// populate renderer stats without waiting for camera input.
+const toggleStart = devTools.indexOf('onSectionToggle:');
+assert.ok(toggleStart >= 0, 'dev tools must still handle section toggles');
+const toggleHandler = devTools.slice(toggleStart, devTools.indexOf('},', toggleStart));
+assert.match(
+    toggleHandler,
+    /section === 'debug' && expanded\)\s*this\._refreshRendererDebugStats\(\)/,
     'opening the debug section must populate renderer stats without waiting for camera input',
 );
 
-const fpsStart = main.indexOf('\n    updateFps(');
-const fpsHandler = main.slice(fpsStart, main.indexOf('\n    updateFrametimeGraph()', fpsStart));
-assert.ok(
-    fpsHandler.includes('if (this.engineState === ENGINE_STATES.STATIC)'),
-    'every STATIC frame, including maintenance renders, must report FPS: IDLE',
-);
-assert.ok(
-    !fpsHandler.includes('if (!willRender && this.engineState === ENGINE_STATES.STATIC)'),
-    'STATIC maintenance renders must not be reported as active FPS',
-);
+const fpsStart = devTools.indexOf('\n    _updateFps(');
+assert.ok(fpsStart >= 0, 'dev tools must retain the FPS writer');
+const fpsHandler = devTools.slice(fpsStart, devTools.indexOf('\n    _refreshCoreStats()', fpsStart));
+// The STATIC check must precede the willRender early-return, or a sparse
+// maintenance render reports as active FPS.
+const staticIndex = fpsHandler.indexOf("if (viewer.engineState === 'STATIC')");
+const willRenderIndex = fpsHandler.indexOf('if (!willRender) return;');
+assert.ok(staticIndex >= 0,
+    'every STATIC frame, including maintenance renders, must report FPS: IDLE');
+assert.ok(willRenderIndex > staticIndex,
+    'STATIC maintenance renders must not be reported as active FPS');
+assert.match(fpsHandler, /FPS: IDLE/);
 
 console.log('HUD truth contract tests passed');

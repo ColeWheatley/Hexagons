@@ -12,7 +12,11 @@ const scopedFiles = [
     'frontend/app/view_state.js',
     'frontend/app/search.js',
     'frontend/app/index.html',
-    'frontend/app/benchmark.js',
+    'frontend/app/dev/benchmark.js',
+    // The LOD HUD and its writers moved out of index.html/main.js in the
+    // dev/consumer split; the obsolete-state sweep must follow them.
+    'frontend/app/dev/dev_panel.js',
+    'frontend/app/dev/dev_tools.js',
     'tests/gosper/visual_probe.py',
     'GOSPER_DESIGN.md',
 ];
@@ -79,13 +83,13 @@ assert.match(
     'frame updates and atomic replacements must share one visibility implementation',
 );
 
-const benchmark = contents.get('frontend/app/benchmark.js');
+const benchmark = contents.get('frontend/app/dev/benchmark.js');
 assert.match(
     benchmark,
     /viewer\.camera\.position\.set\([\s\S]+?viewer\.controls\.target\.set\([\s\S]+?viewer\.notifyCameraMotion\([\s\S]+?viewer\.controls\.update\(\)/,
 );
 
-const hud = contents.get('frontend/app/index.html');
+const hud = contents.get('frontend/app/dev/dev_panel.js');
 assert.match(hud, /id="moving-lod-summary"[^>]*><\/div>/);
 assert.match(hud, /id="settled-lod-summary"[^>]*><\/div>/);
 assert.doesNotMatch(hud, /(?:moving|settled): --/);

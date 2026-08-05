@@ -133,13 +133,16 @@ assert.equal(search.input.getAttribute('aria-activedescendant'), null);
 assert.equal(search.status.textContent, 'Search results closed.');
 
 // Keep the shell semantics and motion override independently inspectable.
-const [html, css] = await Promise.all([
+// The dev/consumer split houses the debug HUD markup in dev_panel.js, so the
+// shell and dev-panel semantics are asserted against their own sources.
+const [html, devPanel, css] = await Promise.all([
     fs.readFile(path.join(ROOT, 'frontend/app/index.html'), 'utf8'),
+    fs.readFile(path.join(ROOT, 'frontend/app/dev/dev_panel.js'), 'utf8'),
     fs.readFile(path.join(ROOT, 'frontend/app/style.css'), 'utf8'),
 ]);
-assert.match(html, /<button class="collapsible-header" type="button" aria-expanded="false" aria-controls="debug-content">/);
+assert.match(devPanel, /<button class="collapsible-header" type="button" aria-expanded="false" aria-controls="debug-content">/);
+assert.match(devPanel, /for="lod-pause-toggle"/);
 assert.match(html, /id="main-panel-body" hidden aria-hidden="true"/);
-assert.match(html, /for="lod-pause-toggle"/);
 assert.match(html, /aria-pressed="true"/);
 assert.match(css, /:focus-visible/);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
