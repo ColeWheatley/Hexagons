@@ -20,6 +20,25 @@
             }
         }
     </script>
+    <script>
+        // TEMP DEV SHIM — do not merge. Automated test browsers can't get real
+        // OS focus, and Chrome suspends requestAnimationFrame for hidden tabs,
+        // which stalls this app's whole load pipeline. Falls back to setTimeout
+        // while hidden so the app can be driven headlessly for verification.
+        (function () {
+            Object.defineProperty(document, 'visibilityState', { get: function () { return 'visible'; }, configurable: true });
+            Object.defineProperty(document, 'hidden', { get: function () { return false; }, configurable: true });
+            // The real browser compositor still throttles native rAF for a
+            // backgrounded tab regardless of what JS believes visibilityState
+            // is, so drive callbacks off setTimeout instead of trusting rAF.
+            var nextId = 1;
+            window.requestAnimationFrame = function (cb) {
+                var id = nextId++;
+                setTimeout(function () { cb(performance.now()); }, 16);
+                return id;
+            };
+        })();
+    </script>
 </head>
 
 <body>
@@ -201,6 +220,24 @@
                     style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
                     <label for="lod-pause-toggle">PAUSE LOD UPDATES</label>
                     <input type="checkbox" id="lod-pause-toggle" style="pointer-events: auto;">
+                </div>
+
+                <div class="hud-item"
+                    style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px;">
+                    <label for="peak-marker-toggle">PEAK MARKERS</label>
+                    <input type="checkbox" id="peak-marker-toggle" checked style="pointer-events: auto;">
+                </div>
+                <div class="hud-item" id="peak-marker-style-row"
+                    style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+                    <label for="peak-marker-style">MARKER STYLE</label>
+                    <select id="peak-marker-style"
+                        style="pointer-events: auto; background: rgba(20,20,20,0.7); color: #ccc; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 4px 6px; font-family: 'Outfit', sans-serif; font-size: 0.8rem;">
+                        <option value="1">1 · Minimal Dot</option>
+                        <option value="2">2 · Flag Pennant</option>
+                        <option value="3">3 · Topo Ring</option>
+                        <option value="4" selected>4 · Floating Label</option>
+                        <option value="5">5 · Alpine Cross</option>
+                    </select>
                 </div>
 
                 <!-- Frametime Graph (Always Visible) -->

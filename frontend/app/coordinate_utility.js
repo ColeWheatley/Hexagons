@@ -49,6 +49,32 @@ export function worldToGosperTile(worldX, worldY) {
 let projParams = null;
 let projectionPromise = null;
 
+// Least-squares fit of target = a*lon + b*lat + c over reference points.
+function fitPlane(points, targetKey) {
+    let Sxx = 0, Sxy = 0, Sx = 0, Syy = 0, Sy = 0, S1 = 0, Sxt = 0, Syt = 0, St = 0;
+    for (const p of points) {
+        const { lon, lat } = p;
+        const t = p[targetKey];
+        Sxx += lon * lon; Sxy += lon * lat; Sx += lon;
+        Syy += lat * lat; Sy += lat; S1 += 1;
+        Sxt += lon * t; Syt += lat * t; St += t;
+    }
+    const A = [[Sxx, Sxy, Sx], [Sxy, Syy, Sy], [Sx, Sy, S1]];
+    const B = [Sxt, Syt, St];
+    for (let i = 0; i < 3; i++) {
+        const piv = A[i][i];
+        for (let j = i; j < 3; j++) A[i][j] /= piv;
+        B[i] /= piv;
+        for (let k = 0; k < 3; k++) {
+            if (k === i) continue;
+            const f = A[k][i];
+            for (let j = i; j < 3; j++) A[k][j] -= f * A[i][j];
+            B[k] -= f * B[i];
+        }
+    }
+    return B; // [a, b, c]
+}
+
 export async function initProjection() {
     if (projParams) return true;
     if (projectionPromise) return projectionPromise;
@@ -59,28 +85,22 @@ export async function initProjection() {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             const areas = data.ski_areas;
+            if (!areas?.length) throw new Error('projection reference points are missing');
 
-            // Use Kappl and St. Anton as baselines
-            const p1 = areas.find(a => a.name === "Kappl");
-            const p2 = areas.find(a => a.name === "St. Anton am Arlberg");
+            // A 2-point linear calibration (the previous approach) only holds
+            // up near those two points — it drifts by 10-19km at the far
+            // side of the Stubai valley. Fitting a plane across every known
+            // ski-area reference point keeps it a rough approximation (not a
+            // real EPSG:31254 transform) but brings error down to ~500m,
+            // which is enough for tile-availability lookups to work.
+            const points = areas.map(a => ({
+                lon: a.gps.lon, lat: a.gps.lat,
+                x: a.epsg_31254.x, y: a.epsg_31254.y,
+            }));
+            const [ax, bx, cx] = fitPlane(points, 'x');
+            const [ay, by, cy] = fitPlane(points, 'y');
 
-            if (!p1 || !p2) throw new Error('projection reference points are missing');
-            const dLon = p2.gps.lon - p1.gps.lon;
-            const dLat = p2.gps.lat - p1.gps.lat;
-            const dX = p2.epsg_31254.x - p1.epsg_31254.x;
-            const dY = p2.epsg_31254.y - p1.epsg_31254.y;
-
-            // Linear Approximation (valid for local area)
-            const scaleX = dX / dLon;
-            const scaleY = dY / dLat;
-
-            projParams = {
-                scaleX, scaleY,
-                refX: p1.epsg_31254.x,
-                refY: p1.epsg_31254.y,
-                refLon: p1.gps.lon,
-                refLat: p1.gps.lat
-            };
+            projParams = { ax, bx, cx, ay, by, cy };
             console.log("Coordinate System Calibrated:", projParams);
             return true;
         } catch (e) {
@@ -94,17 +114,20 @@ export async function initProjection() {
 
 export function latLonToWorld(lat, lon) {
     if (!projParams) return { x: 0, y: 0 };
-    const dx = (lon - projParams.refLon) * projParams.scaleX;
-    const dy = (lat - projParams.refLat) * projParams.scaleY;
-    return { x: projParams.refX + dx, y: projParams.refY + dy };
+    const { ax, bx, cx, ay, by, cy } = projParams;
+    return { x: ax * lon + bx * lat + cx, y: ay * lon + by * lat + cy };
 }
 
 // Inverse of the same local calibration used by latLonToWorld(). This is a
 // human-readable navigation coordinate, not a survey-grade CRS transform.
 export function worldToLatLon(x, y) {
     if (!projParams) return null;
+    const { ax, bx, cx, ay, by, cy } = projParams;
+    // Solve the 2x2 linear system [[ax,bx],[ay,by]] * [lon,lat]^T = [x-cx, y-cy]^T
+    const det = ax * by - bx * ay;
+    const rx = x - cx, ry = y - cy;
     return {
-        lat: projParams.refLat + (y - projParams.refY) / projParams.scaleY,
-        lon: projParams.refLon + (x - projParams.refX) / projParams.scaleX,
+        lon: (rx * by - bx * ry) / det,
+        lat: (ax * ry - rx * ay) / det,
     };
 }

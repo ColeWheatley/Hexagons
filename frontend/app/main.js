@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { HexSearch } from './search.js';
+import { PeakMarkers } from './peak_markers.js';
 import { LoadingScreen } from './loading_screen.mjs';
 import { setDisclosure, setPanelMinimized, setPressedButton, toggleDisclosure } from './ui_accessibility.js';
 import { VRAMLedger } from './vram_ledger.js';
@@ -4664,6 +4665,30 @@ class PistonViewer {
 
         // Init Search Bar now that we are live
         this.searchBar = new HexSearch();
+        this.peakMarkers = new PeakMarkers(this);
+        this._initPeakMarkerControls();
+    }
+
+    _initPeakMarkerControls() {
+        const toggle = document.getElementById('peak-marker-toggle');
+        const styleRow = document.getElementById('peak-marker-style-row');
+        const styleSelect = document.getElementById('peak-marker-style');
+        if (!toggle) return;
+
+        if (styleRow) styleRow.hidden = !toggle.checked;
+        if (styleSelect) this.peakMarkers.styleId = parseInt(styleSelect.value, 10);
+        if (toggle.checked) this.peakMarkers.setEnabled(true);
+        toggle.addEventListener('change', (e) => {
+            this.peakMarkers.setEnabled(e.target.checked);
+            if (styleRow) styleRow.hidden = !e.target.checked;
+            this.log(e.target.checked ? 'Peak markers ON' : 'Peak markers OFF', 'info');
+        });
+
+        if (styleSelect) {
+            styleSelect.addEventListener('change', (e) => {
+                this.peakMarkers.setStyle(parseInt(e.target.value, 10));
+            });
+        }
     }
 
     // HUD readouts: cache element refs once and only touch the DOM when the

@@ -325,9 +325,52 @@ export class HexSearch {
         };
     }
 
+    getTallestPeaks(limit) {
+        return [...this.peaks]
+            .filter(p => Number.isFinite(p.ele) && p.ele > 0)
+            .sort((a, b) => b.ele - a.ele)
+            .slice(0, limit);
+    }
+
+    getNearestSkiAreas(limit) {
+        const viewer = window.pistonViewer;
+        const origin = viewer?.worldOrigin;
+        const target = viewer?.controls?.target;
+        if (!origin || !target) return this.skiAreas.slice(0, limit);
+
+        const camWorldX = target.x + origin.x;
+        const camWorldY = origin.y - target.z;
+        return [...this.skiAreas]
+            .map(item => {
+                const pos = this.getWorldPosition(item);
+                const dx = pos.x - camWorldX, dy = pos.y - camWorldY;
+                return { item, distSq: dx * dx + dy * dy };
+            })
+            .sort((a, b) => a.distSq - b.distSq)
+            .slice(0, limit)
+            .map(e => e.item);
+    }
+
+    showDefaultSuggestions() {
+        const nearestSkis = this.getNearestSkiAreas(5).map(i => ({ ...i, category: 'Ski Areas (nearest)' }));
+        const tallestPeaks = this.getTallestPeaks(5).map(i => ({ ...i, category: 'Peaks (tallest)' }));
+
+        this.currentResults = [...nearestSkis, ...tallestPeaks]
+            .map(i => ({ ...i, availability: this.getAvailability(i) }));
+
+        const firstAvailable = this.currentResults.findIndex(i => i.availability.available);
+        this.activeIndex = firstAvailable >= 0 ? firstAvailable : -1;
+        this.renderResults();
+        this.announce('Showing nearby ski areas and the tallest peaks.');
+    }
+
     async handleInput(e) {
         const query = normalizeSearchText(e.target.value);
         if (query.length < 2) {
+            if (this.loaded && query.length === 0) {
+                this.showDefaultSuggestions();
+                return;
+            }
             this.hideResults();
             this.currentResults = [];
             this.activeIndex = -1;
@@ -497,6 +540,8 @@ export class HexSearch {
 
                 v.updateLOD();
             }
+
+            v.peakMarkers?.highlight(item);
         }
 
         this.hideResults();
