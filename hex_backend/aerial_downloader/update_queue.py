@@ -6,17 +6,21 @@ GRID_STATUS = '../grid_status.json'
 QUEUE_FILE = '../download_queue.json'
 
 def get_grid_bounds(grid_id):
+    # Each 10km block (XXYY) holds 80 sub-tiles, SS 01-80, in a 10-row x
+    # 8-col grid of 1250m x 1000m cells filling the block exactly -- not
+    # 64 (8 rows) with a 2km gap, which silently mapped rows 9-10 to the
+    # wrong block. Verified against the live gis.tirol.gv.at server.
     try:
         prefix, suffix = grid_id.split('-')
         xx, yy = int(prefix[:2]), int(prefix[2:])
         ss = int(suffix)
         base_x = (xx - 16) * 10000
-        base_y = (yy - 1) * 10000 + 2000
+        block_top = yy * 10000
         s_idx = ss - 1 if ss > 0 else 0
         col, row = s_idx % 8, s_idx // 8
         left = base_x + col * 1250
         right = left + 1250
-        top = base_y + 8000 - (row * 1000)
+        top = block_top - (row * 1000)
         bottom = top - 1000
         return (left, bottom, right, top)
     except: return None

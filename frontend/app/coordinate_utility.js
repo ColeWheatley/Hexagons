@@ -1,5 +1,6 @@
-// @atlas: The 'CoordinateUtility' module. Provides essential math functions to convert between real-world cartesian meters and axial 'Hex' coordinates. It also handles dynamic EPSG:31254 projection calibration, using reference GPS data (e.g., from Kappl and St. Anton ski resorts) to maintain accurate metric scaling across the landscape.
+// @atlas: The 'CoordinateUtility' module. Provides essential math functions to convert between real-world cartesian meters and axial 'Hex' coordinates. World metres are EPSG:31254 (MGI / Austria GK West), the CRS the DEM, orthophotos, and tile manifest are authored in; GPS conversion is an exact projection (see epsg31254.js), not a calibration against reference points.
 import './gosper_core.js';
+import { epsg31254ToWgs84, wgs84ToEpsg31254 } from './epsg31254.js';
 
 const UNIT_HEX_PX = 32.0;
 const METERS_PER_PIXEL = 0.2;
@@ -45,66 +46,24 @@ export function worldToGosperTile(worldX, worldY) {
     return { yq, yr };
 }
 
-// Projection Calibration
-let projParams = null;
-let projectionPromise = null;
+// Projection
+//
+// World coordinates ARE EPSG:31254 metres (the CRS the DEM, orthophotos, and
+// tile manifest are all authored in), so this is a real projection, not a
+// calibration. An earlier version fitted a linear approximation from two ski
+// resorts' known coordinates; that was 10-19km wrong outside the Arlberg
+// corner those two sat in, which made every peak elsewhere resolve outside
+// the baked tile grid. Nothing needs fetching or calibrating now, but
+// initProjection() keeps its async shape because callers await it.
 
 export async function initProjection() {
-    if (projParams) return true;
-    if (projectionPromise) return projectionPromise;
-
-    projectionPromise = (async () => {
-        try {
-            const res = await fetch('assets/skigebiete.json');
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            const areas = data.ski_areas;
-
-            // Use Kappl and St. Anton as baselines
-            const p1 = areas.find(a => a.name === "Kappl");
-            const p2 = areas.find(a => a.name === "St. Anton am Arlberg");
-
-            if (!p1 || !p2) throw new Error('projection reference points are missing');
-            const dLon = p2.gps.lon - p1.gps.lon;
-            const dLat = p2.gps.lat - p1.gps.lat;
-            const dX = p2.epsg_31254.x - p1.epsg_31254.x;
-            const dY = p2.epsg_31254.y - p1.epsg_31254.y;
-
-            // Linear Approximation (valid for local area)
-            const scaleX = dX / dLon;
-            const scaleY = dY / dLat;
-
-            projParams = {
-                scaleX, scaleY,
-                refX: p1.epsg_31254.x,
-                refY: p1.epsg_31254.y,
-                refLon: p1.gps.lon,
-                refLat: p1.gps.lat
-            };
-            console.log("Coordinate System Calibrated:", projParams);
-            return true;
-        } catch (e) {
-            projectionPromise = null; // a later retry may succeed
-            console.error("Failed to init projection", e);
-            return false;
-        }
-    })();
-    return projectionPromise;
+    return true;
 }
 
 export function latLonToWorld(lat, lon) {
-    if (!projParams) return { x: 0, y: 0 };
-    const dx = (lon - projParams.refLon) * projParams.scaleX;
-    const dy = (lat - projParams.refLat) * projParams.scaleY;
-    return { x: projParams.refX + dx, y: projParams.refY + dy };
+    return wgs84ToEpsg31254(lat, lon);
 }
 
-// Inverse of the same local calibration used by latLonToWorld(). This is a
-// human-readable navigation coordinate, not a survey-grade CRS transform.
 export function worldToLatLon(x, y) {
-    if (!projParams) return null;
-    return {
-        lat: projParams.refLat + (y - projParams.refY) / projParams.scaleY,
-        lon: projParams.refLon + (x - projParams.refX) / projParams.scaleX,
-    };
+    return epsg31254ToWgs84(x, y);
 }

@@ -9,6 +9,8 @@ import math
 import unicodedata
 from pathlib import Path
 
+from pyproj import Transformer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PEAKS_PATH = ROOT / "frontend/app/assets/tirol_peaks.geojson"
@@ -103,26 +105,17 @@ def world_to_tile(x: float, y: float) -> tuple[int, int]:
     return q_int, r_int
 
 
-def projection(ski_areas: list[dict]) -> dict[str, float]:
-    kappl = next(area for area in ski_areas if area["name"] == "Kappl")
-    anton = next(area for area in ski_areas if area["name"] == "St. Anton am Arlberg")
-    return {
-        "scale_x": (anton["epsg_31254"]["x"] - kappl["epsg_31254"]["x"])
-        / (anton["gps"]["lon"] - kappl["gps"]["lon"]),
-        "scale_y": (anton["epsg_31254"]["y"] - kappl["epsg_31254"]["y"])
-        / (anton["gps"]["lat"] - kappl["gps"]["lat"]),
-        "ref_x": kappl["epsg_31254"]["x"],
-        "ref_y": kappl["epsg_31254"]["y"],
-        "ref_lon": kappl["gps"]["lon"],
-        "ref_lat": kappl["gps"]["lat"],
-    }
+# World metres are EPSG:31254. This was previously approximated by scaling a
+# baseline between two ski areas' recorded coordinates, which put peaks up to
+# 19 km from their true position -- far enough that their baked-coverage flag
+# was computed against the wrong tile entirely. The frontend uses the matching
+# exact transform in frontend/app/epsg31254.js; both agree with PROJ to well
+# under a millimetre.
+_TRANSFORMER = Transformer.from_crs("EPSG:4326", "EPSG:31254", always_xy=True)
 
 
-def lat_lon_to_world(lat: float, lon: float, params: dict[str, float]) -> tuple[float, float]:
-    return (
-        params["ref_x"] + (lon - params["ref_lon"]) * params["scale_x"],
-        params["ref_y"] + (lat - params["ref_lat"]) * params["scale_y"],
-    )
+def lat_lon_to_world(lat: float, lon: float) -> tuple[float, float]:
+    return _TRANSFORMER.transform(lon, lat)
 
 
 def is_available(x: float, y: float, tile_keys: set[tuple[int, int]]) -> int:
@@ -134,7 +127,6 @@ def build_index() -> dict:
     ski_areas = json.loads(SKI_PATH.read_text())["ski_areas"]
     manifest = json.loads(MANIFEST_PATH.read_text())
     tile_keys = {(tile["yq"], tile["yr"]) for tile in manifest["tiles"]}
-    params = projection(ski_areas)
     items = []
 
     for feature in peaks:
@@ -143,7 +135,7 @@ def build_index() -> dict:
         if not name:
             continue
         lon, lat = feature["geometry"]["coordinates"][:2]
-        x, y = lat_lon_to_world(lat, lon, params)
+        x, y = lat_lon_to_world(lat, lon)
         try:
             elevation = int(round(float(props.get("ele", 0))))
         except (TypeError, ValueError):
@@ -157,7 +149,11 @@ def build_index() -> dict:
     for area in ski_areas:
         name = area["name"]
         lat, lon = area["gps"]["lat"], area["gps"]["lon"]
-        x, y = area["epsg_31254"]["x"], area["epsg_31254"]["y"]
+        # Projected from GPS rather than read from the file's recorded
+        # epsg_31254 field: only two of those entries were actually derived
+        # from their coordinates, and the rest are hand-rounded to 100 m,
+        # putting them up to 2.1 km off (see docs note in the commit).
+        x, y = lat_lon_to_world(lat, lon)
         items.append(
             [name, normalize(name), 0, round(lat, 6), round(lon, 6), "s", is_available(x, y, tile_keys), x, y]
         )

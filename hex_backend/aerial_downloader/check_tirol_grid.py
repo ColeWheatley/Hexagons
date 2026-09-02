@@ -42,39 +42,34 @@ def get_grid_bounds(grid_id):
     Calculates the bounding box for a Tirol grid ID in EPSG:31254.
     Format: XXYY-SS
     Returns (left, bottom, right, top)
-    Note: Tirol grid usually follow 8x8 (01-64) but we support up to 99.
+
+    XXYY identifies a 10km x 10km block (XX: Easting/10000 + 16, YY:
+    Northing/10000 + 1). Each block holds 80 sub-tiles (SS 01-80) in a
+    10-row x 8-col grid of 1250m x 1000m cells, filling the block exactly
+    -- verified against the live gis.tirol.gv.at server (e.g. SS=73 is
+    the Innsbruck/Nordkette cell, row 9 of 0-9). An earlier version of
+    this function assumed only 8 rows (SS 01-64) with an unexplained 2km
+    gap at the block's south edge; that gap doesn't exist and silently
+    mapped any point in rows 9-10 to the wrong block entirely.
     """
     try:
         prefix, suffix = grid_id.split("-")
         xx = int(prefix[:2])
         yy = int(prefix[2:])
         ss = int(suffix)
-        
-        # Grid index (assuming 1-indexed for standard 64 tiles, but user wants 0-99)
-        # This part depend on how they actually map 0-99. 
-        # Usually 01-64 is an 8x8 grid within a 10km block.
-        # XXYY refers to a 10km x 10km block.
-        # XX: Easting / 10000 + 16 (approx)
-        # YY: Northing / 10000 + 1 (approx)
-        
+
         base_x = (xx - 16) * 10000
-        base_y = (yy - 1) * 10000 + 2000
-        
-        # Standard Tirol 1:5000 tiles (1250m x 1000m)
-        # 01-08: Top row
-        # 09-16: Second row
-        # ...
-        # 57-64: Bottom row
-        
+        block_top = yy * 10000
+
         s_idx = ss - 1 if ss > 0 else 0
         col = s_idx % 8
         row = s_idx // 8
-        
+
         left = base_x + col * 1250
         right = left + 1250
-        top = base_y + 8000 - (row * 1000)
+        top = block_top - (row * 1000)
         bottom = top - 1000
-        
+
         return (left, bottom, right, top)
     except Exception as e:
         return None

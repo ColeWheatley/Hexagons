@@ -192,3 +192,10 @@ by the complete cap radius plus raster margin. A full audit of 121,322,080
 retained leaves across 8,132 GSPs found zero of 727,932,480 cap vertices outside
 the TIF union. Resume from a new exact pushed revision so geometry and texture
 recipes cannot be confused with already uploaded prior-generation objects.
+
+## GPU note: ECC status (2026-08-19)
+
+The 23,028 MiB VRAM figure recorded in the 2026-07-20 audit above reflects
+ECC being **enabled** on the 3090 Ti (`nvidia-smi -q -d ECC`); with ECC off
+it would read ~24,564 MiB instead. Cole is considering disabling ECC, so
+re-check `nvidia-smi -q -d ECC` before assuming either number still holds.
