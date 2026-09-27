@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/python3.14
 """Minimal CDP probe: open a URL in headless Chrome, sample viewer state.
 
-usage: [PROBE_OFFLINE=start,end] probe.py URL SECONDS [SAMPLE_EVERY]
+usage: [PROBE_OFFLINE=start,end] [PROBE_DPR=2] probe.py URL SECONDS [SAMPLE_EVERY]
 Prints one JSON line per sample with texture/geometry/network scheduler state.
 Profile dir lives under Hexagons-codex/tmp (the external tripwire keys on it).
 """
@@ -55,7 +55,7 @@ async def main(url, seconds, every):
     proc = subprocess.Popen([CHROME, '--headless=new', f'--remote-debugging-port={port}',
                              f'--user-data-dir={profile}', '--ignore-certificate-errors',
                              '--allow-insecure-localhost', '--window-size=1440,900',
-                             '--force-device-scale-factor=1', '--no-first-run', 'about:blank'],
+                             f"--force-device-scale-factor={os.environ.get('PROBE_DPR', '1')}", '--no-first-run', 'about:blank'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
         for _ in range(100):

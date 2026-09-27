@@ -117,6 +117,16 @@ VC is scored against each build's own frame at 65 s; live's is blurrier (edge en
 pattern/magenta for ~20 s and did not reach VC95 within 45 s (two runs).
 An earlier pair before the tiny-request concurrency fix: staged VC95 10/22 s vs live 18/18 s.
 
+### Retina (DPR 2) — what your Mac will actually fetch
+
+The screen-space rule counts device pixels (render DPR is capped at 2), so a Retina
+screen asks for one mip level finer: the default view wants 16 pages at 1024 px and
+4 at 2048 px (vs 512/1024 px at DPR 1). Real link: ~11.5 MB of imagery, settled by
+~15 s (DPR 1: ~3.1 MB, ~10 s). Live fetches 51 MB at any DPR. If you'd rather trade
+a little Retina sharpness for speed, scaling `detailBias` by `1 / devicePixelRatio`
+(or ~0.7 at DPR 2) in `_applyScreenSpaceTextureLevels` is a one-line change; the dev
+"high texture distance" slider previews it (2000 m = 1×).
+
 ## Hardening (evening pass, after an independent review)
 
 - `NetScheduler`: a request with no response/body progress for 20 s is aborted
