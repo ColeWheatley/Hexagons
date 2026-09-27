@@ -2855,9 +2855,13 @@ class PistonViewer {
         const profileBias = Math.max(0.5, Math.min(1, (this.capabilityProfile.highTextureDistanceM
             || TEXTURE_CONFIG.highEnterDistanceM) / TEXTURE_CONFIG.highEnterDistanceM));
         const detailBias = Math.max(0.25, Math.min(2, slider / TEXTURE_CONFIG.highEnterDistanceM)) * profileBias;
-        const finest = this.capabilityProfile.name === 'low'
+        // Never stream a level the GPU cannot hold (the transcoder would
+        // skip it after a multi-MB download): 2048-max devices stop at L1.
+        const maxTextureSize = Math.max(1, this.textureSupport?.maxTextureSize || 4096);
+        const gpuFinest = Math.max(0, Math.ceil(Math.log2(4096 / maxTextureSize)));
+        const finest = Math.max(gpuFinest, this.capabilityProfile.name === 'low'
             ? MEDIUM_TEXTURE_LEVEL
-            : HIGH_TEXTURE_LEVEL.FINEST;
+            : HIGH_TEXTURE_LEVEL.FINEST);
         const camera = this.camera.position;
         for (const state of states.values()) {
             if (!textureStateHasDemand(state, { includeOutside: false })) continue;
