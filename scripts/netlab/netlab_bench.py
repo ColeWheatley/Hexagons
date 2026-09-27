@@ -309,13 +309,12 @@ def main():
         print(summarize(result),flush=True)
     finally:
         if proc is not None:
-            if proc.poll() is None:
-                proc.terminate()
-                try: proc.wait(timeout=5)
-                except subprocess.TimeoutExpired: pass
+            if proc.poll() is None: proc.terminate()
             try: os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            proc.wait()
+            except (ProcessLookupError, PermissionError): pass
+            try: proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill(); proc.wait()
         shutil.rmtree(profile,ignore_errors=True)
         if not a.frames: shutil.rmtree(frames_dir,ignore_errors=True)
 
