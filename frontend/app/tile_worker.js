@@ -254,7 +254,7 @@ self.onmessage = async function (e) {
                     transferables.push(lod.parentHeight.buffer);
                 }
             });
-            transferables.push(result.unitHeights.buffer);
+            if (result.unitHeights) transferables.push(result.unitHeights.buffer);
             if (result.geometrySource?.byteLength) {
                 transferables.push(result.geometrySource);
             }
@@ -282,8 +282,10 @@ self.onmessage = async function (e) {
 
             self.postMessage({ id, status: 'success', result }, transferables);
 
-        } else if (type === 'BUILD_GEOMETRY') {
-            const result = buildGeometryFromSource(data);
+        } else if (type === 'BUILD_GEOMETRY' || type === 'BUILD_TILE_PREFIX') {
+            const result = type === 'BUILD_TILE_PREFIX'
+                ? buildTilePrefix(data)
+                : buildGeometryFromSource(data);
             const transferables = [];
             Object.values(result.lods).forEach(lod => {
                 if (!lod) return;
@@ -296,6 +298,18 @@ self.onmessage = async function (e) {
                 transferables.push(lod.parentPos.buffer);
                 transferables.push(lod.parentHeight.buffer);
             });
+            if (type === 'BUILD_TILE_PREFIX') {
+                const seen = new Set(transferables);
+                for (const array of [result.heightValues, ...result.visibilityData.depths.flatMap(
+                    depth => [depth.h, depth.valid, depth.relief, depth.downExtent,
+                        depth.upExtent, depth.renderDown, depth.renderUp],
+                )]) {
+                    if (array?.buffer && !seen.has(array.buffer)) {
+                        transferables.push(array.buffer);
+                        seen.add(array.buffer);
+                    }
+                }
+            }
             self.postMessage({ id, status: 'success', result }, transferables);
 
         } else if (type === 'TRANSCODE_KTX2') {
@@ -401,6 +415,38 @@ function buildGeometryFromSource({
     };
 }
 
+function buildTilePrefix({ bytes, availableDepth, yq, yr, expectedGspVersion, rangesByDepth }) {
+    if (!Number.isInteger(availableDepth) || availableDepth < 2 || availableDepth > TILE_LEVEL) {
+        throw new RangeError('BUILD_TILE_PREFIX needs availableDepth 2..5');
+    }
+    const buffer = bytes instanceof ArrayBuffer
+        ? bytes : bytes?.buffer?.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    if (!(buffer instanceof ArrayBuffer)) throw new TypeError('BUILD_TILE_PREFIX needs bytes');
+    const parsed = parseGSP1(buffer, yq, yr, availableDepth);
+    if (parsed.binaryVersion !== 3 || expectedGspVersion !== 3) {
+        throw new Error('BUILD_TILE_PREFIX requires GSP3');
+    }
+    const lods = buildLevelBuffers(parsed, { rangesByDepth });
+    return {
+        lods,
+        geometryBytes: geometryBytesForLods(lods),
+        binaryVersion: 3,
+        availableDepth,
+        stats: parsed.stats,
+        center: parsed.center,
+        heightValues: parsed.depths[availableDepth].h,
+        visibilityData: {
+            // The main-thread frontier stops at L3/depth 2. Deeper arrays
+            // are only needed during this build and are not retained.
+            depths: parsed.depths.slice(0, 3).map(depth => ({
+                h: depth.h, valid: depth.valid, relief: depth.relief,
+                downExtent: depth.downExtent, upExtent: depth.upExtent,
+                renderDown: depth.renderDown, renderUp: depth.renderUp,
+            })),
+        },
+    };
+}
+
 // Progressive pages: the main thread streams a Range prefix of the published
 // 4096 px KTX2 (texture_byte_store.mjs); rebase it so mip `baseLevel` becomes
 // level 0 of a standalone file, then transcode as usual.
@@ -441,7 +487,11 @@ async function loadTextureOnly({ url, urls, bootstrap = false, faultAttempt, fau
 // GSP1/GSP2/GSP3 PARSER. GSP2 adds terrain down/up extents; GSP3 adds exact
 // rendered down/up extents. Unit records stay byte-for-byte compatible.
 // =============================================================================
-function parseGSP1(buffer, expectYq, expectYr) {
+function parseGSP1(buffer, expectYq, expectYr, availableDepth = TILE_LEVEL) {
+    if (!Number.isInteger(availableDepth) || availableDepth < 0 || availableDepth > TILE_LEVEL) {
+        throw new RangeError('availableDepth must be 0..5');
+    }
+    if (buffer.byteLength < 48) throw new RangeError('GSP header is truncated');
     const view = new DataView(buffer);
     const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
     if (sig !== 'GSP1' && sig !== 'GSP2' && sig !== 'GSP3') {
@@ -479,9 +529,14 @@ function parseGSP1(buffer, expectYq, expectYr) {
 
     let off = 48;
     let unit = null;
-    for (let d = 1; d <= TILE_LEVEL; d++) {
+    for (let d = 1; d <= availableDepth; d++) {
+        if (off + 4 > buffer.byteLength) throw new RangeError(`GSP depth ${d} count is truncated`);
         const count = view.getUint32(off, true); off += 4;
         if (count !== Math.pow(7, d)) throw new Error(`GSP1 depth ${d} count ${count}`);
+        const recordBytes = d === TILE_LEVEL ? 14 : (isGsp3 ? 16 : (isGsp2 ? 12 : 8));
+        if (off + count * recordBytes > buffer.byteLength) {
+            throw new RangeError(`GSP depth ${d} records are truncated`);
+        }
         const parentH = depths[d - 1].h;
         const h = new Float32Array(count);
         const slopeMean = new Uint8Array(count);
@@ -549,7 +604,7 @@ function parseGSP1(buffer, expectYq, expectYr) {
     return {
         depths, unit,
         binaryVersion: version,
-        unitHeights: depths[TILE_LEVEL].h,
+        unitHeights: depths[TILE_LEVEL]?.h ?? null,
         stats: { min: hMin, max: hMax, avg: hMean, base: hMin },
         center: { q: centerQ, r: centerR, latQ, latR },
     };
@@ -585,7 +640,7 @@ function buildLevelBuffers(parsed, selection = null) {
     const { n, px, pz, depths: geomDepths } = tileGeometry();
     const lods = {};
 
-    for (let d = 0; d <= TILE_LEVEL; d++) {
+    for (let d = 0; d < parsed.depths.length; d++) {
         const gd = geomDepths[d];
         const pd = parsed.depths[d];
         const level = gd.level;
