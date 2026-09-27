@@ -2,7 +2,7 @@ export const WORKER_LANE = Object.freeze({ GEOMETRY: 'geometry', TEXTURE: 'textu
 export const MAX_TEXTURE_DECODERS = 2;
 
 export function workerLaneForJob(type) {
-    return type === 'LOAD_TEXTURE' ? WORKER_LANE.TEXTURE : WORKER_LANE.GEOMETRY;
+    return type === 'LOAD_TEXTURE' || type === 'TRANSCODE_KTX2' ? WORKER_LANE.TEXTURE : WORKER_LANE.GEOMETRY;
 }
 
 export function workerLaneSizes(workerBudget = 4) {

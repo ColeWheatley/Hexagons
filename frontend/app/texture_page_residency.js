@@ -227,10 +227,82 @@ export function textureTierRequestPlan(state, {
     }
     if (state.desiredTier === PAGE_TEXTURE_TIER.HIGH
         && !isMoving
-        && !state.highAdmissionBlocked) {
-        request(PAGE_TEXTURE_TIER.HIGH);
+        && !state.highAdmissionBlocked
+        && highRefinementPending(state)
+        && !isTier(state, PAGE_TEXTURE_TIER.HIGH, TIER_STATE.FAILED)) {
+        plan.push(PAGE_TEXTURE_TIER.HIGH);
     }
     return plan;
+}
+
+// ---------------------------------------------------------------------------
+// Progressive high tier. The "high" asset is one texture page streamed from
+// the published 4096 px KTX2 by Range prefix (see ktx2_prefix.js); its mip
+// *level* grows over time: 3 = 512 px, 2 = 1024, 1 = 2048, 0 = 4096 px.
+// Coarser needs are served by the 256 px medium tier (a 28 KB prefix of the
+// same file) and the 128 px low tier.
+// ---------------------------------------------------------------------------
+export const HIGH_TEXTURE_LEVEL = Object.freeze({ FINEST: 0, COARSEST: 3, FIRST_STEP: 2 });
+export const MEDIUM_TEXTURE_LEVEL = 4;
+export const LOW_TEXTURE_LEVEL = 5;
+
+/**
+ * Screen-space texture resolution. Returns the coarsest mip level of a
+ * `baseSizePx` page that still puts at least `detailBias` texels on every
+ * screen pixel at the page's nearest point. Level 0 = full resolution.
+ * Hysteresis: refine immediately, coarsen only once the need has dropped
+ * `hysteresis` (fraction of a level) below the previous level's threshold,
+ * so small camera jitters never flip a page back and forth.
+ */
+export function screenSpaceTextureLevel(nearestDistance, focalLengthPx, {
+    pageSizeM = 1024,
+    baseSizePx = 4096,
+    detailBias = 1,
+    previousLevel = null,
+    hysteresis = 0.25,
+    maxLevel = LOW_TEXTURE_LEVEL,
+    minLevel = 0,
+} = {}) {
+    const clamp = level => Math.max(minLevel, Math.min(maxLevel, level));
+    if (!(nearestDistance > 0) || !(focalLengthPx > 0)) return clamp(0);
+    const neededPx = pageSizeM * focalLengthPx * Math.max(1e-3, detailBias) / nearestDistance;
+    const exact = Math.log2(baseSizePx / Math.max(1, neededPx)); // level whose size == need
+    let level = clamp(Math.floor(exact));
+    if (Number.isInteger(previousLevel) && level > previousLevel) {
+        // Coarsening: require a clear margin past the boundary.
+        level = clamp(Math.max(previousLevel, Math.floor(exact - hysteresis)));
+    }
+    return level;
+}
+
+/** Tier + high mip level for a screen-space level. */
+export function tierForTextureLevel(level) {
+    if (level <= HIGH_TEXTURE_LEVEL.COARSEST) return PAGE_TEXTURE_TIER.HIGH;
+    if (level <= MEDIUM_TEXTURE_LEVEL) return PAGE_TEXTURE_TIER.MEDIUM;
+    return PAGE_TEXTURE_TIER.MEDIUM; // medium is the durable floor for demanded pages
+}
+
+export function residentHighLevel(state) {
+    const level = state?.assets?.get(PAGE_TEXTURE_TIER.HIGH)?.level;
+    return Number.isInteger(level) ? level : null;
+}
+
+/** Next high mip to fetch: at most one level finer per step, 1024 px first. */
+export function nextHighLevel(state) {
+    const desired = Number.isInteger(state?.desiredHighLevel)
+        ? state.desiredHighLevel
+        : HIGH_TEXTURE_LEVEL.FINEST;
+    const resident = residentHighLevel(state);
+    if (resident === null) return Math.max(desired, HIGH_TEXTURE_LEVEL.FIRST_STEP);
+    return Math.max(desired, resident - 1);
+}
+
+export function highRefinementPending(state) {
+    const resident = residentHighLevel(state);
+    const desired = Number.isInteger(state?.desiredHighLevel)
+        ? state.desiredHighLevel
+        : HIGH_TEXTURE_LEVEL.FINEST;
+    return resident === null || resident > desired;
 }
 
 // A rejected pink upload stays suppressed only while both the cache contents

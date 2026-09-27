@@ -126,7 +126,7 @@ function extractAppVersion(mainSource) {
 async function buildJavaScript({ basisJsPath, basisWasmPath }) {
     const workerResult = await esbuild.build({
         stdin: {
-            contents: "import './gosper_core.js';\nimport './tile_worker.js';\n",
+            contents: "import './gosper_core.js';\nimport './ktx2_prefix.js';\nimport './tile_worker.js';\n",
             resolveDir: appDir,
             sourcefile: 'tile_worker_entry.js',
             loader: 'js',

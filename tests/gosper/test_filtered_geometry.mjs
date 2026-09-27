@@ -15,11 +15,14 @@ const corePath = path.join(ROOT, 'frontend/app/gosper_core.js');
 const context = vm.createContext({ console, performance, URL });
 context.self = context;
 context.location = { href: 'http://localhost/tile_worker.js' };
+const workerScripts = {
+    'gosper_core.js': corePath,
+    'ktx2_prefix.js': path.join(ROOT, 'frontend/app/ktx2_prefix.js'),
+};
 context.importScripts = specifier => {
-    if (specifier.split('?')[0] !== 'gosper_core.js') {
-        throw new Error(`unexpected importScripts(${specifier})`);
-    }
-    vm.runInContext(fs.readFileSync(corePath, 'utf8'), context, { filename: corePath });
+    const script = workerScripts[specifier.split('?')[0]];
+    if (!script) throw new Error(`unexpected importScripts(${specifier})`);
+    vm.runInContext(fs.readFileSync(script, 'utf8'), context, { filename: script });
 };
 vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, { filename: workerPath });
 const buildLevelBuffers = vm.runInContext('buildLevelBuffers', context);

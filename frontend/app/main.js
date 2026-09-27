@@ -63,7 +63,17 @@ import {
     BOOTSTRAP_GPU_BYTES_PER_PAGE,
     BOOTSTRAP_MAX_RESIDENT_BYTES,
     BOOTSTRAP_PAGE_SIZE_PX,
+    HIGH_TEXTURE_LEVEL,
+    LOW_TEXTURE_LEVEL,
+    MEDIUM_TEXTURE_LEVEL,
+    highRefinementPending,
+    nextHighLevel,
+    residentHighLevel,
+    screenSpaceTextureLevel,
+    tierForTextureLevel,
 } from './texture_page_residency.js';
+import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
+import { TextureByteStore } from './texture_byte_store.mjs';
 import {
     collectDisplayedTexturePages,
     countUnpaintedVisibleTiles,
@@ -173,6 +183,9 @@ const TEXTURE_CONFIG = Object.freeze({
     // stealth VRAM residency pool.
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
+// Concurrent progressive texture jobs (network wait + transcode). Byte-level
+// link admission is the NetScheduler's job, not this count's.
+const PROGRESSIVE_TEXTURE_JOBS = 4;
 
 function appendCacheKey(url, cacheKey) {
     if (cacheKey === undefined || cacheKey === null || cacheKey === '') return url;
@@ -524,6 +537,15 @@ class PistonViewer {
         // --- INFRASTRUCTURE: Telemetry & Cache Authority ---
         this.vramLedger = new VRAMLedger();
         this.cacheManager = new CacheManager(this.capabilityProfile.textureBudgetBytes);
+        // One bufferbloat-aware queue for Range-streamed texture prefixes (and
+        // later terrain); the byte store persists every fetched prefix.
+        this.netScheduler = new NetScheduler({
+            maxConcurrent: this.capabilityProfile.name === 'low' ? 3 : 6,
+        });
+        this.textureByteStore = new TextureByteStore({
+            scheduler: this.netScheduler,
+            memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 256 * 1024 * 1024 : 96 * 1024 * 1024,
+        });
 
         this.initTouchMomentumTracking();
         this.initWorld();
@@ -925,6 +947,7 @@ class PistonViewer {
     _workerJobResourceKey(type, data) {
         if (type === 'LOAD_TILE' || type === 'BUILD_GEOMETRY') return `${data.yq}_${data.yr}`;
         if (type === 'LOAD_TEXTURE') return (data.urls || []).join(',');
+        if (type === 'TRANSCODE_KTX2') return data.resourceKey || type;
         return type;
     }
 
@@ -2662,6 +2685,108 @@ class PistonViewer {
         this.log(`Retrying failed resources after camera settled (${tileCount} tiles, ${textureCount} textures).`, 'info');
     }
 
+    _textureTierSatisfied(state, tier) {
+        if (tier === TEXTURE_TIER.HIGH) return !highRefinementPending(state);
+        return state.assets.has(tier);
+    }
+
+    /** Scene-space distance from the camera to a page's rendered AABB. */
+    _texturePageNearestDistance(page, camera = this.camera.position) {
+        const ox = this.worldOrigin.x;
+        const oy = this.worldOrigin.y;
+        const minX = page.minX - ox;
+        const maxX = page.maxX - ox;
+        const minZ = -(page.maxY - oy);
+        const maxZ = -(page.minY - oy);
+        const y0 = (page.renderMin - this.floorState.value) * this.heightFactor;
+        const y1 = (page.renderMax - this.floorState.value) * this.heightFactor;
+        const dx = Math.max(minX - camera.x, 0, camera.x - maxX);
+        const dz = Math.max(minZ - camera.z, 0, camera.z - maxZ);
+        const dy = Math.max(Math.min(y0, y1) - camera.y, 0, camera.y - Math.max(y0, y1));
+        return Math.hypot(dx, dy, dz);
+    }
+
+    /**
+     * Screen-space texture resolution (owner-approved 2026-09-27): each page
+     * streams only the mip level whose texels are at least one screen pixel
+     * at its nearest point — 4096 px only where it is actually visible at
+     * native resolution; distant pages stop at 1024/2048 and look the same.
+     * The dev "high texture distance" slider scales detail (2000 m = 1x).
+     */
+    _applyScreenSpaceTextureLevels(states, projection) {
+        const focalLengthPx = projection?.focalLengthPx;
+        if (!(focalLengthPx > 0) || !this.worldOrigin || !this.floorState) return;
+        const slider = Number.isFinite(this.highTextureDistanceM)
+            ? this.highTextureDistanceM
+            : TEXTURE_CONFIG.highEnterDistanceM;
+        const detailBias = Math.max(0.25, Math.min(2, slider / TEXTURE_CONFIG.highEnterDistanceM));
+        const finest = this.capabilityProfile.name === 'low'
+            ? HIGH_TEXTURE_LEVEL.FIRST_STEP
+            : HIGH_TEXTURE_LEVEL.FINEST;
+        const camera = this.camera.position;
+        for (const state of states.values()) {
+            if (!textureStateHasDemand(state, { includeOutside: false })) continue;
+            const page = state.page;
+            if (!page || !Number.isFinite(page.minX)) continue;
+            const level = screenSpaceTextureLevel(this._texturePageNearestDistance(page, camera), focalLengthPx, {
+                pageSizeM: Math.max(page.maxX - page.minX, page.maxY - page.minY),
+                detailBias,
+                previousLevel: Number.isInteger(state.screenLevel) ? state.screenLevel : null,
+                minLevel: finest,
+            });
+            state.screenLevel = level;
+            state.desiredHighLevel = Math.min(level, HIGH_TEXTURE_LEVEL.COARSEST);
+            const tier = tierForTextureLevel(level);
+            if (tier !== state.desiredTier) {
+                state.desiredTier = tier;
+                if (tier !== TEXTURE_TIER.HIGH) {
+                    state.highAdmissionBlocked = false;
+                    state.highAdmissionBlockedRevision = -1;
+                    state.highAdmissionBlockedPriority = -Infinity;
+                }
+            }
+        }
+    }
+
+    _textureNetPriority(state, task) {
+        const base = state.classification === 'visible'
+            ? NET_PRIORITY.VISIBLE
+            : (state.classification === 'guard' ? NET_PRIORITY.GUARD : NET_PRIORITY.BACKGROUND);
+        if (task.tier !== TEXTURE_TIER.HIGH) return base + 60; // coverage first
+        // Coarser refinement steps first: every page sharp-ish before any
+        // page gets its 6 MB full-resolution top level.
+        return base + 10 * Math.min(5, Number.isInteger(task.level) ? task.level : 0);
+    }
+
+    /**
+     * low/medium/high all come from ONE published object — the 4096 px page —
+     * as Range prefixes; the worker rebases the prefix to the requested mip
+     * and transcodes it. Bytes are fetched once per session and persisted.
+     */
+    async _loadProgressiveTexture(task, state, attempt) {
+        const url = this._textureUrls(TEXTURE_TIER.HIGH, task.key)[0];
+        if (this.faultGateEnabled) this._recordFaultGateEvent({ kind: 'texture', url, attempt, action: 'attempt' });
+        if (this._faultGateDrop('texture', attempt)) {
+            this._recordFaultGateEvent({ kind: 'texture', url, attempt, action: 'dropped' });
+            throw new Error(`[AA2_FAULT_GATE] deterministic texture request drop: ${url}`);
+        }
+        const prefix = await this.textureByteStore.ensureLevel(url, task.level, {
+            priority: this._textureNetPriority(state, task),
+        });
+        // Structured-clone (not transfer): the watchdog may re-post a job to
+        // another worker, which a detached buffer would break.
+        const result = await this.postWorkerJob('TRANSCODE_KTX2', {
+            bytes: prefix.bytes,
+            baseLevel: task.level,
+            resourceKey: `${task.key}/${task.tier}@${task.level}`,
+        });
+        result.networkBytes = prefix.networkBytes;
+        result.level = task.level;
+        result.sourceUrl = url;
+        if (this.faultGateEnabled) this._recordFaultGateEvent({ kind: 'texture', url, attempt, action: 'success' });
+        return result;
+    }
+
     _desiredTextureTier(state, distanceMeters, classification) {
         return desiredTextureTier(state, distanceMeters, classification, {
             highEnterDistanceM: this._effectiveHighTextureDistanceM(),
@@ -2690,7 +2815,7 @@ class PistonViewer {
         if (!textureResource) return;
         const state = this._textureState(textureResource);
         if (tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) return;
-        if (state.assets.has(tier) || isTier(state, tier, TIER_STATE.LOADING)) return;
+        if (this._textureTierSatisfied(state, tier) || isTier(state, tier, TIER_STATE.LOADING)) return;
         if (isTier(state, tier, TIER_STATE.QUEUED)) {
             // Mini mode seeds every medium at background priority. Promote
             // that existing task when its tile later enters the frustum.
@@ -3043,7 +3168,12 @@ class PistonViewer {
             this.texStats.highSkippedTopMips = result.skippedTopMips || 0;
         }
 
-        const asset = { texture, bytes: result.gpuBytes || 0, result };
+        const asset = {
+            texture,
+            bytes: result.gpuBytes || 0,
+            result,
+            level: Number.isInteger(result.level) ? result.level : null,
+        };
         this.texturePageResidency.replaceAsset(state.key, task.tier, asset, {
             rebind: current => this._refreshTexturePageConsumers(current),
             dispose: retired => retired.texture.dispose(),
@@ -3076,14 +3206,29 @@ class PistonViewer {
                 r: task.textureResource.pageY,
                 time: performance.now(),
             });
+            // Progressive refinement: queue the next finer step right away
+            // instead of waiting for the next camera-driven demand pass.
+            if (highRefinementPending(state) && textureStateHasDemand(state)) {
+                this._scheduleTextureQuality(
+                    state.page,
+                    state.classification,
+                    state.projectedDiameterPx,
+                    state.distanceMeters,
+                    state.perceptibility,
+                    true,
+                );
+            }
         }
     }
 
     processTextureResults() {
         let installed = 0;
         while (installed < TEXTURE_CONFIG.maxUploadsPerFrame) {
+            // Small progressive steps (<= 1024 px, <= 0.5 MB of GPU upload)
+            // may land while moving; full-resolution uploads wait for rest.
             const index = this.textureResultQueue.findIndex(
-                item => !this.isMovingView || item.task.tier !== TEXTURE_TIER.HIGH);
+                item => !this.isMovingView || item.task.tier !== TEXTURE_TIER.HIGH
+                    || (item.result?.level ?? 0) >= HIGH_TEXTURE_LEVEL.FIRST_STEP);
             if (index < 0) break;
             const { task, result } = this.textureResultQueue.splice(index, 1)[0];
             const state = this._textureState(task.textureResource);
@@ -3096,6 +3241,14 @@ class PistonViewer {
             if (task.tier === TEXTURE_TIER.HIGH && state.desiredTier !== TEXTURE_TIER.HIGH) {
                 // Demand changed during transcode. These are still CPU-side
                 // bytes, so avoid a pointless GPU upload and immediate drop.
+                // (The downloaded prefix itself stays in the byte store.)
+                setTierState(state, task.tier, TIER_STATE.ABSENT);
+                this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
+                continue;
+            }
+            const residentLevel = task.tier === TEXTURE_TIER.HIGH ? residentHighLevel(state) : null;
+            if (residentLevel !== null && Number.isInteger(result.level) && result.level >= residentLevel) {
+                // A finer step already landed; this one adds nothing.
                 setTierState(state, task.tier, TIER_STATE.ABSENT);
                 this.resourceLifecycles.delete('texture', `${task.key}/${task.tier}`);
                 continue;
@@ -3109,7 +3262,11 @@ class PistonViewer {
     }
 
     _dispatchTextureJobs(maxConcurrent) {
-        while (this.activeTextureJobs < Math.min(maxConcurrent, this.capabilityProfile.maxTextureJobs) &&
+        // Jobs now spend most of their life waiting on the shared network
+        // scheduler (which owns byte-level admission), not on a decoder, so
+        // allow a few more than there are texture workers.
+        const jobLimit = Math.max(this.capabilityProfile.maxTextureJobs, PROGRESSIVE_TEXTURE_JOBS);
+        while (this.activeTextureJobs < Math.min(maxConcurrent, jobLimit) &&
             this.textureQueue.length > 0) {
             const index = selectTextureDispatchTaskIndex(
                 this.textureQueue,
@@ -3136,7 +3293,10 @@ class PistonViewer {
             const state = this._textureState(task.textureResource);
             setTierState(state, task.tier, TIER_STATE.ABSENT);
             if (TEXTURE_RANK[task.tier] > TEXTURE_RANK[state.desiredTier]) continue;
-            if (state.assets.has(task.tier) || isTier(state, task.tier, TIER_STATE.LOADING)) continue;
+            if (this._textureTierSatisfied(state, task.tier) || isTier(state, task.tier, TIER_STATE.LOADING)) continue;
+            task.level = task.tier === TEXTURE_TIER.HIGH
+                ? nextHighLevel(state)
+                : (task.tier === TEXTURE_TIER.MEDIUM ? MEDIUM_TEXTURE_LEVEL : LOW_TEXTURE_LEVEL);
             setTierState(state, task.tier, TIER_STATE.LOADING);
             this.resourceLifecycles.begin('texture', `${task.key}/${task.tier}`, {
                 cause: 'worker-dispatch', tier: task.tier,
@@ -3146,12 +3306,14 @@ class PistonViewer {
             this.activeTextureJobs++;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, ({ attempt }) => (
-                this.postWorkerJob('LOAD_TEXTURE', {
-                    urls: task.urls,
-                    bootstrap: task.tier === TEXTURE_TIER.BOOTSTRAP,
-                    faultAttempt: attempt,
-                    faultDrop: this._faultGateDrop('texture', attempt),
-                })
+                task.tier === TEXTURE_TIER.BOOTSTRAP
+                    ? this.postWorkerJob('LOAD_TEXTURE', {
+                        urls: task.urls,
+                        bootstrap: true,
+                        faultAttempt: attempt,
+                        faultDrop: this._faultGateDrop('texture', attempt),
+                    })
+                    : this._loadProgressiveTexture(task, state, attempt)
             ), {
                 onRetry: event => this._resourceRetrying('texture', `${task.key}/${task.tier}`, event),
             }).then(result => {
@@ -3291,6 +3453,7 @@ class PistonViewer {
             }
         }
         promoteVisibleConsumerPages(residency.states, visibleConsumerPages);
+        this._applyScreenSpaceTextureLevels(residency.states, projection);
 
         // Camera motion can leave old lows and refinements in the queue. On a
         // world-scale manifest those stale lows must never become a hidden

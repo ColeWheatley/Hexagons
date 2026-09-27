@@ -39,7 +39,10 @@ assert.equal(lanes.selectAgedPriorityIndex(queue, { epoch: 7, dispatchSequence: 
 const main = fs.readFileSync(path.join(root, 'frontend/app/main.js'), 'utf8');
 const worker = fs.readFileSync(path.join(root, 'frontend/app/tile_worker.js'), 'utf8');
 assert.match(main, /workerLanes\[job\.lane\]/);
-assert.match(main, /Math\.min\(maxConcurrent, this\.capabilityProfile\.maxTextureJobs\)/);
+// Texture jobs mostly wait on the shared NetScheduler (byte-level admission);
+// decoder concurrency stays bounded by the texture lane size.
+assert.match(main, /Math\.max\(this\.capabilityProfile\.maxTextureJobs, PROGRESSIVE_TEXTURE_JOBS\)/);
+assert.match(main, /Math\.min\(maxConcurrent, jobLimit\)/);
 assert.match(main, /dispatchSequence:\s*this\.textureDispatchSequence/);
 assert.match(worker, /data\.prewarmBasis/);
 assert.match(main, /decoderCap:\s*MAX_TEXTURE_DECODERS/);

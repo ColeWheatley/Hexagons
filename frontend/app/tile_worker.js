@@ -2,6 +2,9 @@
 if (!self.GosperCore) {
     importScripts('gosper_core.js');
 }
+if (!self.Ktx2Prefix) {
+    importScripts('ktx2_prefix.js');
+}
 
 const G = self.GosperCore;
 const TILE_LEVEL = G.TILE_LEVEL; // 5
@@ -295,6 +298,10 @@ self.onmessage = async function (e) {
             });
             self.postMessage({ id, status: 'success', result }, transferables);
 
+        } else if (type === 'TRANSCODE_KTX2') {
+            const result = await transcodeKtx2Prefix(data);
+            self.postMessage({ id, status: 'success', result }, result.mipmaps.map(m => m.data.buffer));
+
         } else if (type === 'LOAD_TEXTURE') {
             const result = await loadTextureOnly(data);
             const transferables = result.imageBitmap
@@ -392,6 +399,19 @@ function buildGeometryFromSource({
         geometryBytes: geometryBytesForLods(lods),
         binaryVersion: parsed.binaryVersion,
     };
+}
+
+// Progressive pages: the main thread streams a Range prefix of the published
+// 4096 px KTX2 (texture_byte_store.mjs); rebase it so mip `baseLevel` becomes
+// level 0 of a standalone file, then transcode as usual.
+async function transcodeKtx2Prefix({ bytes, baseLevel = 0 }) {
+    const K = self.Ktx2Prefix;
+    const prefix = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const header = K.parseHeader(prefix);
+    if (!header) throw new Error('KTX2 prefix too short for its header');
+    const rebased = K.rebase(prefix, header, baseLevel);
+    const texture = await transcodeKTX2(rebased.buffer);
+    return { ...texture, sourceLevel: baseLevel, sourceWidth: header.width, sourceHeight: header.height };
 }
 
 async function loadTextureOnly({ url, urls, bootstrap = false, faultAttempt, faultDrop }) {
