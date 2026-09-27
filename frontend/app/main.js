@@ -134,6 +134,12 @@ import './gosper_core.js';
 import { navigationOverlayState } from './navigation_overlay.mjs';
 
 const G = window.GosperCore;
+// The Basis transcoder is compiled ONCE on the main thread (consuming the
+// index.html preload) and the compiled WebAssembly.Module is handed to every
+// texture worker; each worker used to download and compile it separately.
+const BASIS_TRANSCODER_WASM_URL = typeof __BASIS_TRANSCODER_WASM_URL__ === 'string'
+    ? __BASIS_TRANSCODER_WASM_URL__
+    : './vendor/basisu_v2/basis_transcoder.wasm';
 const TILE_WORKER_URL = typeof __TILE_WORKER_URL__ === 'string'
     ? __TILE_WORKER_URL__
     : './tile_worker.js';
@@ -849,11 +855,47 @@ class PistonViewer {
                 faultGateEnabled: this.faultGateEnabled,
             },
         });
+        // Workers (re)created after the module was compiled — e.g. by the
+        // watchdog — get it immediately; later ones via _shareBasisModule().
+        if (lane === WORKER_LANE.TEXTURE) this._postBasisModule(worker);
         return worker;
     }
 
     _workerLaneForIndex(index) {
         return this.workerLanes.texture.includes(index) ? WORKER_LANE.TEXTURE : WORKER_LANE.GEOMETRY;
+    }
+
+    /** Resolve once every texture worker holds the compiled Basis module
+     * (or null if sharing failed — workers then fetch it themselves). */
+    _shareBasisModule() {
+        this._basisModuleShared ??= (async () => {
+            let module = null;
+            try {
+                const url = new URL(BASIS_TRANSCODER_WASM_URL, window.location.href).href;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                module = typeof WebAssembly.compileStreaming === 'function'
+                    && (response.headers.get('Content-Type') || '').includes('application/wasm')
+                    ? await WebAssembly.compileStreaming(response)
+                    : await WebAssembly.compile(await response.arrayBuffer());
+            } catch (error) {
+                console.warn('[HEXAGONS] shared Basis module unavailable; workers will load their own', error);
+                return null;
+            }
+            this._basisWasmModule = module;
+            for (const index of this.workerLanes.texture) this._postBasisModule(this.workers[index]);
+            return module;
+        })();
+        return this._basisModuleShared;
+    }
+
+    _postBasisModule(worker) {
+        if (!worker || !this._basisWasmModule) return;
+        try {
+            worker.postMessage({ type: 'BASIS_MODULE', data: { module: this._basisWasmModule } });
+        } catch (error) {
+            console.warn('[HEXAGONS] could not share Basis module with a worker', error);
+        }
     }
 
     _restartWorker(index, reason) {
@@ -2782,6 +2824,7 @@ class PistonViewer {
         const prefix = await this.textureByteStore.ensureLevel(url, task.level, {
             priority: this._textureNetPriority(state, task),
         });
+        await this._shareBasisModule();
         // Structured-clone (not transfer): the watchdog may re-post a job to
         // another worker, which a detached buffer would break.
         const result = await this.postWorkerJob('TRANSCODE_KTX2', {

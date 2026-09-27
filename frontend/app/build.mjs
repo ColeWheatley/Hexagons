@@ -161,6 +161,7 @@ async function buildJavaScript({ basisJsPath, basisWasmPath }) {
         legalComments: 'none',
         define: {
             __TILE_WORKER_URL__: JSON.stringify(`./${workerPath}`),
+            __BASIS_TRANSCODER_WASM_URL__: JSON.stringify(`./${basisWasmPath}`),
         },
     });
     const mainPath = await writeHashedFile(

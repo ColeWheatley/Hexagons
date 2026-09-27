@@ -57,6 +57,7 @@ function resolveWorkerUrl(url) {
 }
 
 let workerSupport = null; // set once via INIT, before any texture job runs
+let sharedBasisModule = null; // compiled WebAssembly.Module from the main thread
 let basisModulePromise = null;
 let faultGateEnabled = false;
 
@@ -84,12 +85,21 @@ function loadBasisModule() {
         const transcoderUrl = resolveWorkerUrl(BASIS_TRANSCODER_JS_URL);
         const wasmUrl = resolveWorkerUrl(BASIS_TRANSCODER_WASM_URL);
         importScripts(transcoderUrl);
-        basisModulePromise = globalThis.BASIS({
+        const moduleConfig = {
             locateFile: (file) => {
                 if (file === 'basis_transcoder.wasm') return wasmUrl;
                 return new URL(file, transcoderUrl).href;
             },
-        }).then((module) => {
+        };
+        if (sharedBasisModule) {
+            // Main thread already downloaded + compiled it: no fetch here.
+            const compiled = sharedBasisModule;
+            moduleConfig.instantiateWasm = (imports, receive) => {
+                WebAssembly.instantiate(compiled, imports).then(instance => receive(instance, compiled));
+                return {};
+            };
+        }
+        basisModulePromise = globalThis.BASIS(moduleConfig).then((module) => {
             module.initializeBasis();
             return module;
         });
@@ -223,6 +233,11 @@ function tileGeometry() {
 
 self.onmessage = async function (e) {
     const { id, type, data } = e.data;
+
+    if (type === 'BASIS_MODULE') {
+        if (!basisModulePromise && data?.module instanceof WebAssembly.Module) sharedBasisModule = data.module;
+        return;
+    }
 
     if (type === 'INIT') {
         // Capability handshake from main.js — no reply expected.
