@@ -1,4 +1,4 @@
-// @atlas: Worker for GSP1/GSP2/current GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP2+ loading is two-stage; GSP3 separates terrain relief from exact rendered bounds.
+// @atlas: Worker for GSP1/GSP2/GSP3 island parsing, range-filtered Gosper geometry construction, and XUASTC KTX2 transcoding. GSP3 prefix jobs parse and build in one pass; legacy worker fetch remains available.
 if (!self.GosperCore) {
     importScripts('gosper_core.js');
 }
@@ -351,10 +351,9 @@ async function loadTile({ yq, yr, binUrl, expectedGspVersion, faultAttempt, faul
             `Binary cache mismatch for ${yq}_${yr}: manifest GSP${expectedGspVersion}, parsed GSP${parsed.binaryVersion}`,
         );
     }
-    // GSP2+ is a deliberate two-stage load: return its compact hierarchy and
-    // source bytes first, let the main thread's generic planner choose L3
-    // subtrees, then BUILD_GEOMETRY constructs only those contiguous ranges.
-    // Legacy GSP1 keeps the safe, proven full-build fallback.
+    // This full-file path serves GSP1/GSP2 and recovers GSP3 when the main
+    // thread's Range prefix path fails. GSP2+ lets the main thread select L3
+    // subtrees before BUILD_GEOMETRY; GSP1 keeps its full-build fallback.
     const lods = parsed.binaryVersion >= 2 ? null : buildLevelBuffers(parsed);
     const geometryBytes = geometryBytesForLods(lods);
 

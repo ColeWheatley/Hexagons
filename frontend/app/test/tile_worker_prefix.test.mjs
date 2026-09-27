@@ -17,25 +17,28 @@ context.importScripts = specifier => vm.runInContext(
 vm.runInContext(fs.readFileSync(path.join(app, 'tile_worker.js'), 'utf8'), context);
 const parse = vm.runInContext('parseGSP1', context);
 const fixture = fs.readFileSync(path.join(root, 'tests/fixtures/gosper_276_-235.bin'));
-const fullBuffer = fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength);
-const full = parse(fullBuffer, 276, -235);
 
 test('GSP3 prefixes reproduce every present aggregate record exactly', () => {
-    for (const depth of [2, 3, 4, 5]) {
-        const prefix = fullBuffer.slice(0, GSP3_PREFIX_END[depth]);
-        const parsed = parse(prefix, 276, -235, depth);
-        assert.equal(parsed.depths.length, depth + 1);
-        assert.deepEqual(parsed.stats, full.stats);
-        assert.deepEqual(parsed.center, full.center);
-        for (let d = 0; d <= depth; d++) {
-            for (const name of ['h', 'slopeMean', 'nx', 'nz', 'valid', 'relief',
-                'downExtent', 'upExtent', 'renderDown', 'renderUp']) {
-                assert.deepEqual(parsed.depths[d][name], full.depths[d][name], `${depth}/${d}/${name}`);
+    for (const [yq, yr] of [[276, -235], [277, -236]]) {
+        const blob = fs.readFileSync(path.join(root, `tests/fixtures/gosper_${yq}_${yr}.bin`));
+        const buffer = blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength);
+        const reference = parse(buffer, yq, yr);
+        for (const depth of [2, 3, 4, 5]) {
+            const prefix = buffer.slice(0, GSP3_PREFIX_END[depth]);
+            const parsed = parse(prefix, yq, yr, depth);
+            assert.equal(parsed.depths.length, depth + 1);
+            assert.deepEqual(parsed.stats, reference.stats);
+            assert.deepEqual(parsed.center, reference.center);
+            for (let d = 0; d <= depth; d++) {
+                for (const name of ['h', 'slopeMean', 'nx', 'nz', 'valid', 'relief',
+                    'downExtent', 'upExtent', 'renderDown', 'renderUp']) {
+                    assert.deepEqual(parsed.depths[d][name], reference.depths[d][name], `${yq}_${yr}/${depth}/${d}/${name}`);
+                }
             }
+            assert.equal(Boolean(parsed.unit), depth === 5);
+            assert.equal(parsed.unitHeights, depth === 5 ? parsed.depths[5].h : null);
+            if (depth < 5) assert.throws(() => parse(prefix.slice(0, -1), yq, yr, depth), /truncated/);
         }
-        assert.equal(Boolean(parsed.unit), depth === 5);
-        assert.equal(parsed.unitHeights, depth === 5 ? parsed.depths[5].h : null);
-        if (depth < 5) assert.throws(() => parse(prefix.slice(0, -1), 276, -235, depth), /truncated/);
     }
 });
 
