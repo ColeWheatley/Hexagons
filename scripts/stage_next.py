@@ -36,17 +36,26 @@ from publish_site import IMMUTABLE, REVALIDATE, metadata, sha256  # noqa: E402
 
 LIVE_MANIFEST = "https://wheatley.cloud/hexagons/app/tile_manifest.json"
 PUBLIC = "https://wheatley.cloud"
+# Cloudflare rejects Python's default urllib user agent with 403.
+USER_AGENT = "hexagons-stage-next/1.0"
+
+
+AWS_REGION = "eu-central-2"  # the wheatley.cloud bucket lives in Zurich
 
 
 def run(args: list[str], dry: bool) -> None:
+    if args[:1] == ["aws"] and "--region" not in args:
+        args = args + ["--region", AWS_REGION]
     print(("DRY " if dry else "") + " ".join(args))
     if not dry:
-        subprocess.run(args, check=True, capture_output=True)
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stderr.strip()}")
 
 
 def load_manifest(source: str) -> dict:
     if source.startswith("http"):
-        request = urllib.request.Request(source, headers={"Cache-Control": "no-cache"})
+        request = urllib.request.Request(source, headers={"Cache-Control": "no-cache", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=120) as response:
             return json.loads(response.read())
     return json.loads(Path(source).read_text())
@@ -148,6 +157,9 @@ def main() -> int:
     parser.add_argument("--dist", type=Path, default=ROOT / "frontend/app/dist")
     parser.add_argument("--skip-shell", action="store_true", help="only (re)publish the manifest + pointer")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--tile-split", default=None,
+                        help="URL template of brotli split tile parts published by publish_tile_split.py, "
+                             "e.g. /hexagons/next/releases/<release>/tiles_split/gosper_{yq}_{yr}.{part}.bin")
     parser.add_argument("--local-out", type=Path, default=None,
                         help="write the staged tree to this directory instead of S3 (for netlab A/B)")
     args = parser.parse_args()
@@ -161,6 +173,14 @@ def main() -> int:
         raise SystemExit("source manifest has no release.asset_release")
     full = json.loads(json.dumps(source))
     compact_manifest.rebase_urls(full, args.asset_base)
+    if args.tile_split:
+        full.setdefault("binary", {})["split"] = {
+            "url_template": args.tile_split.replace("<release>", release),
+            "boundary": 44_864,        # end of the depth-4 aggregate block
+            "total": 280_166,          # GSP3 tile size
+            "range_max_end": 6_444,    # up to depth 3, raw Range prefixes are cheaper
+            "encoding": "br",
+        }
     compact = compact_manifest.compact(full)
     payload = json.dumps(compact, separators=(",", ":")).encode()
     diffs = compact_manifest.equivalent(full, compact_manifest.expand(json.loads(payload)))
@@ -191,7 +211,7 @@ def main() -> int:
 
     # Verify through the public edge exactly as a browser would.
     for rel, check in ((f"{prefix}/tile_manifest.json", "pointer"), (f"{prefix}/{manifest_rel}", "manifest")):
-        request = urllib.request.Request(f"{PUBLIC}/{rel}", headers={"Accept-Encoding": "br"})
+        request = urllib.request.Request(f"{PUBLIC}/{rel}", headers={"Accept-Encoding": "br", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=60) as response:
             body = response.read()
             print(f"verify {check}: HTTP {response.status} {len(body):,} B "

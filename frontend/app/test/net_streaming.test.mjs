@@ -208,3 +208,26 @@ test('generic prefixes grow contiguously and persist (terrain tiles)', async () 
     assert.equal(server.log.length, 4, 'served from Cache Storage');
     assert.equal(restored.bytes.byteLength, 5000);
 });
+
+test('segments fetched from separate objects extend the same contiguous prefix', async () => {
+    const tile = new Uint8Array(3000).map((_, i) => (i * 7) % 253);
+    const server = makeServer({
+        'tile.bin': tile,
+        'tile.agg.bin': tile.slice(0, 1000),
+        'tile.units.bin': tile.slice(1000),
+    });
+    const cacheStorage = memoryCacheStorage();
+    const store = new TextureByteStore({ scheduler: new NetScheduler({ fetchImpl: server.fetchImpl }), cacheStorage, cacheName: 'gsp' });
+    await store.ensurePrefix('tile.bin', 300);                       // small raw range first
+    await store.ensureSegment('tile.bin', { start: 0, end: 1000, sourceUrl: 'tile.agg.bin' });
+    const full = await store.ensureSegment('tile.bin', { start: 1000, end: 3000, sourceUrl: 'tile.units.bin', total: 3000 });
+    assert.deepEqual(Buffer.from(full.bytes), Buffer.from(tile));
+    assert.equal(full.total, 3000);
+    const again = await store.ensureSegment('tile.bin', { start: 1000, end: 3000, sourceUrl: 'tile.units.bin' });
+    assert.equal(again.networkBytes, 0, 'already-present segments cost nothing');
+    assert.deepEqual(server.log.map(e => [e.url, e.range]), [
+        ['tile.bin', 'bytes=0-299'], ['tile.agg.bin', null], ['tile.units.bin', null],
+    ]);
+    await assert.rejects(new TextureByteStore({ scheduler: new NetScheduler({ fetchImpl: server.fetchImpl }), cacheStorage: null })
+        .ensureSegment('other.bin', { start: 1000, end: 3000, sourceUrl: 'tile.units.bin' }), /needs bytes from 0/);
+});

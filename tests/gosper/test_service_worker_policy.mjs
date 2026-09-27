@@ -87,6 +87,9 @@ assert.equal(await dispatch(unversioned), null, 'unversioned terrain is never in
 const ranged = 'https://viewer.example/hexagons/app/releases/rel-a/aerial_pages/high/texture_1_2.ktx2?v=tex-a';
 assert.equal(await dispatch(ranged, { range: 'bytes=0-32767' }), null, 'range requests bypass Cache Storage');
 
+const splitPart = 'https://viewer.example/hexagons/next/releases/rel-a/tiles_split/gosper_1_2.units.bin?v=bin-a';
+assert.equal(await dispatch(splitPart), null, 'split terrain parts are left to the page byte store');
+
 const immutable = 'https://viewer.example/hexagons/next/releases/rel-a/manifest.0123456789ab.json';
 await dispatch(immutable);
 await dispatch(immutable);

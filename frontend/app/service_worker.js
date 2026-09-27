@@ -135,6 +135,9 @@ self.addEventListener('fetch', event => {
     if (request.method !== 'GET' || isRangeRequest(request)) return;
     const url = new URL(request.url);
     if (url.origin !== self.location.origin) return;
+    // Split terrain parts are persisted by the page's tile byte store;
+    // caching them here too would store every tile twice.
+    if (url.pathname.includes('/tiles_split/')) return;
 
     if (isImmutableManifest(url)) {
         event.respondWith(cacheFirst(event, RUNTIME_CACHE));

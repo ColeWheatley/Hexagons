@@ -2982,9 +2982,8 @@ class PistonViewer {
         for (const { key, depth, manifestTile } of candidates.slice(0, TILE_PREFETCH.maxInFlight - inFlight)) {
             this._tilePrefetchDone.set(key, depth);
             this._tilePrefetchInFlight = (this._tilePrefetchInFlight || 0) + 1;
-            this.tileByteStore.ensurePrefix(this._tileBinUrl(manifestTile, 3), GSP3_PREFIX_END[depth], {
-                priority: NET_PRIORITY.PREFETCH,
-            }).then(result => {
+            this._ensureTileBytes(manifestTile, this._tileBinUrl(manifestTile, 3), GSP3_PREFIX_END[depth],
+                NET_PRIORITY.PREFETCH).then(result => {
                 this.tilePrefetchStats.tiles++;
                 this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
             })
@@ -3721,10 +3720,33 @@ class PistonViewer {
             ? NET_PRIORITY.GUARD : NET_PRIORITY.VISIBLE;
     }
 
-    async _buildTilePrefix(t, key, binUrl, expectedGspVersion, availableDepth, selection) {
-        const prefix = await this.tileByteStore.ensurePrefix(binUrl, GSP3_PREFIX_END[availableDepth], {
-            priority: this._tileNetPriority(key),
+    /**
+     * Bytes [0, needEnd) of a GSP3 tile. Small prefixes (far/coarse tiles)
+     * are raw Range requests on the release object. When the manifest
+     * publishes brotli split parts (binary.split), the aggregate block and
+     * the unit block come from those instead — about half the wire bytes —
+     * and extend the same contiguous prefix in the byte store.
+     */
+    _ensureTileBytes(t, binUrl, needEnd, priority) {
+        const split = this.binaryContract?.split;
+        if (!split?.url_template || needEnd <= (split.range_max_end ?? 0)) {
+            return this.tileByteStore.ensurePrefix(binUrl, needEnd, { priority });
+        }
+        const partUrl = part => appendCacheKey(split.url_template
+            .replace('{yq}', String(t.yq)).replace('{yr}', String(t.yr)).replace('{part}', part),
+        split.cache_key || this.binaryContract.cache_key);
+        const aggregate = this.tileByteStore.ensureSegment(binUrl, {
+            start: 0, end: split.boundary, sourceUrl: partUrl('agg'), priority,
         });
+        if (needEnd <= split.boundary) return aggregate;
+        return aggregate.then(() => this.tileByteStore.ensureSegment(binUrl, {
+            start: split.boundary, end: split.total, total: split.total, sourceUrl: partUrl('units'), priority,
+        }));
+    }
+
+    async _buildTilePrefix(t, key, binUrl, expectedGspVersion, availableDepth, selection) {
+        const prefix = await this._ensureTileBytes(t, binUrl, GSP3_PREFIX_END[availableDepth],
+            this._tileNetPriority(key));
         if (prefix.bytes.byteLength < GSP3_PREFIX_END[availableDepth]) {
             throw new Error(`truncated GSP3 depth ${availableDepth} for ${key}`);
         }

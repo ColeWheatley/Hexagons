@@ -98,6 +98,62 @@ export class TextureByteStore {
         return next;
     }
 
+    /**
+     * Make logical bytes [start, end) of `url` present by fetching a whole
+     * separate object (`sourceUrl`) that holds exactly that span — e.g. a
+     * brotli-encoded part of a terrain tile, which the browser decodes
+     * transparently. Overlap with bytes already held is dropped, so the
+     * prefix stays contiguous and nothing already present is re-appended.
+     */
+    ensureSegment(url, { start, end, sourceUrl, total = null, priority = NET_PRIORITY.BACKGROUND, signal = null }) {
+        const entry = this._entry(url);
+        entry.priority = Math.max(entry.priority, priority);
+        entry.generic = true;
+        const run = () => this._ensureSegment(entry, start, end, sourceUrl, total, priority, signal);
+        const next = entry.chain.then(run, run);
+        entry.chain = next.catch(() => {});
+        return next;
+    }
+
+    async _ensureSegment(entry, start, end, sourceUrl, total, priority, signal) {
+        entry.lastUsed = this.now();
+        await this._reloadEvictedBytes(entry);
+        await this._restore(entry);
+        let networkBytes = 0;
+        if (entry.length < end) {
+            if (entry.length < start) {
+                throw new Error(`Segment [${start}, ${end}) of ${entry.url} needs bytes from ${entry.length}`);
+            }
+            const { promise, handle } = this.scheduler.request({
+                url: sourceUrl, priority: Math.max(priority, entry.priority),
+                expectedBytes: Math.max(1, Math.round((end - start) * 0.55)), signal, label: 'segment',
+            });
+            entry.activeHandle = handle;
+            let result;
+            try {
+                result = await promise;
+            } finally {
+                entry.activeHandle = null;
+            }
+            this.stats.requests++;
+            this.stats.networkBytes += result.bytes.byteLength; // decoded size (wire is smaller)
+            networkBytes += result.bytes.byteLength;
+            if (result.bytes.byteLength !== end - start) {
+                throw new Error(`Segment ${sourceUrl} is ${result.bytes.byteLength} B, expected ${end - start}`);
+            }
+            const tail = result.bytes.subarray(entry.length - start);
+            this._append(entry, { status: 206, start: entry.length, bytes: tail, total: total ?? entry.total });
+            this._persist(entry);
+        }
+        entry.lastUsed = this.now();
+        this._enforceMemoryBudget(entry);
+        return {
+            bytes: entry.bytes ? entry.bytes.subarray(0, entry.length) : new Uint8Array(0),
+            total: entry.total,
+            networkBytes,
+        };
+    }
+
     async _ensurePrefix(entry, needEnd, priority, signal) {
         entry.lastUsed = this.now();
         await this._reloadEvictedBytes(entry);
