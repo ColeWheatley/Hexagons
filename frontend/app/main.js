@@ -3662,6 +3662,17 @@ class PistonViewer {
     }
 
     _tileRequiredDepth(manifestTile, key, selection = null) {
+        // A resident tile has its depth-2 records attached, so the planner's
+        // L3 frontier is exact — and it is the only thing the geometry build
+        // consumes. Fetch exactly its deepest selected depth; the root-metric
+        // policy below is only for first loads, before any bytes exist.
+        if (!this.isMovingView && selection && this.tiles.has(key)) {
+            let exact = 2;
+            for (let d = 3; d <= 5; d++) {
+                if (selection.selectedCounts[d] > 0) exact = d;
+            }
+            return exact;
+        }
         const distanceM = this.visibilityByKey.get(key)?.distanceMeters ?? Infinity;
         const reliefM = Math.max(0, manifestTile.hMax - manifestTile.hMin);
         let depth = requiredTileDepth(distanceM, {
