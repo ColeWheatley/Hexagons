@@ -205,6 +205,16 @@ const COVERAGE_TEXTURE_BUDGET_BYTES = Object.freeze({
     mid: 48 * 1024 * 1024,
     low: 24 * 1024 * 1024,
 });
+// Idle-link pre-download of nearby off-screen terrain: coarse GSP3 prefixes
+// (952 B = L5..L3, or 6.4 KB = ..L2 within 5 km) so a pan shows real terrain
+// immediately and refines from there.
+const TILE_PREFETCH = Object.freeze({
+    maxInFlight: 4,
+    minRadiusM: 6000,
+    maxRadiusM: 25000,
+    altitudeRadiusScale: 4,
+    detailRadiusM: 5000,
+});
 // Idle-link pre-download of nearby off-screen 256 px page prefixes.
 const TEXTURE_PREFETCH = Object.freeze({
     maxInFlight: 3,
@@ -569,6 +579,7 @@ class PistonViewer {
             maxConcurrent: this.capabilityProfile.name === 'low' ? 3 : 6,
         });
         this.texturePrefetchStats = { pages: 0 };
+        this.tilePrefetchStats = { tiles: 0 };
         this.textureByteStore = new TextureByteStore({
             scheduler: this.netScheduler,
             memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 256 * 1024 * 1024 : 96 * 1024 * 1024,
@@ -2890,6 +2901,47 @@ class PistonViewer {
         }
     }
 
+    _prefetchTilePrefixes({ throttle = false } = {}) {
+        if (!this.tileByteStore || !this.manifestGrid || !this.loaderHidden || this.isMovingView) return;
+        if (throttle) {
+            const now = performance.now();
+            if (now - (this._lastTilePrefetchScanMs || 0) < 500) return;
+            this._lastTilePrefetchScanMs = now;
+        }
+        const inFlight = this._tilePrefetchInFlight || 0;
+        if (inFlight >= TILE_PREFETCH.maxInFlight) return;
+        if (this.netScheduler.hasDemand || this.loadQueue.length > 0 || this.activeWorkerCount > 0
+            || this.textureQueue.length > 0 || this.activeTextureJobs > 0) return;
+        const radius = Math.min(TILE_PREFETCH.maxRadiusM, Math.max(TILE_PREFETCH.minRadiusM,
+            TILE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y)));
+        this._tilePrefetchDone ??= new Map();
+        const candidates = [];
+        for (const [key, visibility] of this.visibilityByKey) {
+            if (visibility?.classification !== 'outside' || this.tiles.has(key)) continue;
+            const distance = visibility.distanceMeters;
+            if (!(distance <= radius)) continue;
+            const depth = distance <= TILE_PREFETCH.detailRadiusM ? 3 : 2;
+            if ((this._tilePrefetchDone.get(key) || 0) >= depth) continue;
+            const manifestTile = this.manifestGrid.get(key);
+            if (!manifestTile || Number(manifestTile.gspVersion ?? this.binaryContract?.default_version) !== 3) continue;
+            candidates.push({ key, distance, depth, manifestTile });
+        }
+        if (candidates.length === 0) return;
+        candidates.sort((a, b) => a.distance - b.distance);
+        for (const { key, depth, manifestTile } of candidates.slice(0, TILE_PREFETCH.maxInFlight - inFlight)) {
+            this._tilePrefetchDone.set(key, depth);
+            this._tilePrefetchInFlight = (this._tilePrefetchInFlight || 0) + 1;
+            this.tileByteStore.ensurePrefix(this._tileBinUrl(manifestTile, 3), GSP3_PREFIX_END[depth], {
+                priority: NET_PRIORITY.PREFETCH,
+            }).then(() => { this.tilePrefetchStats.tiles++; })
+                .catch(() => { this._tilePrefetchDone.delete(key); })
+                .finally(() => {
+                    this._tilePrefetchInFlight--;
+                    this._prefetchTilePrefixes();
+                });
+        }
+    }
+
     _enforceCoverageTextureBudget() {
         const now = performance.now();
         if (now - (this._lastCoverageBudgetMs || 0) < 1000) return;
@@ -3532,6 +3584,7 @@ class PistonViewer {
             });
         }
         this._prefetchTexturePrefixes({ throttle: true });
+        this._prefetchTilePrefixes({ throttle: true });
     }
 
     _seedMiniTexturePins() {
