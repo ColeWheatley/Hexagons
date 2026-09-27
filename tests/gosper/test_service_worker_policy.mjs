@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { prefixCacheNames, scopeTagFromPath } from '../../frontend/app/scope_cache.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = (await fs.readFile(path.join(root, 'frontend/app/service_worker.js'), 'utf8'))
@@ -64,6 +65,13 @@ async function dispatch(url, headers = {}) {
 }
 
 const scope = 'hx2-hexagons-next-';
+assert.equal(scopeTagFromPath(new URL(self.registration.scope).pathname), 'hexagons-next',
+    'page cache tag matches the service worker scope normalization');
+const prefixNames = prefixCacheNames(new URL('.', self.location.href).pathname);
+assert.deepEqual(prefixNames, {
+    ktx2: `${scope}ktx2-prefix-v1`,
+    gsp: `${scope}gsp-prefix-v1`,
+}, 'page names both prefix caches exactly as the worker does');
 
 const shell = 'https://viewer.example/hexagons/next/main.0123456789ab.js';
 await dispatch(shell);
@@ -108,12 +116,30 @@ assert.equal(calls.filter(url => url === missing).length, 2, 'error responses ar
 // A new release prunes only the other release's runtime entries.
 const runtime = stores.get(`${scope}runtime`);
 assert.ok(runtime.entries.has(terrain), 'runtime cache holds release rel-a terrain');
+const prefixA = 'https://viewer.example/hexagons/app/releases/rel-a/aerial_pages/high/texture_1_2.ktx2';
+const prefixB = 'https://viewer.example/hexagons/app/releases/rel-b/aerial_pages/high/texture_1_2.ktx2';
+const prefixUnversioned = 'https://viewer.example/shared/prefix.bin';
+for (const name of Object.values(prefixNames)) {
+    const cache = await cacheStorage.open(name);
+    await cache.put(new Request(prefixA), new Response('old'));
+    await cache.put(new Request(prefixB), new Response('new'));
+    await cache.put(new Request(prefixUnversioned), new Response('shared'));
+}
+const otherScopePrefix = await cacheStorage.open('hx2-hexagons-app-ktx2-prefix-v1');
+await otherScopePrefix.put(new Request(prefixA), new Response('other scope'));
 pointer = { manifest_url: 'releases/rel-b/manifest.ba9876543210.json', release: { asset_release: 'rel-b' } };
 const terrainB = 'https://viewer.example/hexagons/app/releases/rel-b/tiles_bin/gosper_1_2.bin?v=bin-b';
 await dispatch(terrainB);
 await dispatch(pointerUrl);
 assert.equal(runtime.entries.has(terrain), false, 'new release pruned the previous release');
 assert.equal(runtime.entries.has(terrainB), true, 'new release keeps its own entries');
+for (const name of Object.values(prefixNames)) {
+    const cache = stores.get(name);
+    assert.equal(cache.entries.has(prefixA), false, `${name} prunes the previous release`);
+    assert.equal(cache.entries.has(prefixB), true, `${name} keeps the current release`);
+    assert.equal(cache.entries.has(prefixUnversioned), true, `${name} keeps nonrelease entries`);
+}
+assert.equal(otherScopePrefix.entries.has(prefixA), true, 'release pruning leaves another scope alone');
 
 // A declared (pointer-less) shell prunes via its immutable manifest's release.
 const terrainC = 'https://viewer.example/hexagons/app/releases/rel-c/tiles_bin/gosper_1_2.bin?v=bin-c';
@@ -126,6 +152,8 @@ assert.equal(runtime.entries.has(terrainC), true, 'declared manifest keeps its o
 await cacheStorage.open(`${scope}shell-obsolete-build`);
 await cacheStorage.open('hx2-hexagons-app-shell-other-scope');
 await cacheStorage.open('hexagons-runtime-v0.10.0-rc6');
+await cacheStorage.open('hx2-ktx2-prefix-v1');
+await cacheStorage.open('hx2-gsp-prefix-v1');
 await cacheStorage.open('unrelated-cache');
 await dispatchLifecycle('install');
 assert.equal(skipped, true, 'install activates the new policy without waiting for an offline UI flow');
@@ -133,6 +161,10 @@ await dispatchLifecycle('activate');
 assert.equal(claimed, true, 'activate claims existing clients');
 assert.equal(stores.has(`${scope}shell-obsolete-build`), false, 'activate removes this scope\'s old shells');
 assert.equal(stores.has(`${scope}runtime`), true, 'activate keeps downloaded terrain across app deploys');
+assert.equal(stores.has(prefixNames.ktx2), true, 'activate keeps this scope\'s texture prefixes');
+assert.equal(stores.has(prefixNames.gsp), true, 'activate keeps this scope\'s terrain prefixes');
+assert.equal(stores.has('hx2-ktx2-prefix-v1'), false, 'activate removes old unscoped texture prefixes');
+assert.equal(stores.has('hx2-gsp-prefix-v1'), false, 'activate removes old unscoped terrain prefixes');
 assert.equal(stores.has('hx2-hexagons-app-shell-other-scope'), true, 'activate never touches another scope');
 assert.equal(stores.has('hexagons-runtime-v0.10.0-rc6'), true, 'activate leaves v1 worker caches to that worker');
 assert.equal(stores.has('unrelated-cache'), true, 'activate does not delete caches it does not own');

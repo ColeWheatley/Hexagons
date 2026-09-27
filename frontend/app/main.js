@@ -76,6 +76,7 @@ import {
 } from './texture_page_residency.js';
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
+import { prefixCacheNames } from './scope_cache.mjs';
 import { nextRetry, retryDelayMs, retryReady } from './retry_backoff.mjs';
 import {
     GSP3_PREFIX_END, requiredTileDepth, sampleTileHeightAtUnitIndex,
@@ -620,13 +621,15 @@ class PistonViewer {
         this.coarseFirstEnabled = new URLSearchParams(window.location.search).get('coarse') !== '0';
         this.texturePrefetchStats = { pages: 0 };
         this.tilePrefetchStats = { tiles: 0 };
+        const prefixCaches = prefixCacheNames(new URL('.', window.location.href).pathname);
         this.textureByteStore = new TextureByteStore({
             scheduler: this.netScheduler,
+            cacheName: prefixCaches.ktx2,
             memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 256 * 1024 * 1024 : 96 * 1024 * 1024,
         });
         this.tileByteStore = new TextureByteStore({
             scheduler: this.netScheduler,
-            cacheName: 'hx2-gsp-prefix-v1',
+            cacheName: prefixCaches.gsp,
             memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 192 * 1024 * 1024 : 64 * 1024 * 1024,
         });
 
