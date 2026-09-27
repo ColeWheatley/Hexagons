@@ -192,6 +192,12 @@ const TEXTURE_CONFIG = Object.freeze({
 // Concurrent progressive texture jobs (network wait + transcode). Byte-level
 // link admission is the NetScheduler's job, not this count's.
 const PROGRESSIVE_TEXTURE_JOBS = 4;
+// Idle-link pre-download of nearby off-screen 256 px page prefixes.
+const TEXTURE_PREFETCH = Object.freeze({
+    maxInFlight: 3,
+    minRadiusM: 4000,
+    altitudeRadiusScale: 3,
+});
 
 function appendCacheKey(url, cacheKey) {
     if (cacheKey === undefined || cacheKey === null || cacheKey === '') return url;
@@ -549,6 +555,7 @@ class PistonViewer {
         this.netScheduler = new NetScheduler({
             maxConcurrent: this.capabilityProfile.name === 'low' ? 3 : 6,
         });
+        this.texturePrefetchStats = { pages: 0 };
         this.textureByteStore = new TextureByteStore({
             scheduler: this.netScheduler,
             memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 256 * 1024 * 1024 : 96 * 1024 * 1024,
@@ -2799,6 +2806,58 @@ class PistonViewer {
         }
     }
 
+    /**
+     * Idle-link pre-download: once the view has settled and nothing real is
+     * queued, pull the 256 px prefix (~28 KB) of nearby off-screen pages into
+     * the persistent byte store, nearest first, at PREFETCH priority (the
+     * scheduler only runs prefetch on an otherwise idle link). A later pan
+     * then finds that imagery locally: transcode + upload, no network.
+     */
+    _prefetchTexturePrefixes({ throttle = false } = {}) {
+        const states = this.textureStates;
+        if (!states || !this.loaderHidden || this.isMovingView) return;
+        if (throttle) {
+            const now = performance.now();
+            if (now - (this._lastTexturePrefetchScanMs || 0) < 500) return;
+            this._lastTexturePrefetchScanMs = now;
+        }
+        const inFlight = this._texturePrefetchInFlight || 0;
+        const limit = TEXTURE_PREFETCH.maxInFlight;
+        if (inFlight >= limit) return;
+        if (this.netScheduler.hasDemand || this.textureQueue.length > 0 || this.activeTextureJobs > 0
+            || this.loadQueue.length > 0 || this.activeWorkerCount > 0) return;
+        const radius = Math.max(TEXTURE_PREFETCH.minRadiusM,
+            TEXTURE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y));
+        const candidates = [];
+        for (const state of states.values()) {
+            if (state.classification !== 'outside' || state.assets.size > 0) continue;
+            if (!(state.distanceMeters <= radius)) continue;
+            if (this._texturePrefetchDone?.has(state.key)) continue;
+            candidates.push(state);
+        }
+        if (candidates.length === 0) return;
+        candidates.sort((a, b) => a.distanceMeters - b.distanceMeters);
+        this._texturePrefetchDone ??= new Set();
+        for (const state of candidates.slice(0, limit - inFlight)) {
+            let url;
+            try {
+                url = this._textureUrls(TEXTURE_TIER.HIGH, state.key)[0];
+            } catch {
+                this._texturePrefetchDone.add(state.key);
+                continue;
+            }
+            this._texturePrefetchDone.add(state.key);
+            this._texturePrefetchInFlight = (this._texturePrefetchInFlight || 0) + 1;
+            this.textureByteStore.ensureLevel(url, MEDIUM_TEXTURE_LEVEL, { priority: NET_PRIORITY.PREFETCH })
+                .then(() => { this.texturePrefetchStats.pages++; })
+                .catch(() => { this._texturePrefetchDone.delete(state.key); })
+                .finally(() => {
+                    this._texturePrefetchInFlight--;
+                    this._prefetchTexturePrefixes();
+                });
+        }
+    }
+
     _textureNetPriority(state, task) {
         const base = state.classification === 'visible'
             ? NET_PRIORITY.VISIBLE
@@ -3404,6 +3463,7 @@ class PistonViewer {
                 this.processQueues();
             });
         }
+        this._prefetchTexturePrefixes({ throttle: true });
     }
 
     _seedMiniTexturePins() {
