@@ -58,6 +58,7 @@ import {
     desiredTextureTier,
     pruneTextureDispatchQueue,
     promoteVisibleConsumerPages,
+    forEachTextureConsumer,
     selectTextureDispatchTaskIndex,
     textureStateHasDemand,
     textureTierRequestPlan,
@@ -3389,7 +3390,7 @@ class PistonViewer {
         }
     }
 
-    _refreshTilePageTextures(tile) {
+    _refreshTilePageTextures(tile, { visual = true } = {}) {
         if (!tile) return;
         const materials = new Set([tile.material, ...(tile.clonedMaterials || [])]);
         for (const material of materials) {
@@ -3412,17 +3413,18 @@ class PistonViewer {
             ? tiers.reduce((lowest, tier) => TEXTURE_RANK[tier] < TEXTURE_RANK[lowest] ? tier : lowest)
             : null;
         tile.isFullTex = tiers.length > 0 && tiers.every(tier => tier === TEXTURE_TIER.HIGH);
-        for (let slot = 0; slot < residentPageKeys.length; slot++) {
-            if (tiers[slot] === TEXTURE_TIER.HIGH) this.cacheManager.touch(residentPageKeys[slot]);
+        if (visual) {
+            for (let slot = 0; slot < residentPageKeys.length; slot++) {
+                if (tiers[slot] === TEXTURE_TIER.HIGH) this.cacheManager.touch(residentPageKeys[slot]);
+            }
+            this.needsRender = true;
         }
-        this.needsRender = true;
     }
 
     _refreshTexturePageConsumers(state) {
-        for (const tileKey of state.consumers) {
-            const tile = this.tiles.get(tileKey);
-            if (tile && !tile.hidden) this._refreshTilePageTextures(tile);
-        }
+        forEachTextureConsumer(state, this.tiles, (tile, visual) => {
+            this._refreshTilePageTextures(tile, { visual });
+        });
     }
 
     _reconcileTextureState(state) {

@@ -330,6 +330,13 @@ export function promoteVisibleConsumerPages(states, visiblePageKeys) {
     }
 }
 
+export function forEachTextureConsumer(state, tiles, rebind) {
+    for (const tileKey of state.consumers) {
+        const tile = tiles.get(tileKey);
+        if (tile) rebind(tile, !tile.hidden);
+    }
+}
+
 export class TexturePageResidency {
     constructor({
         pages,
