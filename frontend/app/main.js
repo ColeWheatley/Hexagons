@@ -608,6 +608,9 @@ class PistonViewer {
         this.netScheduler = new NetScheduler({
             maxConcurrent: this.capabilityProfile.name === 'low' ? 3 : 6,
         });
+        // ?prefetch=0 disables idle pre-download (benchmarks that must reach
+        // a quiet network, or users who want strictly on-demand traffic).
+        this.prefetchEnabled = new URLSearchParams(window.location.search).get('prefetch') !== '0';
         this.texturePrefetchStats = { pages: 0 };
         this.tilePrefetchStats = { tiles: 0 };
         this.textureByteStore = new TextureByteStore({
@@ -2952,6 +2955,7 @@ class PistonViewer {
     }
 
     _prefetchBudgetLeft() {
+        if (!this.prefetchEnabled) return 0;
         const budget = PREFETCH_SESSION_BUDGET_BYTES[this.capabilityProfile.name]
             ?? PREFETCH_SESSION_BUDGET_BYTES.mid;
         return budget - (this.prefetchNetworkBytes || 0);
