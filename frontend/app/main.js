@@ -119,6 +119,7 @@ import { IdleRenderScheduler } from './idle_render_scheduler.js';
 import { createMaterialChurnStats, recordRenderCycle, snapshotMaterialChurnStats, writeUniformIfChanged } from './material_churn.mjs';
 import { APP_LIFECYCLE, AppLifecycle } from './app_lifecycle.mjs';
 import { ResourceLifecycleRegistry } from './resource_lifecycle.mjs';
+import { expandManifest } from './manifest_codec.mjs';
 import './gosper_core.js';
 import { navigationOverlayState } from './navigation_overlay.mjs';
 
@@ -1793,9 +1794,22 @@ class PistonViewer {
                 { cache: 'no-store', signal: scope.signal },
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
-            const text = await res.text();
-            const manifest = JSON.parse(text);
-            this.loadingScreen.manifestLoaded(text.length);
+            let text = await res.text();
+            let manifest = JSON.parse(text);
+            let manifestBytes = text.length;
+            // A release pointer names an immutable, content-addressed manifest.
+            // Only the pointer is revalidated per visit; the manifest itself is
+            // served from the HTTP cache / service worker on every later visit.
+            if (typeof manifest.manifest_url === 'string' && !manifest.tiles && !manifest.tiles_compact) {
+                const immutableUrl = new URL(manifest.manifest_url, res.url || window.location.href).href;
+                const immutable = await fetch(immutableUrl, { signal: scope.signal });
+                if (!immutable.ok) throw new Error(`Manifest HTTP ${immutable.status}`);
+                text = await immutable.text();
+                manifestBytes += text.length;
+                manifest = JSON.parse(text);
+            }
+            manifest = expandManifest(manifest);
+            this.loadingScreen.manifestLoaded(manifestBytes);
             this._validateManifestContract(manifest);
             this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
             return manifest;
