@@ -184,7 +184,7 @@ async def run(args, proc, ws_url, frames_dir):
             deadline=time.monotonic()+cap
             while time.monotonic()<deadline:
                 s=server_get(f'{control}/__netlab/stats')
-                if s['queuedBytes']==0 and s['nowMs']-s['lastRequestMs']>=8000: return True
+                if s['queuedBytes']==0 and s['active']==0 and s['nowMs']-s['lastRequestMs']>=8000: return True
                 await asyncio.sleep(1)
             return False
         async def capture_phase(phase, seconds, measured=True):
@@ -312,9 +312,10 @@ def main():
             if proc.poll() is None:
                 proc.terminate()
                 try: proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid,signal.SIGKILL); proc.wait()
-            else: proc.wait()
+                except subprocess.TimeoutExpired: pass
+            try: os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            proc.wait()
         shutil.rmtree(profile,ignore_errors=True)
         if not a.frames: shutil.rmtree(frames_dir,ignore_errors=True)
 

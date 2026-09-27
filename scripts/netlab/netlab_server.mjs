@@ -21,6 +21,11 @@ export class Downlink {
   constructor(profile = PROFILES.none, now = () => performance.now()) {
     this.profile = profile; this.now = now; this.jobs = []; this.cursor = 0;
     this.nextAt = 0; this.timer = null;
+    setInterval(() => {
+      for (const job of [...this.jobs]) if (job.response.destroyed || job.response.stream?.closed) {
+        const error = new Error('stream closed'); error.sent = job.sent; this.finish(job, error);
+      }
+    }, 1000).unref();
   }
   get queuedBytes() { return this.jobs.reduce((n, j) => n + j.remaining, 0); }
   firstByteDelay() {
@@ -34,9 +39,10 @@ export class Downlink {
       const job = {fd: fs.openSync(file, 'r'), offset: start, remaining: length, sent: 0,
         response, resolve, reject, blocked: false, done: false};
       this.jobs.push(job);
-      response.on('close', () => {
+      const closed = () => {
         if (!job.done) { const error = new Error('client closed'); error.sent = job.sent; this.finish(job, error); }
-      });
+      };
+      response.on('close', closed); response.stream?.on('close', closed);
       this.schedule();
     });
   }
@@ -76,8 +82,10 @@ Downlink.prototype.tick = function () {
     if (got !== bytes) throw new Error('short read');
     job.offset += got; job.remaining -= got; job.sent += got;
     const now = this.now();
-    if (Number.isFinite(this.profile.bandwidthBps))
-      this.nextAt = Math.max(now - 100, this.nextAt) + got / this.profile.bandwidthBps * 1000;
+    if (Number.isFinite(this.profile.bandwidthBps)) {
+      if (!this.nextAt || this.nextAt < now - 100) this.nextAt = now;
+      this.nextAt += got / this.profile.bandwidthBps * 1000;
+    }
     if (job.remaining === 0) {
       job.done = true; fs.closeSync(job.fd);
       this.jobs.splice(this.jobs.indexOf(job), 1);
@@ -151,7 +159,7 @@ function staticHeaders(file) {
 }
 export async function startServer(cfg) {
   const start = performance.now(), downlink = new Downlink(PROFILES[cfg.profile]);
-  const stats = {requests: 0, bytes: 0, hits: 0, misses: 0, errors: 0, lastRequestMs: 0};
+  const stats = {requests: 0, active: 0, bytes: 0, hits: 0, misses: 0, errors: 0, lastRequestMs: 0};
   const pending = new Map();
   const certDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '.cert');
   await fsp.mkdir(certDir, {recursive:true});
@@ -204,7 +212,7 @@ export async function startServer(cfg) {
       } else if (pathname === '/__netlab/mark') {
         writeLog({mark:requestUrl.searchParams.get('name'), t:stamp()}); sendControl(200,{ok:true});
       } else {
-        stats.requests++; stats.lastRequestMs=t0;
+        stats.requests++; stats.active++; stats.lastRequestMs=t0;
         let resource;
         for (const [prefix, dir] of cfg.static) if (pathname.startsWith(prefix)) {
           const relative = decodeURIComponent(pathname.slice(prefix.length));
@@ -248,6 +256,7 @@ export async function startServer(cfg) {
       if (!res.headersSent) { row.status=error.status||500; sendControl(row.status,{error:error.message}); }
       else if (!res.destroyed) res.destroy(error);
     } finally {
+      if (!pathname.startsWith('/__netlab/')) stats.active--;
       row.durMs=Math.round((performance.now()-arrived)*10)/10;
       if (row.ttfbMs===null) row.ttfbMs=row.durMs;
       writeLog(row);
