@@ -38,13 +38,19 @@ export class TextureByteStore {
         this.now = now;
         this.entries = new Map();
         this.memoryBytes = 0;
-        this.stats = { networkBytes: 0, cacheHits: 0, cacheBytes: 0, requests: 0, persistFailures: 0 };
+        this.stats = { networkBytes: 0, cacheHits: 0, cacheBytes: 0, requests: 0, persistFailures: 0, earlyResolves: 0 };
         this._cachePromise = null;
+        // Without a working Cache Storage (plain-http LAN hosts, disabled
+        // storage) nothing is ever "persisted", so eviction may not wait for it.
+        this._noCache = !cacheStorage;
     }
 
     _cache() {
         if (!this.cacheStorage) return Promise.resolve(null);
-        this._cachePromise ??= this.cacheStorage.open(this.cacheName).catch(() => null);
+        this._cachePromise ??= this.cacheStorage.open(this.cacheName).catch(() => {
+            this._noCache = true;
+            return null;
+        });
         return this._cachePromise;
     }
 
@@ -54,7 +60,8 @@ export class TextureByteStore {
             entry = {
                 url, bytes: null, length: 0, header: null, total: null,
                 lastUsed: this.now(), chain: Promise.resolve(), persistedLength: 0,
-                restored: false, activeHandle: null, priority: NET_PRIORITY.BACKGROUND,
+                restored: false, activeHandle: null, activePriority: null,
+                waiters: new Set(), runningWaiter: null, persistFailed: false,
             };
             this.entries.set(url, entry);
         }
@@ -79,8 +86,88 @@ export class TextureByteStore {
     setPriority(url, priority) {
         const entry = this.entries.get(url);
         if (!entry) return;
-        entry.priority = priority;
-        if (entry.activeHandle) this.scheduler.setPriority(entry.activeHandle, priority);
+        for (const waiter of entry.waiters) waiter.priority = priority;
+        this._syncActivePriority(entry);
+    }
+
+    /**
+     * Download priority of a URL = the most urgent caller still waiting on it
+     * (a prefetch that a visible request queued behind inherits the visible
+     * priority only while that request waits, never permanently).
+     */
+    _effectivePriority(entry, floor = -Infinity) {
+        let priority = floor;
+        for (const waiter of entry.waiters) priority = Math.max(priority, waiter.priority);
+        return Number.isFinite(priority) ? priority : NET_PRIORITY.BACKGROUND;
+    }
+
+    _syncActivePriority(entry) {
+        if (!entry.activeHandle) return;
+        const priority = this._effectivePriority(entry, entry.activePriority ?? -Infinity);
+        this.scheduler.setPriority(entry.activeHandle, priority);
+    }
+
+    /**
+     * Serialize work per URL (appends must stay contiguous), but let a caller
+     * finish as soon as the bytes it needs are present — whether they already
+     * were, or arrive as part of another caller's larger download — instead of
+     * waiting for that whole download.
+     */
+    _enqueue(entry, priority, ready, work) {
+        entry.lastUsed = this.now();
+        const early = ready();
+        if (early) return Promise.resolve(early);
+        const waiter = { priority, ready, resolve: null, settled: false };
+        const woken = new Promise(resolve => { waiter.resolve = resolve; });
+        entry.waiters.add(waiter);
+        this._syncActivePriority(entry);
+        const run = async () => {
+            if (waiter.settled) return null;
+            const done = ready();
+            if (done) return done;
+            entry.runningWaiter = waiter; // gets the full result (incl. networkBytes) from work()
+            try {
+                return await work();
+            } finally {
+                if (entry.runningWaiter === waiter) entry.runningWaiter = null;
+            }
+        };
+        const chained = entry.chain.then(run, run);
+        entry.chain = chained.catch(() => {});
+        return Promise.race([chained, woken]).finally(() => {
+            waiter.settled = true;
+            entry.waiters.delete(waiter);
+            this._syncActivePriority(entry);
+        });
+    }
+
+    _wakeWaiters(entry) {
+        for (const waiter of entry.waiters) {
+            if (waiter.settled || waiter === entry.runningWaiter) continue;
+            const result = waiter.ready();
+            if (result) {
+                this.stats.earlyResolves++;
+                waiter.resolve(result);
+            }
+        }
+    }
+
+    _prefixReady(entry, needEnd) {
+        if (!entry.bytes || entry.length === 0) return null;
+        if (entry.length < needEnd && (entry.total === null || entry.length < entry.total)) return null;
+        return { bytes: entry.bytes.subarray(0, entry.length), total: entry.total, networkBytes: 0 };
+    }
+
+    _levelReady(entry, level) {
+        if (!entry.bytes || !entry.header) return null;
+        const target = Math.max(0, Math.min(entry.header.levels - 1, level));
+        if (entry.length < K.prefixEndForLevel(entry.header, target)) return null;
+        return {
+            bytes: entry.bytes.subarray(0, entry.length),
+            header: entry.header,
+            level: K.levelForPrefix(entry.header, entry.length),
+            networkBytes: 0,
+        };
     }
 
     /**
@@ -90,12 +177,9 @@ export class TextureByteStore {
      */
     ensurePrefix(url, needEnd, { priority = NET_PRIORITY.BACKGROUND, signal = null } = {}) {
         const entry = this._entry(url);
-        entry.priority = Math.max(entry.priority, priority);
         entry.generic = true;
-        const run = () => this._ensurePrefix(entry, needEnd, priority, signal);
-        const next = entry.chain.then(run, run);
-        entry.chain = next.catch(() => {});
-        return next;
+        return this._enqueue(entry, priority, () => this._prefixReady(entry, needEnd),
+            () => this._ensurePrefix(entry, needEnd, priority, signal));
     }
 
     /**
@@ -107,12 +191,9 @@ export class TextureByteStore {
      */
     ensureSegment(url, { start, end, sourceUrl, total = null, priority = NET_PRIORITY.BACKGROUND, signal = null }) {
         const entry = this._entry(url);
-        entry.priority = Math.max(entry.priority, priority);
         entry.generic = true;
-        const run = () => this._ensureSegment(entry, start, end, sourceUrl, total, priority, signal);
-        const next = entry.chain.then(run, run);
-        entry.chain = next.catch(() => {});
-        return next;
+        return this._enqueue(entry, priority, () => this._prefixReady(entry, end),
+            () => this._ensureSegment(entry, start, end, sourceUrl, total, priority, signal));
     }
 
     async _ensureSegment(entry, start, end, sourceUrl, total, priority, signal) {
@@ -125,15 +206,17 @@ export class TextureByteStore {
                 throw new Error(`Segment [${start}, ${end}) of ${entry.url} needs bytes from ${entry.length}`);
             }
             const { promise, handle } = this.scheduler.request({
-                url: sourceUrl, priority: Math.max(priority, entry.priority),
+                url: sourceUrl, priority: this._effectivePriority(entry, priority),
                 expectedBytes: Math.max(1, Math.round((end - start) * 0.55)), signal, label: 'segment',
             });
             entry.activeHandle = handle;
+            entry.activePriority = priority;
             let result;
             try {
                 result = await promise;
             } finally {
                 entry.activeHandle = null;
+                entry.activePriority = null;
             }
             this.stats.requests++;
             this.stats.networkBytes += result.bytes.byteLength; // decoded size (wire is smaller)
@@ -185,11 +268,8 @@ export class TextureByteStore {
      */
     ensureLevel(url, level, { priority = NET_PRIORITY.BACKGROUND, signal = null } = {}) {
         const entry = this._entry(url);
-        entry.priority = Math.max(entry.priority, priority);
-        const run = () => this._ensure(entry, level, priority, signal);
-        const next = entry.chain.then(run, run);
-        entry.chain = next.catch(() => {});
-        return next;
+        return this._enqueue(entry, priority, () => this._levelReady(entry, level),
+            () => this._ensure(entry, level, priority, signal));
     }
 
     async _restore(entry) {
@@ -212,6 +292,7 @@ export class TextureByteStore {
             entry.persistedLength = bytes.byteLength;
             this.stats.cacheHits++;
             this.stats.cacheBytes += bytes.byteLength;
+            this._wakeWaiters(entry);
         } catch {
             // A corrupt or evicted cache entry just means a network refetch.
         }
@@ -234,10 +315,11 @@ export class TextureByteStore {
 
     async _fetchRange(entry, start, end, priority, signal) {
         const { promise, handle } = this.scheduler.request({
-            url: entry.url, start, end, priority: Math.max(priority, entry.priority),
+            url: entry.url, start, end, priority: this._effectivePriority(entry, priority),
             expectedBytes: end - start, signal, label: 'texture-prefix',
         });
         entry.activeHandle = handle;
+        entry.activePriority = priority;
         try {
             const result = await promise;
             this.stats.requests++;
@@ -245,10 +327,15 @@ export class TextureByteStore {
             return result;
         } finally {
             entry.activeHandle = null;
+            entry.activePriority = null;
         }
     }
 
     _append(entry, result) {
+        if (!entry.bytes && entry.length > 0) {
+            // Evicted between chunks; appending would leave a hole of zeros.
+            throw new Error(`Prefix of ${entry.url} was evicted mid-download`);
+        }
         if (result.status === 200) {
             // The server ignored the Range header: we now own the whole file.
             this._setBytes(entry, result.bytes, result.bytes.byteLength);
@@ -260,6 +347,7 @@ export class TextureByteStore {
         }
         this._setBytes(entry, concat(entry.bytes || new Uint8Array(0), entry.length, result.bytes), entry.length + result.bytes.byteLength);
         if (result.total) entry.total = result.total;
+        this._wakeWaiters(entry);
     }
 
     _setBytes(entry, bytes, length) {
@@ -288,6 +376,8 @@ export class TextureByteStore {
                 header = K.parseHeader(entry.bytes.subarray(0, entry.length));
             }
             entry.header = header;
+            entry.header.fileSize = entry.total;
+            this._wakeWaiters(entry);
         }
         entry.header.fileSize = entry.total;
         const target = Math.max(0, Math.min(entry.header.levels - 1, level));
@@ -321,20 +411,38 @@ export class TextureByteStore {
             if (!cache) return;
             return cache.put(entry.url, new Response(body, {
                 headers: { 'Content-Type': 'application/octet-stream', 'X-Hx-Total': String(entry.total ?? '') },
-            })).then(() => { entry.persistedLength = Math.max(entry.persistedLength, length); });
-        }).catch(() => { this.stats.persistFailures++; });
+            })).then(() => {
+                entry.persistedLength = Math.max(entry.persistedLength, length);
+                entry.persistFailed = false;
+            });
+        }).catch(() => {
+            // Quota or storage errors: this entry may now be evicted unsaved.
+            entry.persistFailed = true;
+            this.stats.persistFailures++;
+        });
     }
 
     _enforceMemoryBudget(keep) {
         if (this.memoryBytes <= this.memoryBudgetBytes) return;
         const victims = [...this.entries.values()]
             .filter(entry => entry !== keep && entry.bytes !== null && entry.activeHandle === null
-                && entry.persistedLength >= entry.length)
+                && entry.waiters.size === 0
+                && (entry.persistedLength >= entry.length || this._noCache || entry.persistFailed))
             .sort((a, b) => a.lastUsed - b.lastUsed);
         for (const victim of victims) {
             if (this.memoryBytes <= this.memoryBudgetBytes) break;
             this.memoryBytes -= victim.bytes.byteLength;
-            victim.bytes = null; // header/length metadata stay; bytes reload from Cache Storage
+            victim.bytes = null;
+            if (victim.persistedLength < victim.length) {
+                // Nothing (or only an older, shorter copy) is in Cache Storage:
+                // forget the prefix so the next use restores or re-fetches it.
+                victim.length = 0;
+                victim.header = null;
+                victim.total = null;
+                victim.persistedLength = 0;
+                victim.restored = false;
+            }
+            // Otherwise header/length metadata stay; bytes reload from Cache Storage.
         }
     }
 

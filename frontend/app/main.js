@@ -197,6 +197,9 @@ const TEXTURE_CONFIG = Object.freeze({
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
 const LOADER_MIN_VISIBLE_MS = 400;
+// Longest a texture job waits for the shared Basis module before its worker
+// loads its own copy instead.
+const BASIS_SHARE_WAIT_MS = 10000;
 // Concurrent geometry loads/rebuilds per geometry worker (network-bound).
 const GEOMETRY_PIPELINE_DEPTH = 3;
 // Linear-space colours for geometry whose texture page is not bound yet.
@@ -962,6 +965,17 @@ class PistonViewer {
             return module;
         })();
         return this._basisModuleShared;
+    }
+
+    /** Wait for the shared module, but never longer than
+     * BASIS_SHARE_WAIT_MS: a stalled wasm download must not hold every texture
+     * job hostage (workers then load their own copy). */
+    _awaitBasisModule() {
+        this._basisModuleWait ??= Promise.race([
+            this._shareBasisModule(),
+            new Promise(resolve => setTimeout(() => resolve(null), BASIS_SHARE_WAIT_MS)),
+        ]);
+        return this._basisModuleWait;
     }
 
     _postBasisModule(worker) {
@@ -3152,11 +3166,15 @@ class PistonViewer {
         const prefix = await this.textureByteStore.ensureLevel(url, task.level, {
             priority: this._textureNetPriority(state, task),
         });
-        await this._shareBasisModule();
+        await this._awaitBasisModule();
         // Structured-clone (not transfer): the watchdog may re-post a job to
-        // another worker, which a detached buffer would break.
+        // another worker, which a detached buffer would break. Copy only the
+        // mips this job needs: cloning a view clones its whole buffer, i.e.
+        // the full stored prefix (up to 6.4 MB) even for a 20 KB level-5 job.
+        const K = globalThis.Ktx2Prefix;
+        const needEnd = K.prefixEndForLevel(prefix.header, Math.min(prefix.header.levels - 1, task.level));
         const result = await this.postWorkerJob('TRANSCODE_KTX2', {
-            bytes: prefix.bytes,
+            bytes: prefix.bytes.slice(0, needEnd),
             baseLevel: task.level,
             resourceKey: `${task.key}/${task.tier}@${task.level}`,
         });

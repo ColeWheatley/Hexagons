@@ -24,6 +24,37 @@ export class NetAbortError extends Error {
     }
 }
 
+/** A request that made no progress for too long; retryable, unlike a cancel. */
+export class NetStallError extends Error {
+    constructor(url, ms) {
+        super(`No progress for ${Math.round(ms)} ms: ${url}`);
+        this.name = 'NetStallError';
+        this.retryable = true;
+    }
+}
+
+async function readBody(response, onProgress) {
+    const reader = response.body?.getReader?.();
+    if (!reader) return new Uint8Array(await response.arrayBuffer());
+    const chunks = [];
+    let length = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        length += value.byteLength;
+        onProgress();
+    }
+    if (chunks.length === 1) return chunks[0];
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return bytes;
+}
+
 function parseContentRange(value) {
     // bytes 0-1023/6351583
     const match = /bytes\s+(\d+)-(\d+)\/(\d+|\*)/i.exec(value || '');
@@ -45,6 +76,13 @@ export class NetScheduler {
         maxConcurrent = 6,
         initialThroughputBps = 1.5e6,
         prefetchMaxConcurrent = 1,
+        // A dead connection (wifi hand-off, captive portal, lost packets
+        // behind a stalled TCP window) never errors on its own; without a
+        // watchdog it holds its slot and its byte budget forever. Slow but
+        // moving transfers are fine: the timer restarts on every body chunk.
+        stallTimeoutMs = 20000,
+        setTimer = (fn, ms) => globalThis.setTimeout(fn, ms),
+        clearTimer = id => globalThis.clearTimeout(id),
     } = {}) {
         this.fetchImpl = fetchImpl;
         this.now = now;
@@ -53,13 +91,16 @@ export class NetScheduler {
         this.targetQueueSeconds = targetQueueSeconds;
         this.maxConcurrent = maxConcurrent;
         this.prefetchMaxConcurrent = prefetchMaxConcurrent;
+        this.stallTimeoutMs = stallTimeoutMs;
+        this.setTimer = setTimer;
+        this.clearTimer = clearTimer;
         this.throughputBps = initialThroughputBps;
         this.ttfbMs = null;
         this.queue = [];
         this.inFlight = new Set();
         this.inFlightBytes = 0;
         this.sequence = 0;
-        this.stats = { requests: 0, completed: 0, failed: 0, cancelled: 0, bytes: 0, samples: 0 };
+        this.stats = { requests: 0, completed: 0, failed: 0, cancelled: 0, stalled: 0, bytes: 0, samples: 0 };
         this._busySince = null;
         this._busyMs = 0;
         this._bytesSinceSample = 0;
@@ -218,18 +259,29 @@ export class NetScheduler {
         const startedAt = this.now();
         let result = null;
         let error = null;
+        let stallTimer = null;
+        const armStallTimer = () => {
+            if (!(this.stallTimeoutMs > 0)) return;
+            if (stallTimer !== null) this.clearTimer(stallTimer);
+            stallTimer = this.setTimer(() => {
+                item.stalled = true;
+                item.controller.abort();
+            }, this.stallTimeoutMs);
+        };
+        armStallTimer();
         try {
             const response = await this.fetchImpl(item.url, {
                 ...item.init,
                 headers,
                 signal: item.controller.signal,
             });
+            armStallTimer();
             const ttfb = this.now() - startedAt;
             this.ttfbMs = this.ttfbMs === null ? ttfb : 0.8 * this.ttfbMs + 0.2 * ttfb;
             if (response.status !== 200 && response.status !== 206) {
                 throw new Error(`HTTP ${response.status} for ${item.url}`);
             }
-            const bytes = new Uint8Array(await response.arrayBuffer());
+            const bytes = await readBody(response, armStallTimer);
             let range = null;
             if (response.status === 206) {
                 range = parseContentRange(response.headers.get('Content-Range'));
@@ -249,14 +301,17 @@ export class NetScheduler {
             this.stats.bytes += bytes.byteLength;
             this._sampleThroughput(bytes.byteLength);
         } catch (caught) {
-            error = item.cancelled || caught?.name === 'AbortError' ? new NetAbortError() : caught;
+            if (item.stalled && !item.cancelled) error = new NetStallError(item.url, this.stallTimeoutMs);
+            else error = item.cancelled || caught?.name === 'AbortError' ? new NetAbortError() : caught;
         } finally {
+            if (stallTimer !== null) this.clearTimer(stallTimer);
             this.inFlight.delete(item);
             this.inFlightBytes -= item.expectedBytes;
             this._markIdleIfDone();
         }
         if (error) {
             if (error.name === 'AbortError') this.stats.cancelled++;
+            else if (error.name === 'NetStallError') this.stats.stalled++;
             else this.stats.failed++;
         } else {
             this.stats.completed++;
