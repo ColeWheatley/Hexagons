@@ -101,12 +101,21 @@ Harness note: until `f54158b` the server log was attributed by time window only;
 a reused log tag mixed an older session into a run (a 9.1 MB run read as 60 MB).
 All numbers above were recomputed per session; baselines were unaffected.
 
-### Real wifi (owner's link, ~4–7 Mbit/s effective at the time, through Cloudflare)
+### Real wifi (this machine's link, through Cloudflare)
 
-Two runs each, screenshots every 1 s (`~/dev/Hexagons-codex/realvc.py`):
-live VC95 11–12 s, staged VC95 8–9 s; staged transferred ~9.6 MB for the default
-view versus ~51 MB. The staged build was ready (all visible pages at their
-screen-space level) in ~19 s on a ~5 Mbit/s moment of the link.
+Final build, alternating cold loads with live, 27 Sep 19:47–19:51, fresh profile
+each (`scripts/netlab/tools/realvc.py`, screenshots every 1 s):
+
+| Build | Loader | SpeedIndex | VC50 | VC85 | VC95 |
+|---|---:|---:|---:|---:|---:|
+| live | 5.0 / 5.0 | 7.1 / 7.5 | 5.0 / 5.0 | 8.0 / 7.0 | 20.0 / 29.0 |
+| staged | 2.0 / 2.0 | 2.1 / 2.6 | 2.0 / 2.0 | 4.0 / 7.0 | 5.0 / 8.0 |
+
+VC is scored against each build's own frame at 65 s; live's is blurrier (edge energy
+13.6 vs 17.9), so live's VC times flatter it. The old Stubai-only beta
+(`/hexagons/old/app/`, v0.10.0-rc5) cleared its loader at 4 s, showed fallback
+pattern/magenta for ~20 s and did not reach VC95 within 45 s (two runs).
+An earlier pair before the tiny-request concurrency fix: staged VC95 10/22 s vs live 18/18 s.
 
 ## Hardening (evening pass, after an independent review)
 
