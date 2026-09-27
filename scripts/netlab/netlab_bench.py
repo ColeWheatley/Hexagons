@@ -307,6 +307,8 @@ def main():
         (a.out/'summary.md').write_text(summarize(result))
         (a.out/'frame_manifest.json').unlink(); (a.out/'visual.json').unlink()
         print(summarize(result),flush=True)
+        misses=[x for x in result['network']['errors'] if x['status']==504]
+        if misses: raise RuntimeError(f'{len(misses)} offline mirror misses; seed the URLs in result.json before using this result')
     finally:
         if proc is not None:
             if proc.poll() is None: proc.terminate()
