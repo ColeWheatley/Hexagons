@@ -386,6 +386,7 @@ class PistonViewer {
         this.texturePagePlanStats = null;
         this.missingPageTexture = this.createMissingPageTexture();
         this.visibilityByKey = new Map();
+        this.visibilityPass = 0;
         this.currentVisibilityContext = null;
         this.geometryFrontierStats = {
             plannedTiles: 0,
@@ -1511,6 +1512,7 @@ class PistonViewer {
     // shader cut alone does not provide.
     updateLevelVisibility(heightFactor) {
         for (const tile of this.tiles.values()) {
+            if (tile.hidden) continue;
             this._applyTileLevelVisibility(tile, heightFactor);
         }
     }
@@ -3010,7 +3012,7 @@ class PistonViewer {
     _refreshTexturePageConsumers(state) {
         for (const tileKey of state.consumers) {
             const tile = this.tiles.get(tileKey);
-            if (tile) this._refreshTilePageTextures(tile);
+            if (tile && !tile.hidden) this._refreshTilePageTextures(tile);
         }
     }
 
@@ -3494,6 +3496,7 @@ class PistonViewer {
 
     updateLOD() {
         if (!this.visibilityAdapter || !this.visibilityBootstrapReady || this.lodPaused) return;
+        this.visibilityPass++;
 
         this.camera.updateMatrixWorld();
         this.projScreenMatrix.multiplyMatrices(
@@ -3616,6 +3619,23 @@ class PistonViewer {
             // GSP2 safely refines with its deliberately loose migration bounds.
             // GSP1 remains on its full-build compatibility path.
             let resident = this.tiles.get(key);
+            if (resident) {
+                if (classification === 'visible') resident.lastVisiblePass = this.visibilityPass;
+                const shouldHide = classification === 'outside';
+                if (resident.hidden !== shouldHide) {
+                    resident.hidden = shouldHide;
+                    resident.container.visible = !shouldHide;
+                    this.setHorizonTileHidden(key, !shouldHide);
+                    if (shouldHide) {
+                        resident.geometryDesiredSelection = null;
+                        resident.geometryDesiredSignature = null;
+                        resident.geometryRebuildNext = null;
+                    } else {
+                        this._refreshTilePageTextures(resident);
+                    }
+                    this.needsRender = true;
+                }
+            }
             if (resident?.binaryVersion >= 2 && classification !== 'outside' && !this.isMovingView) {
                 const desiredSelection = this._planTileGeometry(manifestTile);
                 resident.geometryDesiredSelection = desiredSelection;
@@ -3661,14 +3681,23 @@ class PistonViewer {
                         this.loadingScreen.terrainPlanned(this._bootPlannedTerrain.size);
                     }
                 }
-            } else if (this.tiles.has(key)) {
-                this.unloadTile(key);
             }
         }
+
+        this._evictHiddenGeometry();
 
         this._seedMiniTexturePins();
         this.processQueues();
         this.checkInitialLoad();
+    }
+
+    _evictHiddenGeometry() {
+        for (const key of hiddenGeometryEvictions({
+            tiles: this.tiles,
+            ledger: this.vramLedger,
+            cameraPosition: this.camera.position,
+            capability: this.capabilityProfile.name,
+        })) this.unloadTile(key);
     }
 
     checkInitialLoad(sorted) {
@@ -4367,7 +4396,10 @@ class PistonViewer {
                 textureTier: null,
                 isFullTex: false,
                 isTransitioning: false,
-                clonedMaterials: gatheredMaterials
+                clonedMaterials: gatheredMaterials,
+                hidden: false,
+                lastVisiblePass: this.visibilityByKey.get(key)?.classification === 'visible'
+                    ? this.visibilityPass : 0,
             };
             this._markFinestBuilt(tileObj);
             this.tiles.set(key, tileObj);
@@ -4387,6 +4419,8 @@ class PistonViewer {
                 geometryBytes,
                 q: t.yq, r: t.yr, lx: t.lx, lz: t.lz,
             });
+            this._evictHiddenGeometry();
+            this.needsLODUpdate = true;
             this._refreshTilePageTextures(tileObj);
             // A bootstrap page can arrive before its first geometry consumer.
             // Re-evaluate paint milestones when that consumer is attached;
@@ -4654,7 +4688,8 @@ class PistonViewer {
 
     pickFloorValue() {
         const inView = this.getTilesInView();
-        const validTiles = inView.length ? inView : Array.from(this.tiles.values());
+        const validTiles = inView.length ? inView
+            : Array.from(this.tiles.values()).filter(tile => !tile.hidden);
         let min = Infinity;
         for (const t of validTiles) if (t.stats && t.stats.min < min) min = t.stats.min;
         return Number.isFinite(min) ? min : NaN;
@@ -4664,7 +4699,7 @@ class PistonViewer {
         this.camera.updateMatrixWorld();
         this.projScreenMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
         this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
-        return Array.from(this.tiles.values()).filter(t => this.frustum.intersectsBox(t.bounds));
+        return Array.from(this.tiles.values()).filter(t => !t.hidden && this.frustum.intersectsBox(t.bounds));
     }
 
     updateFloorUniforms() {
@@ -4918,7 +4953,10 @@ class PistonViewer {
 
     getMovingLodDebugStats() {
         let residentCaps = 0;
+        let visibleResidentTiles = 0;
         for (const tile of this.tiles.values()) {
+            if (tile.hidden) continue;
+            visibleResidentTiles++;
             const group = tile.mesh?.children?.find(
                 g => g.userData.gosperLevel === this.movingLevel);
             if (group?.visible && group.children[0]?.visible) {
@@ -4926,7 +4964,7 @@ class PistonViewer {
             }
         }
         const manifestTiles = this.manifest?.tiles?.length || 0;
-        const fallbackTiles = Math.max(0, manifestTiles - this.tiles.size);
+        const fallbackTiles = Math.max(0, manifestTiles - visibleResidentTiles);
         return {
             active: this.isMovingView,
             level: this.movingLevel,
