@@ -220,8 +220,8 @@ const TILE_PREFETCH = Object.freeze({
 // Idle-link pre-download of nearby off-screen 256 px page prefixes.
 const TEXTURE_PREFETCH = Object.freeze({
     maxInFlight: 3,
-    minRadiusM: 4000,
-    altitudeRadiusScale: 3,
+    minRadiusM: 8000,
+    altitudeRadiusScale: 4,
 });
 
 function appendCacheKey(url, cacheKey) {
@@ -2862,14 +2862,19 @@ class PistonViewer {
         if (!states || !this.loaderHidden || this.isMovingView) return;
         if (throttle) {
             const now = performance.now();
-            if (now - (this._lastTexturePrefetchScanMs || 0) < 500) return;
+            if (now - (this._lastTexturePrefetchScanMs || 0) < 500) {
+                this._schedulePrefetch();
+                return;
+            }
             this._lastTexturePrefetchScanMs = now;
         }
         const inFlight = this._texturePrefetchInFlight || 0;
         const limit = TEXTURE_PREFETCH.maxInFlight;
         if (inFlight >= limit) return;
-        if (this.netScheduler.hasDemand || this.textureQueue.length > 0 || this.activeTextureJobs > 0
-            || this.loadQueue.length > 0 || this.activeWorkerCount > 0) return;
+        if (this._prefetchBusy()) {
+            this._schedulePrefetch(1000);
+            return;
+        }
         const radius = Math.max(TEXTURE_PREFETCH.minRadiusM,
             TEXTURE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y));
         const candidates = [];
@@ -2902,17 +2907,39 @@ class PistonViewer {
         }
     }
 
+    /** Run both idle prefetchers soon. Needed because render-on-demand
+     * stops calling processQueues once the view is settled. */
+    _schedulePrefetch(delayMs = 600) {
+        if (this._prefetchTimer) return;
+        this._prefetchTimer = setTimeout(() => {
+            this._prefetchTimer = null;
+            this._prefetchTexturePrefixes();
+            this._prefetchTilePrefixes();
+        }, delayMs);
+    }
+
+    _prefetchBusy() {
+        return this.netScheduler.hasDemand || this.loadQueue.length > 0 || this.activeWorkerCount > 0
+            || this.textureQueue.length > 0 || this.activeTextureJobs > 0
+            || this.textureResultQueue.length > 0 || this.instantiateQueue.length > 0;
+    }
+
     _prefetchTilePrefixes({ throttle = false } = {}) {
         if (!this.tileByteStore || !this.manifestGrid || !this.loaderHidden || this.isMovingView) return;
         if (throttle) {
             const now = performance.now();
-            if (now - (this._lastTilePrefetchScanMs || 0) < 500) return;
+            if (now - (this._lastTilePrefetchScanMs || 0) < 500) {
+                this._schedulePrefetch();
+                return;
+            }
             this._lastTilePrefetchScanMs = now;
         }
         const inFlight = this._tilePrefetchInFlight || 0;
         if (inFlight >= TILE_PREFETCH.maxInFlight) return;
-        if (this.netScheduler.hasDemand || this.loadQueue.length > 0 || this.activeWorkerCount > 0
-            || this.textureQueue.length > 0 || this.activeTextureJobs > 0) return;
+        if (this._prefetchBusy()) {
+            this._schedulePrefetch(1000);
+            return;
+        }
         const radius = Math.min(TILE_PREFETCH.maxRadiusM, Math.max(TILE_PREFETCH.minRadiusM,
             TILE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y)));
         this._tilePrefetchDone ??= new Map();
