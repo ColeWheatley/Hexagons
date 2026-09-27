@@ -207,6 +207,10 @@ const COVERAGE_TEXTURE_BUDGET_BYTES = Object.freeze({
     mid: 48 * 1024 * 1024,
     low: 24 * 1024 * 1024,
 });
+// Initial tile loads stop at this GSP3 depth while measured throughput is
+// below the threshold (bytes/s); refinement follows immediately.
+const TILE_COARSE_FIRST_DEPTH = 3;
+const TILE_COARSE_FIRST_BELOW_BPS = 6e6;
 // Idle-link pre-download of nearby off-screen terrain: coarse GSP3 prefixes
 // (952 B = L5..L3, or 6.4 KB = ..L2 within 5 km) so a pan shows real terrain
 // immediately and refines from there.
@@ -4139,7 +4143,10 @@ class PistonViewer {
             enqueuedSequence: this.workerDispatchSequence++,
         };
         tile.geometryDesiredSelection = selection;
-        tile.geometryDesiredSignature = selection.signature;
+        // Must match task.signature (selection + byte depth): the commit
+        // gates compare them, and a bare selection signature made every
+        // rebuild — frontier and depth refinement alike — silently drop.
+        tile.geometryDesiredSignature = task.signature;
 
         if (tile.geometryRebuildPending) {
             const pending = tile.geometryRebuildPending;
@@ -4454,7 +4461,14 @@ class PistonViewer {
                         coarseOnly: this.isMovingView
                             || this.visibilityByKey.get(tileKey)?.classification === 'outside',
                     });
-                    const depth = this._tileRequiredDepth(t, tileKey, selection);
+                    const requiredDepth = this._tileRequiredDepth(t, tileKey, selection);
+                    // Coarse first on modest links: 6.4 KB (L5..L2) per tile
+                    // puts real terrain across the whole view almost at once;
+                    // the resident-refinement path then appends the rest
+                    // (no byte is fetched twice). Fast links skip the step.
+                    const depth = this.netScheduler.throughputBps < TILE_COARSE_FIRST_BELOW_BPS
+                        ? Math.min(requiredDepth, TILE_COARSE_FIRST_DEPTH)
+                        : requiredDepth;
                     let result;
                     try {
                         result = await this._buildTilePrefix(
