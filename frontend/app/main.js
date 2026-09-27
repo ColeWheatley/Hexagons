@@ -427,6 +427,7 @@ class PistonViewer {
         this.loadQueue = [];
         this.geometryRebuildQueue = [];
         this.geometryPlanEpoch = 0;
+        this.worldGeneration = 0;
         this.viewEpoch = 0;
         this.workerDispatchSequence = 0;
         this.textureDispatchSequence = 0;
@@ -1413,6 +1414,7 @@ class PistonViewer {
     }
 
     _resetWorldForInitRetry() {
+        this.worldGeneration++;
         for (const key of Array.from(this.tiles.keys())) this.unloadTile(key);
         this._disposeHorizon();
         this._disposeTextureAssets();
@@ -1447,10 +1449,13 @@ class PistonViewer {
         this.loadQueue.length = 0;
         this.geometryRebuildQueue.length = 0;
         this.textureQueue.length = 0;
+        for (const item of this.textureResultQueue) item.result?.imageBitmap?.close?.();
         this.textureResultQueue.length = 0;
         this.instantiateQueue.length = 0;
         this.recoverableResweeps.consumeAll();
-        this.resourceRetries.reset(MANIFEST_RETRY_KEY);
+        // Old in-flight jobs keep their own retry ledger; the new world gets
+        // fresh budgets even when it requests the same tile or page key.
+        this.resourceRetries = new ResourceRetryScheduler();
         if (this.contextRecovery.timer) {
             clearTimeout(this.contextRecovery.timer);
             this.contextRecovery.timer = null;
@@ -3666,6 +3671,7 @@ class PistonViewer {
             if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDispatched');
             if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighDispatched');
             this.activeTextureJobs++;
+            const worldGeneration = this.worldGeneration;
             const retryKey = `texture:${this._textureFailureKey(task.key, task.tier)}`;
             this.resourceRetries.run(retryKey, ({ attempt }) => (
                 task.tier === TEXTURE_TIER.BOOTSTRAP
@@ -3677,8 +3683,16 @@ class PistonViewer {
                     })
                     : this._loadProgressiveTexture(task, state, attempt)
             ), {
-                onRetry: event => this._resourceRetrying('texture', `${task.key}/${task.tier}`, event),
+                onRetry: event => {
+                    if (worldGeneration === this.worldGeneration) {
+                        this._resourceRetrying('texture', `${task.key}/${task.tier}`, event);
+                    }
+                },
             }).then(result => {
+                if (worldGeneration !== this.worldGeneration) {
+                    result.imageBitmap?.close?.();
+                    return;
+                }
                 if (task.tier === TEXTURE_TIER.BOOTSTRAP) this.profiler?.milestone('firstBootstrapDecoded');
                 if (result.networkBytes) {
                     this.vramLedger.addNetworkPayload(task.key, { bin: 0, tex: result.networkBytes });
@@ -3693,6 +3707,7 @@ class PistonViewer {
                 });
                 this.needsRender = true;
             }).catch(error => {
+                if (worldGeneration !== this.worldGeneration) return;
                 if (task.tier === TEXTURE_TIER.BOOTSTRAP && !this.bootstrapPhaseActive) return;
                 setTierState(state, task.tier, TIER_STATE.FAILED);
                 this._markTextureFailed(task.key, task.tier, error);
@@ -3703,6 +3718,7 @@ class PistonViewer {
                     console.warn(`[TEX_FAIL] ${task.key}/${task.tier}: ${error.message}`);
                 }
             }).finally(() => {
+                if (worldGeneration !== this.worldGeneration) return;
                 this.activeTextureJobs--;
                 this.processQueues();
             });
@@ -4312,8 +4328,10 @@ class PistonViewer {
         })) return false;
 
         tile.geometryRebuildPending = task;
+        const worldGeneration = this.worldGeneration;
         this.activeWorkerCount++;
         this._buildResidentGeometry(task, key).then(result => {
+            if (worldGeneration !== this.worldGeneration) return;
             if (this.tiles.get(key) !== tile) return;
             if (result.binaryVersion !== tile.binaryVersion) {
                 throw new Error(`geometry rebuild version mismatch for ${key}`);
@@ -4328,8 +4346,10 @@ class PistonViewer {
             })) return;
             this._replaceTileGeometry(tile, result, selection);
         }).catch(error => {
+            if (worldGeneration !== this.worldGeneration) return;
             console.error(`Geometry rebuild failed for ${key}`, error);
         }).finally(() => {
+            if (worldGeneration !== this.worldGeneration) return;
             this.activeWorkerCount--;
             if (tile.geometryRebuildPending === task) tile.geometryRebuildPending = null;
             const next = tile.geometryRebuildNext;
@@ -4551,7 +4571,9 @@ class PistonViewer {
             }
 
             this.activeWorkerCount++;
-            this.fetchTileOnWorker(task).then(result => {
+            const worldGeneration = this.worldGeneration;
+            this.fetchTileOnWorker(task, worldGeneration).then(result => {
+                if (worldGeneration !== this.worldGeneration) return;
                 this.activeWorkerCount--;
                 if (result) this.instantiateQueue.push(result);
                 // The last in-flight failure must re-evaluate the boot guard
@@ -4576,7 +4598,7 @@ class PistonViewer {
         );
     }
 
-    async fetchTileOnWorker(task) {
+    async fetchTileOnWorker(task, worldGeneration = this.worldGeneration) {
         const tileKey = `${task.t.yq}_${task.t.yr}`;
         try {
             const { t } = task;
@@ -4634,8 +4656,14 @@ class PistonViewer {
                 }
                 return result;
             }, {
-                onRetry: event => this._resourceRetrying('tile', tileKey, event),
+                onRetry: event => {
+                    if (worldGeneration === this.worldGeneration) {
+                        this._resourceRetrying('tile', tileKey, event);
+                    }
+                },
             });
+
+            if (worldGeneration !== this.worldGeneration) return null;
 
             this.resourceLifecycles.ready('geometry', tileKey, { cause: 'binary-decoded' });
 
@@ -4664,6 +4692,7 @@ class PistonViewer {
                     expectedGspVersion,
                     rangesByDepth: geometrySelection.rangesByDepth,
                 });
+                if (worldGeneration !== this.worldGeneration) return null;
                 if (geometryResult.binaryVersion !== expectedGspVersion) {
                     throw new Error(`deferred geometry version mismatch for ${tileKey}`);
                 }
@@ -4683,6 +4712,7 @@ class PistonViewer {
             return { task, workerData };
 
         } catch (e) {
+            if (worldGeneration !== this.worldGeneration) return null;
             console.error("Tile Fetch Error", e);
             this.visibilityAdapter?.detachDecodedIsland(tileKey);
             this.tileStates.delete(`${task.t.yq}_${task.t.yr}`);
