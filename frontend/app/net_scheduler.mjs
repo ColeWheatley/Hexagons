@@ -15,6 +15,8 @@ export const NET_PRIORITY = Object.freeze({
     PREFETCH: 0,     // only when nothing else wants the link
 });
 
+const TINY_REQUEST_BYTES = 64 * 1024;
+
 export class NetAbortError extends Error {
     constructor(message = 'Request cancelled') {
         super(message);
@@ -169,7 +171,11 @@ export class NetScheduler {
                 }
                 if (prefetching >= this.prefetchMaxConcurrent) return;
             }
-            if (this.inFlight.size > 0 && this.inFlightBytes + item.expectedBytes > this.budgetBytes) return;
+            // Tiny urgent requests (coverage imagery, coarse terrain) add
+            // almost no queueing, so they never wait behind the byte budget.
+            const tinyUrgent = item.expectedBytes <= TINY_REQUEST_BYTES && item.priority >= NET_PRIORITY.VISIBLE;
+            if (!tinyUrgent && this.inFlight.size > 0
+                && this.inFlightBytes + item.expectedBytes > this.budgetBytes) return;
             this.queue.splice(index, 1);
             this._start(item);
         }

@@ -3765,9 +3765,13 @@ class PistonViewer {
         }));
     }
 
-    async _buildTilePrefix(t, key, binUrl, expectedGspVersion, availableDepth, selection) {
-        const prefix = await this._ensureTileBytes(t, binUrl, GSP3_PREFIX_END[availableDepth],
-            this._tileNetPriority(key));
+    async _buildTilePrefix(t, key, binUrl, expectedGspVersion, availableDepth, selection, { refinement = false } = {}) {
+        // Refinement of an already-visible tile ranks below the first imagery
+        // steps (texture coverage +60, 512/1024 px +30/+20) but above the
+        // 2048/4096 px steps: coarse terrain + real imagery beats fine
+        // terrain + placeholder colour.
+        const priority = refinement ? NET_PRIORITY.VISIBLE + 15 : this._tileNetPriority(key);
+        const prefix = await this._ensureTileBytes(t, binUrl, GSP3_PREFIX_END[availableDepth], priority);
         if (prefix.bytes.byteLength < GSP3_PREFIX_END[availableDepth]) {
             throw new Error(`truncated GSP3 depth ${availableDepth} for ${key}`);
         }
@@ -4305,6 +4309,7 @@ class PistonViewer {
                 return await this._buildTilePrefix(
                     t, key, this._tileBinUrl(t, 3), 3,
                     Math.max(tile.availableDepth, task.requiredDepth), selection,
+                    { refinement: true },
                 );
             } catch (error) {
                 // A broken Range endpoint or evicted/corrupt prefix falls
