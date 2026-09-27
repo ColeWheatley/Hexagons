@@ -1161,14 +1161,15 @@ class PistonViewer {
         }
     }
 
-    _markGeometryForReupload(geometry) {
+    _markGeometryForReupload(object) {
+        const geometry = object?.geometry;
         if (!geometry) return;
         if (geometry.index) geometry.index.needsUpdate = true;
         for (const attribute of Object.values(geometry.attributes || {})) {
             attribute.needsUpdate = true;
         }
-        if (geometry.instanceMatrix) geometry.instanceMatrix.needsUpdate = true;
-        if (geometry.instanceColor) geometry.instanceColor.needsUpdate = true;
+        if (object.instanceMatrix) object.instanceMatrix.needsUpdate = true;
+        if (object.instanceColor) object.instanceColor.needsUpdate = true;
     }
 
     _markTextureForReupload(texture) {
@@ -1188,7 +1189,7 @@ class PistonViewer {
         this.materialChurn.traversalCalls++;
         this.scene.traverse(object => {
             this.materialChurn.traversedObjects++;
-            this._markGeometryForReupload(object.geometry);
+            this._markGeometryForReupload(object);
             const materials = object.material
                 ? (Array.isArray(object.material) ? object.material : [object.material])
                 : [];
@@ -1260,7 +1261,10 @@ class PistonViewer {
         this.materialChurn.traversalCalls++;
         root.traverse(object => {
             this.materialChurn.traversedObjects++;
-            if (object.isMesh) object.geometry?.dispose();
+            if (object.isMesh) {
+                object.geometry?.dispose();
+                if (object.isInstancedMesh) object.dispose();
+            }
             const materials = object.material
                 ? (Array.isArray(object.material) ? object.material : [object.material])
                 : [];
@@ -3920,6 +3924,7 @@ class PistonViewer {
                 this.materialChurn.traversedObjects++;
                 if (!object.isMesh) return;
                 disposeGeometryWithSharedStaticBuffers(object.geometry);
+                if (object.isInstancedMesh) object.dispose();
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
                 for (const material of materials) {
                     if (!material || disposedMaterials.has(material)) continue;
@@ -3944,12 +3949,16 @@ class PistonViewer {
                 lx: tile.lx,
                 lz: tile.lz,
             });
+            this._evictHiddenGeometry();
             this.needsRender = true;
         } catch (error) {
             this.materialChurn.traversalCalls++;
             replacement.traverse(object => {
                 this.materialChurn.traversedObjects++;
-                if (object.isMesh) disposeGeometryWithSharedStaticBuffers(object.geometry);
+                if (object.isMesh) {
+                    disposeGeometryWithSharedStaticBuffers(object.geometry);
+                    if (object.isInstancedMesh) object.dispose();
+                }
             });
             for (const material of replacementMaterials) {
                 this.materialsToUpdate.delete(material);
@@ -4469,6 +4478,7 @@ class PistonViewer {
                     if (obj.geometry) {
                         disposeGeometryWithSharedStaticBuffers(obj.geometry);
                     }
+                    if (obj.isInstancedMesh) obj.dispose();
                     // Array-safe material disposal (Graft 2)
                     const materials = obj.material
                         ? (Array.isArray(obj.material) ? obj.material : [obj.material])
