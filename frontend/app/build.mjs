@@ -192,8 +192,11 @@ async function rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, servi
 
     const manifestHref = `tile_manifest.json?v=${encodeURIComponent(appVersion)}`;
     const headLinks = [
-        `<link rel="preload" href="${manifestHref}" as="fetch" crossorigin="anonymous">`,
-        `<link rel="preload" href="${basisWasmPath}" as="fetch" type="application/wasm" crossorigin="anonymous">`,
+        `<link rel="preload" href="${manifestHref}" as="fetch" crossorigin="anonymous" fetchpriority="high">`,
+        // Low priority: first needed after the first tile paints (bootstrap
+        // textures are WebP); at default priority it raced the manifest and
+        // the first terrain tile on slow links.
+        `<link rel="preload" href="${basisWasmPath}" as="fetch" type="application/wasm" crossorigin="anonymous" fetchpriority="low">`,
         `<link rel="modulepreload" href="${mainPath}">`,
         `<link rel="stylesheet" href="${cssPath}">`,
     ].join('\n    ');
