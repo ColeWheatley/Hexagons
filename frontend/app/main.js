@@ -239,6 +239,7 @@ const TEXTURE_PREFETCH = Object.freeze({
     maxInFlight: 3,
     minRadiusM: 8000,
     altitudeRadiusScale: 4,
+    guardDetailRadiusM: 4000,
 });
 
 function appendCacheKey(url, cacheKey) {
@@ -2889,6 +2890,42 @@ class PistonViewer {
      * scheduler only runs prefetch on an otherwise idle link). A later pan
      * then finds that imagery locally: transcode + upload, no network.
      */
+    /**
+     * Staged idle-link texture pre-download (bytes only, into the persistent
+     * byte store; nothing is transcoded or uploaded until demanded):
+     *   1. off-screen pages near the view -> 256 px prefix (~28 KB),
+     *   2. visible pages -> one level sharper than they currently need, so
+     *      zooming in (couloir inspection) transcodes local bytes instantly,
+     *   3. guard pages -> 1024 px.
+     * Nearest first, bounded in flight and by the per-session budget.
+     */
+    _textureprefetchPlan(radius) {
+        const stages = [[], [], []];
+        for (const state of this.textureStates.values()) {
+            const done = this._texturePrefetchDone.get(state.key);
+            if (state.classification === 'outside') {
+                if (state.assets.size > 0 || !(state.distanceMeters <= radius)) continue;
+                if (done !== undefined && done <= MEDIUM_TEXTURE_LEVEL) continue;
+                stages[0].push([state, MEDIUM_TEXTURE_LEVEL]);
+            } else if (state.classification === 'visible') {
+                if (state.desiredTier !== TEXTURE_TIER.HIGH || !Number.isInteger(state.desiredHighLevel)) continue;
+                const level = Math.max(HIGH_TEXTURE_LEVEL.FINEST, state.desiredHighLevel - 1);
+                if (level === state.desiredHighLevel || (done !== undefined && done <= level)) continue;
+                stages[1].push([state, level]);
+            } else if (state.classification === 'guard') {
+                const level = HIGH_TEXTURE_LEVEL.FIRST_STEP;
+                if (done !== undefined && done <= level) continue;
+                if (!(state.distanceMeters <= TEXTURE_PREFETCH.guardDetailRadiusM)) continue;
+                stages[2].push([state, level]);
+            }
+        }
+        for (const stage of stages) {
+            if (stage.length === 0) continue;
+            return stage.sort((a, b) => a[0].distanceMeters - b[0].distanceMeters);
+        }
+        return [];
+    }
+
     _prefetchTexturePrefixes({ throttle = false } = {}) {
         const states = this.textureStates;
         if (!states || !this.loaderHidden || this.isMovingView) return;
@@ -2908,34 +2945,30 @@ class PistonViewer {
             this._schedulePrefetch(1000);
             return;
         }
+        this._texturePrefetchDone ??= new Map(); // page key -> finest level prefetched
         const radius = Math.max(TEXTURE_PREFETCH.minRadiusM,
             TEXTURE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y));
-        const candidates = [];
-        for (const state of states.values()) {
-            if (state.classification !== 'outside' || state.assets.size > 0) continue;
-            if (!(state.distanceMeters <= radius)) continue;
-            if (this._texturePrefetchDone?.has(state.key)) continue;
-            candidates.push(state);
-        }
-        if (candidates.length === 0) return;
-        candidates.sort((a, b) => a.distanceMeters - b.distanceMeters);
-        this._texturePrefetchDone ??= new Set();
-        for (const state of candidates.slice(0, limit - inFlight)) {
+        const plan = this._textureprefetchPlan(radius);
+        for (const [state, level] of plan.slice(0, limit - inFlight)) {
             let url;
             try {
                 url = this._textureUrls(TEXTURE_TIER.HIGH, state.key)[0];
             } catch {
-                this._texturePrefetchDone.add(state.key);
+                this._texturePrefetchDone.set(state.key, -1);
                 continue;
             }
-            this._texturePrefetchDone.add(state.key);
+            const previous = this._texturePrefetchDone.get(state.key);
+            this._texturePrefetchDone.set(state.key, level);
             this._texturePrefetchInFlight = (this._texturePrefetchInFlight || 0) + 1;
-            this.textureByteStore.ensureLevel(url, MEDIUM_TEXTURE_LEVEL, { priority: NET_PRIORITY.PREFETCH })
+            this.textureByteStore.ensureLevel(url, level, { priority: NET_PRIORITY.PREFETCH })
                 .then(result => {
                     this.texturePrefetchStats.pages++;
                     this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
                 })
-                .catch(() => { this._texturePrefetchDone.delete(state.key); })
+                .catch(() => {
+                    if (previous === undefined) this._texturePrefetchDone.delete(state.key);
+                    else this._texturePrefetchDone.set(state.key, previous);
+                })
                 .finally(() => {
                     this._texturePrefetchInFlight--;
                     this._prefetchTexturePrefixes();
