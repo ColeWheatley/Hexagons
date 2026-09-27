@@ -82,7 +82,11 @@ def put_bytes(bucket: str, key: str, data: bytes, *, content_type: str, cache: s
 
 def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool, manifest_rel: str | None = None) -> int:
     count = 0
-    for path in sorted(p for p in dist.rglob("*") if p.is_file()):
+    # index.html goes LAST: it is the atomic switch. Uploading it before the
+    # hashed bundles it references would 404 anyone loading in between.
+    files = sorted((p for p in dist.rglob("*") if p.is_file()),
+                   key=lambda p: (p.relative_to(dist).as_posix() == "index.html", p.as_posix()))
+    for path in files:
         rel = path.relative_to(dist)
         # Never data (symlinked tiles/pages) or manifests: the pointer is ours.
         if any(part in {"tiles_bin", "aerial_pages", ".DS_Store"} for part in rel.parts):
@@ -157,15 +161,19 @@ def main() -> int:
     parser.add_argument("--dist", type=Path, default=ROOT / "frontend/app/dist")
     parser.add_argument("--skip-shell", action="store_true", help="only (re)publish the manifest + pointer")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--target", choices=("next", "app"), default="next",
+                        help="publish path under --base-prefix; 'app' is the LIVE site")
+    parser.add_argument("--promote-live", action="store_true",
+                        help="required together with --target app")
     parser.add_argument("--tile-split", default=None,
                         help="URL template of brotli split tile parts published by publish_tile_split.py, "
                              "e.g. /hexagons/next/releases/<release>/tiles_split/gosper_{yq}_{yr}.{part}.bin")
     parser.add_argument("--local-out", type=Path, default=None,
                         help="write the staged tree to this directory instead of S3 (for netlab A/B)")
     args = parser.parse_args()
-    prefix = f"{args.base_prefix}/next"
-    if prefix.rstrip("/").endswith("/app"):
-        raise SystemExit("refusing to stage into the live app prefix")
+    prefix = f"{args.base_prefix}/{args.target}"
+    if args.target == "app" and not args.promote_live:
+        raise SystemExit("refusing to publish to the LIVE app prefix without --promote-live")
 
     source = load_manifest(args.source_manifest)
     release = source.get("release", {}).get("asset_release")
@@ -203,14 +211,23 @@ def main() -> int:
             raise SystemExit(f"no built shell at {args.dist}; run `node frontend/app/build.mjs` first")
         count = upload_shell(args.bucket, prefix, args.dist, args.dry_run, manifest_rel)
         print(f"uploaded {count} shell objects")
-    put_bytes(args.bucket, f"{prefix}/tile_manifest.json",
-              json.dumps(pointer, separators=(",", ":")).encode(), content_type="application/json",
-              cache=REVALIDATE, encoding=None, dry=args.dry_run)
+    if args.target == "app":
+        # Old (v1) shells still open in browsers fetch app/tile_manifest.json
+        # and need the FULL manifest; the new shell reads the manifest URL
+        # from index.html, so leave the live pointer/manifest untouched.
+        print("target app: leaving hexagons/app/tile_manifest.json untouched for old shells")
+    else:
+        put_bytes(args.bucket, f"{prefix}/tile_manifest.json",
+                  json.dumps(pointer, separators=(",", ":")).encode(), content_type="application/json",
+                  cache=REVALIDATE, encoding=None, dry=args.dry_run)
     if args.dry_run:
         return 0
 
     # Verify through the public edge exactly as a browser would.
-    for rel, check in ((f"{prefix}/tile_manifest.json", "pointer"), (f"{prefix}/{manifest_rel}", "manifest")):
+    checks = [(f"{prefix}/{manifest_rel}", "manifest"), (f"{prefix}/", "index.html")]
+    if args.target != "app":
+        checks.insert(0, (f"{prefix}/tile_manifest.json", "pointer"))
+    for rel, check in checks:
         request = urllib.request.Request(f"{PUBLIC}/{rel}", headers={"Accept-Encoding": "br", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=60) as response:
             body = response.read()
