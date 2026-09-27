@@ -67,7 +67,33 @@ instead of magenta. `3g` no longer forces the low profile.
 
 ## Measurements
 
-_(filled in from netlab A/B and real-wifi runs below)_
+### netlab (offline replay, `cafe` link: 18 Mbit/s, 90 ms, +450 ms under load)
+
+Live = production shell replayed from the mirror (`scripts/netlab/BASELINE.md`).
+Staged = this branch served at `/hexagons/next/` against the same release files,
+`?prefetch=0` (idle pre-download off so the quiet-network reference is reached).
+Times are seconds; VC = block-SSIM visual completeness against the settled frame.
+
+| Scenario | Build | Loader | VC50 | VC85 | VC95 | MB | Re-DL MB |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Cold first visit | live | 1.7 | 3.5 | 5.0 | 14.5 | 51.0 | 0.8 |
+| | staged | 1.0 | 3.0 | 5.5 | 6.0 | 11.6 | 0.0 |
+| Repeat visit (HTTP cache cleared) | live | 1.7 | 2.5 | 5.0 | 14.0 | 50.1 | 0.0 |
+| | staged | 1.0 | 1.5 | 2.0 | 2.0 | 1.4 | 0.0 |
+| Jump 12 km west (phase after jump) | live | – | 1.0 | 4.0 | 9.0 | 104.2* | 0.8 |
+| | staged | – | 0.5 | 4.5 | 5.0 | 21.6* | 0.0 |
+| Pan 3 km east and back (return phase) | live | – | 6.0 | 6.0 | 12.0 | 144.6* | 35.0 |
+| | staged | – | 6.0 | 6.0 | 6.5 | 19.8* | 0.03 |
+
+\* whole scenario. Pan phases include the 6 s camera move, so 6.0 is the floor.
+Live pan varied run to run (17.6–144.6 MB, 4.6–35 MB re-downloaded).
+
+### Real wifi (owner's link, ~4–7 Mbit/s effective at the time, through Cloudflare)
+
+Two runs each, screenshots every 1 s (`~/dev/Hexagons-codex/realvc.py`):
+live VC95 11–12 s, staged VC95 8–9 s; staged transferred ~9.6 MB for the default
+view versus ~51 MB. The staged build was ready (all visible pages at their
+screen-space level) in ~19 s on a ~5 Mbit/s moment of the link.
 
 ## How to promote `/hexagons/next` to `/hexagons/app`
 
