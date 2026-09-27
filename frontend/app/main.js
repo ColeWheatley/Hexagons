@@ -2917,30 +2917,30 @@ class PistonViewer {
         });
     }
 
-    _textureLedgerLocation(textureResource) {
+    _textureLedgerLocation(textureResource, previous = null) {
         const centerX = (textureResource.minX + textureResource.maxX) * 0.5;
         const centerY = (textureResource.minY + textureResource.maxY) * 0.5;
         const minSceneY = (textureResource.renderMin - this.floorState.value) * this.heightFactor;
         const maxSceneY = (textureResource.renderMax - this.floorState.value) * this.heightFactor;
-        return {
-            kind: 'texture-page',
-            pageX: textureResource.pageX,
-            pageY: textureResource.pageY,
-            lx: centerX - this.worldOrigin.x,
-            lz: -(centerY - this.worldOrigin.y),
-            bounds: new THREE.Box3(
-                new THREE.Vector3(
-                    textureResource.minX - this.worldOrigin.x,
-                    Math.min(minSceneY, maxSceneY),
-                    -(textureResource.maxY - this.worldOrigin.y),
-                ),
-                new THREE.Vector3(
-                    textureResource.maxX - this.worldOrigin.x,
-                    Math.max(minSceneY, maxSceneY),
-                    -(textureResource.minY - this.worldOrigin.y),
-                ),
-            ),
-        };
+        const bounds = previous?.bounds || new THREE.Box3();
+        bounds.min.set(
+            textureResource.minX - this.worldOrigin.x,
+            Math.min(minSceneY, maxSceneY),
+            -(textureResource.maxY - this.worldOrigin.y),
+        );
+        bounds.max.set(
+            textureResource.maxX - this.worldOrigin.x,
+            Math.max(minSceneY, maxSceneY),
+            -(textureResource.minY - this.worldOrigin.y),
+        );
+        const location = previous || {};
+        location.kind = 'texture-page';
+        location.pageX = textureResource.pageX;
+        location.pageY = textureResource.pageY;
+        location.lx = centerX - this.worldOrigin.x;
+        location.lz = -(centerY - this.worldOrigin.y);
+        location.bounds = bounds;
+        return location;
     }
 
     _applyTexturePageBindings(material, pageKeys) {
@@ -3181,7 +3181,7 @@ class PistonViewer {
             state.key,
             task.tier,
             result.gpuBytes || 0,
-            this._textureLedgerLocation(task.textureResource),
+            (state.ledgerLocation = this._textureLedgerLocation(task.textureResource, state.ledgerLocation)),
         );
         if (task.tier === TEXTURE_TIER.HIGH) this.profiler?.milestone('firstHighInstalled');
         this._reconcileTextureState(state);
@@ -3473,7 +3473,7 @@ class PistonViewer {
                 // accounting current without changing page allocation identity.
                 this.vramLedger.updateTextureLocation(
                     state.key,
-                    this._textureLedgerLocation(state.page),
+                    (state.ledgerLocation = this._textureLedgerLocation(state.page, state.ledgerLocation)),
                 );
             }
             if (!textureStateHasDemand(state, { includeOutside: false })) {
