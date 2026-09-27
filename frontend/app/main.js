@@ -205,6 +205,10 @@ const LOADER_MIN_VISIBLE_MS = 400;
 // Longest a texture job waits for the shared Basis module before its worker
 // loads its own copy instead.
 const BASIS_SHARE_WAIT_MS = 10000;
+// Failed resources are retried when the camera settles after a move, when the
+// browser reports it is back online, and otherwise after an idle backoff.
+const IDLE_RESWEEP_BASE_MS = 15000;
+const IDLE_RESWEEP_MAX_MS = 120000;
 // Trim the persistent prefix caches well after first paint, off the critical path.
 const PREFIX_CACHE_TRIM_DELAY_MS = 20000;
 // Concurrent geometry loads/rebuilds per geometry worker (network-bound).
@@ -563,8 +567,14 @@ class PistonViewer {
         };
         this.resourceRetries = new ResourceRetryScheduler();
         this.recoverableResweeps = new ResweepScheduler({
-            onSchedule: () => { this.failureStats.recoverableSweepsScheduled++; },
+            onSchedule: () => {
+                this.failureStats.recoverableSweepsScheduled++;
+                this._armIdleResweep();
+            },
         });
+        // A still camera never "settles" again, so without this a wifi
+        // drop-out left every page that failed during it blurry for good.
+        globalThis.addEventListener?.('online', () => this._idleResweep('online'));
         this.failedWorkerJobs = new Set();
 
         // LOD Pause Toggle
@@ -2853,6 +2863,23 @@ class PistonViewer {
         this.failedTextures.add(failureKey);
         this.recoverableResweeps.schedule(RECOVERABLE_SWEEP_TEXTURES);
         this.log(`Texture page failed: ${key}/${tier} (${error.message})`, 'error');
+    }
+
+    _armIdleResweep() {
+        if (this._idleResweepTimer) return;
+        const delay = Math.min(IDLE_RESWEEP_MAX_MS, IDLE_RESWEEP_BASE_MS * 2 ** (this._idleResweepRound || 0));
+        this._idleResweepTimer = setTimeout(() => this._idleResweep('timer'), delay);
+    }
+
+    _idleResweep(cause) {
+        clearTimeout(this._idleResweepTimer);
+        this._idleResweepTimer = null;
+        if (!this.recoverableResweeps.pending.size) return;
+        // Moving: the settle transition resweeps. Offline: wait for 'online'.
+        if (cause === 'timer' && (this.isMovingView || globalThis.navigator?.onLine === false)) return;
+        this._idleResweepRound = cause === 'timer' ? (this._idleResweepRound || 0) + 1 : 0;
+        this._runRecoverableResweep();
+        this.frameScheduler?.wake('resweep');
     }
 
     _runRecoverableResweep() {
