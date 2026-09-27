@@ -76,7 +76,7 @@ import {
 } from './texture_page_residency.js';
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
-import { retryDelayMs } from './retry_backoff.mjs';
+import { nextRetry, retryDelayMs, retryReady } from './retry_backoff.mjs';
 import {
     GSP3_PREFIX_END, requiredTileDepth, sampleTileHeightAtUnitIndex,
     tileDepthNeedsRefinement,
@@ -4170,7 +4170,7 @@ class PistonViewer {
                     // Keep this tile on the complete L3 cut until the exact
                     // final frontier is ready. Never reveal old-camera detail.
                     resident.geometryAwaitingFinal = true;
-                    if (this._queueGeometryRebuild(
+                    if (retryReady(resident.rebuildRetry, Date.now()) && this._queueGeometryRebuild(
                         resident,
                         manifestTile,
                         desiredSelection,
@@ -4365,6 +4365,7 @@ class PistonViewer {
         const key = `${manifestTile.yq}_${manifestTile.yr}`;
         tile.geometryRebuildQueued = null;
         if (this.tiles.get(key) !== tile) return false;
+        if (!retryReady(tile.rebuildRetry, Date.now())) return false;
         if (tile.geometryRebuildPending || !geometryBuildCanCommit({
             taskEpoch: task.epoch,
             currentEpoch: this.geometryPlanEpoch,
@@ -4377,6 +4378,7 @@ class PistonViewer {
         tile.geometryRebuildPending = task;
         const worldGeneration = this.worldGeneration;
         this.activeWorkerCount++;
+        let failed = false;
         this._buildResidentGeometry(task, key).then(result => {
             if (worldGeneration !== this.worldGeneration) return;
             if (this.tiles.get(key) !== tile) return;
@@ -4392,8 +4394,22 @@ class PistonViewer {
                 isMovingView: this.isMovingView,
             })) return;
             this._replaceTileGeometry(tile, result, selection);
+            tile.rebuildRetry = null;
+            if (tile.rebuildRetryTimer) clearTimeout(tile.rebuildRetryTimer);
+            tile.rebuildRetryTimer = null;
         }).catch(error => {
             if (worldGeneration !== this.worldGeneration) return;
+            if (this.tiles.get(key) !== tile) return;
+            failed = true;
+            tile.rebuildRetry = nextRetry(tile.rebuildRetry, Date.now(), 1000, 120000);
+            const delay = tile.rebuildRetry.retryAt - Date.now();
+            if (tile.rebuildRetryTimer) clearTimeout(tile.rebuildRetryTimer);
+            tile.rebuildRetryTimer = setTimeout(() => {
+                tile.rebuildRetryTimer = null;
+                if (worldGeneration !== this.worldGeneration || this.tiles.get(key) !== tile) return;
+                this.needsLODUpdate = true;
+                this.frameScheduler?.wake('geometry-retry');
+            }, Math.max(1, delay + 1));
             console.error(`Geometry rebuild failed for ${key}`, error);
         }).finally(() => {
             if (worldGeneration !== this.worldGeneration) return;
@@ -4401,7 +4417,7 @@ class PistonViewer {
             if (tile.geometryRebuildPending === task) tile.geometryRebuildPending = null;
             const next = tile.geometryRebuildNext;
             tile.geometryRebuildNext = null;
-            if (next && geometryBuildCanCommit({
+            if (!failed && next && geometryBuildCanCommit({
                 taskEpoch: next.epoch,
                 currentEpoch: this.geometryPlanEpoch,
                 taskSignature: next.signature,
@@ -5126,6 +5142,7 @@ class PistonViewer {
     unloadTile(key) {
         const tile = this.tiles.get(key);
         if (!tile) return;
+        if (tile.rebuildRetryTimer) clearTimeout(tile.rebuildRetryTimer);
 
         // --- INCINERATOR: Rigorous GPU Disposal Pipeline ---
         this._disposeTileGPU(tile);
