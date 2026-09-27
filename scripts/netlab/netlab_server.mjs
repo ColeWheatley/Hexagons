@@ -142,8 +142,12 @@ function args(argv) {
   return cfg;
 }
 function upstreamGet(url, dest) {
+  const target = new URL(url);
+  if (target.protocol !== 'https:' || target.hostname !== 'wheatley.cloud' ||
+      !target.pathname.startsWith('/hexagons/app/'))
+    return Promise.reject(new Error(`upstream URL outside allowed Wheatley app path: ${target.href}`));
   return new Promise((resolve, reject) => {
-    const request = https.get(url, {headers: {'accept-encoding': 'br, gzip'}}, response => {
+    const request = https.get(target, {headers: {'accept-encoding': 'br, gzip'}}, response => {
       if ([301,302,307,308].includes(response.statusCode) && response.headers.location) {
         response.resume(); resolve(upstreamGet(new URL(response.headers.location, url), dest)); return;
       }
