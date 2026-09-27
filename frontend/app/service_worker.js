@@ -138,6 +138,9 @@ self.addEventListener('fetch', event => {
 
     if (isImmutableManifest(url)) {
         event.respondWith(cacheFirst(event, RUNTIME_CACHE));
+        // Shells that declare their manifest never fetch the pointer; the
+        // manifest's own release path is just as authoritative for pruning.
+        event.waitUntil(pruneOtherReleases(releaseOf(url)).catch(() => {}));
     } else if (isReleasePointer(url)) {
         event.respondWith(networkReleasePointer(event));
     } else if (isHashedShellAsset(url) || isStaticShellAsset(url)) {

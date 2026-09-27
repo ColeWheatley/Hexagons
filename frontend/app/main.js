@@ -1869,6 +1869,20 @@ class PistonViewer {
     async _loadManifestWithRetry(scope) {
         return this.resourceRetries.run(MANIFEST_RETRY_KEY, async () => {
             this.resourceLifecycles.begin('manifest', 'tile_manifest.json', { cause: 'fetch-attempt' });
+            // A published shell may declare its immutable manifest directly
+            // (index.html is itself no-store, so this is as fresh as the
+            // pointer) and preload it alongside main.js — no pointer round trip.
+            const declared = document.querySelector('meta[name="hexagons-manifest"]')?.content;
+            if (declared) {
+                const declaredRes = await fetch(new URL(declared, window.location.href).href, { signal: scope.signal });
+                if (!declaredRes.ok) throw new Error(`Manifest HTTP ${declaredRes.status}`);
+                const declaredText = await declaredRes.text();
+                const declaredManifest = expandManifest(JSON.parse(declaredText));
+                this.loadingScreen.manifestLoaded(declaredText.length);
+                this._validateManifestContract(declaredManifest);
+                this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
+                return declaredManifest;
+            }
             // This small file is the cache-identity authority for every large
             // asset, so rebakes must revalidate it even when app code did not
             // change. Freshness comes from its `no-store` response headers and

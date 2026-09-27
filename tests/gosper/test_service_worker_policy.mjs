@@ -112,6 +112,13 @@ await dispatch(pointerUrl);
 assert.equal(runtime.entries.has(terrain), false, 'new release pruned the previous release');
 assert.equal(runtime.entries.has(terrainB), true, 'new release keeps its own entries');
 
+// A declared (pointer-less) shell prunes via its immutable manifest's release.
+const terrainC = 'https://viewer.example/hexagons/app/releases/rel-c/tiles_bin/gosper_1_2.bin?v=bin-c';
+await dispatch(terrainC);
+await dispatch('https://viewer.example/hexagons/next/releases/rel-c/manifest.cccccccccccc.json');
+assert.equal(runtime.entries.has(terrainB), false, 'declared manifest pruned the previous release');
+assert.equal(runtime.entries.has(terrainC), true, 'declared manifest keeps its own release');
+
 // Shell deploys must not throw away downloaded terrain, nor touch other scopes.
 await cacheStorage.open(`${scope}shell-obsolete-build`);
 await cacheStorage.open('hx2-hexagons-app-shell-other-scope');

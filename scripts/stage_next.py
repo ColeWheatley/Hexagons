@@ -71,7 +71,7 @@ def put_bytes(bucket: str, key: str, data: bytes, *, content_type: str, cache: s
     Path(path).unlink(missing_ok=True)
 
 
-def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool) -> int:
+def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool, manifest_rel: str | None = None) -> int:
     count = 0
     for path in sorted(p for p in dist.rglob("*") if p.is_file()):
         rel = path.relative_to(dist)
@@ -82,6 +82,14 @@ def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool) -> int:
             continue
         if any(parent.is_symlink() for parent in [dist / Path(*rel.parts[:i]) for i in range(1, len(rel.parts))]):
             continue
+        # Browsers never request the .br/.gz siblings (S3 cannot negotiate);
+        # Cloudflare compresses text on the fly.
+        if path.suffix in {".br", ".gz"}:
+            continue
+        if rel.as_posix() == "index.html" and manifest_rel:
+            staged_html = Path(tempfile.mkdtemp()) / "index.html"
+            staged_html.write_text(declare_manifest(path.read_text(), manifest_rel))
+            path = staged_html
         content_type, cache, encoding = metadata(path)
         command = ["aws", "s3", "cp", str(path), f"s3://{bucket}/{prefix}/{rel.as_posix()}",
                    "--only-show-errors", "--content-type", content_type, "--cache-control", cache,
@@ -91,6 +99,17 @@ def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool) -> int:
         run(command, dry)
         count += 1
     return count
+
+
+def declare_manifest(html: str, manifest_rel: str) -> str:
+    """Point the shell straight at the immutable manifest and preload it."""
+    import re
+    tags = (f'<meta name="hexagons-manifest" content="{manifest_rel}">\n    '
+            f'<link rel="preload" href="{manifest_rel}" as="fetch" crossorigin="anonymous" fetchpriority="high">')
+    html, count = re.subn(r'<link rel="preload" href="tile_manifest\.json[^"]*"[^>]*>', tags, html, count=1)
+    if count != 1:
+        raise SystemExit("could not find the manifest preload in index.html")
+    return html
 
 
 def write_local(out: Path, dist: Path, manifest_rel: str, payload: bytes, encoded: bytes,
@@ -103,8 +122,13 @@ def write_local(out: Path, dist: Path, manifest_rel: str, payload: bytes, encode
                 continue
             if rel.name.startswith("tile_manifest.json"):
                 continue
+            if rel.name in {"index.html.br", "index.html.gz"}:
+                continue
             target = out / rel
             target.parent.mkdir(parents=True, exist_ok=True)
+            if rel.as_posix() == "index.html":
+                target.write_text(declare_manifest(path.read_text(), manifest_rel))
+                continue
             shutil.copy2(path, target)
     manifest_path = out / manifest_rel
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +181,7 @@ def main() -> int:
     if not args.skip_shell:
         if not (args.dist / "index.html").is_file():
             raise SystemExit(f"no built shell at {args.dist}; run `node frontend/app/build.mjs` first")
-        count = upload_shell(args.bucket, prefix, args.dist, args.dry_run)
+        count = upload_shell(args.bucket, prefix, args.dist, args.dry_run, manifest_rel)
         print(f"uploaded {count} shell objects")
     put_bytes(args.bucket, f"{prefix}/tile_manifest.json",
               json.dumps(pointer, separators=(",", ":")).encode(), content_type="application/json",
