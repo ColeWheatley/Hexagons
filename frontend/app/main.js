@@ -5,6 +5,8 @@ import { HexSearch } from './search.js';
 import { LoadingScreen } from './loading_screen.mjs';
 import { setPanelMinimized, setPressedButton } from './ui_accessibility.js';
 import { VRAMLedger } from './vram_ledger.js';
+import { hiddenGeometryEvictions } from './geometry_retention.js';
+import { markHorizonMatrixRange, writeHorizonMatrix } from './horizon_buffers.js';
 import { CacheManager } from './cache_manager.js';
 import {
     detectCapabilityProfile,
@@ -1276,10 +1278,10 @@ class PistonViewer {
         this._disposeObjectTree(this.movingHorizonMesh);
         this.horizonMesh = null;
         this.movingHorizonMesh = null;
-        this.horizonIndex = null;
-        this.movingHorizonIndex = null;
         this.movingHorizonLocalXZ = null;
         this.movingHorizonChildrenPerTile = 0;
+        this.horizonStaticXZ = null;
+        this.horizonMovingXZ = null;
     }
 
     _disposeTextureAssets() {
@@ -1318,6 +1320,10 @@ class PistonViewer {
         this.visibilityBootstrapReady = false;
         this.textureStates = new Map();
         this.visibilityByKey.clear();
+        this.visibilityPass = 0;
+        this.isMovingView = false;
+        this.wasMovingView = false;
+        this.cameraMotion.lastMotionTime = -Infinity;
         this.currentVisibilityContext = null;
         this.geometryPageFootprint = null;
         this.tileStates.clear();
@@ -1966,7 +1972,6 @@ class PistonViewer {
             this.controls.target.set(startX, 0, startZ);
             this.captureDefaultView();
             this.bootstrapVisibilityFloor(this.controls.target);
-            this.notifyCameraMotion(performance.now());
             this.controls.update();
             this.syncHeightFactorFromControls();
             await this.viewState.restoreFromUrl();
@@ -1976,6 +1981,7 @@ class PistonViewer {
             // floor and the matching pitch morph is available synchronously.
             this.bootstrapVisibilityFloor(this.controls.target);
             this.syncHeightFactorFromControls();
+            writeCameraPose(this.camera, this.controls.target, this.lastObservedCameraPose);
             this.visibilityBootstrapReady = true;
             this.lastVisibilityCameraPosition = this.camera.position.clone();
 
@@ -1988,8 +1994,8 @@ class PistonViewer {
 
             this.essentialTilesTarget = 1;
 
-            this.buildHorizon();
             this.updateLOD();
+            this.buildHorizon();
         } catch (e) {
             if (scope.signal.aborted || !this.appLifecycle.isCurrent(scope)) return;
             console.error("Init error: " + e.message);
@@ -2042,6 +2048,7 @@ class PistonViewer {
     // instances because their decoded L3 data is authoritative.
     // ------------------------------------------------------------------
     buildHorizon() {
+        const startedAt = performance.now();
         const tiles = this.manifest.tiles;
         if (!tiles.length) return;
         const geo = createGeometryWithSharedStaticBuffers(THREE, this.capGeometry);
@@ -2050,8 +2057,7 @@ class PistonViewer {
         const heights = new Float32Array(count);
         const shades = new Float32Array(count);
         const xz = G.levelXZ(TILE_LEVEL);
-        this.horizonIndex = new Map(); // tile key -> instance id
-        this._horizonMat4 = new THREE.Matrix4();
+        this.horizonStaticXZ = xz;
 
         const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
         material.fog = false;
@@ -2103,27 +2109,24 @@ class PistonViewer {
             `);
         };
 
-        const mesh = new THREE.InstancedMesh(geo, material, count);
-        const m = new THREE.Matrix4();
+        const mesh = new THREE.InstancedMesh(geo, material, 0);
+        const matrices = new Float32Array(count * 16);
         tiles.forEach((t, i) => {
-            m.set(
-                xz.a, 0, xz.b, t.lx,
-                0, 1, 0, 0,
-                xz.c, 0, xz.d, t.lz,
-                0, 0, 0, 1
-            );
-            mesh.setMatrixAt(i, m);
+            t.horizonInstance = i;
+            writeHorizonMatrix(matrices, i, xz, t.lx, t.lz, Boolean(t.horizonHidden));
             heights[i] = t.hMean;
             // Fixed light from the NW-ish, matching the app's jitter aesthetic
             const nx = (t.nx - 128) / 127, nz = (t.nz - 128) / 127;
             const ny = Math.sqrt(Math.max(0, 1 - nx * nx - nz * nz));
             shades[i] = Math.max(0, nx * -0.35 + ny * 0.85 + nz * -0.40);
-            this.horizonIndex.set(`${t.yq}_${t.yr}`, i);
         });
+        mesh.instanceMatrix = new THREE.InstancedBufferAttribute(matrices, 16);
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        mesh.count = count;
         geo.setAttribute('instanceH', new THREE.InstancedBufferAttribute(heights, 1));
         geo.setAttribute('instanceShade', new THREE.InstancedBufferAttribute(shades, 1));
         mesh.frustumCulled = false;
-        mesh.instanceMatrix.needsUpdate = true;
+        mesh.visible = !this.isMovingView;
         mesh.userData.gosperLevel = TILE_LEVEL;
         mesh.userData.isSettledHorizon = true;
         this.horizonMesh = mesh;
@@ -2131,6 +2134,15 @@ class PistonViewer {
         material.userData.isHorizon = true;
         this.scene.add(mesh);
 
+        console.info(`[HEXAGONS] static horizon build ${(performance.now() - startedAt).toFixed(1)} ms (${count} instances)`);
+        if (this.isMovingView) this.buildMovingHorizon();
+    }
+
+    buildMovingHorizon() {
+        if (this.movingHorizonMesh || !this.horizonMesh || !this.manifest?.tiles?.length) return;
+        const startedAt = performance.now();
+        const tiles = this.manifest.tiles;
+        const count = tiles.length;
         // One island contains 7^(5-3) = 49 L3 nodes. Their centers are the
         // first unit of each depth-2 heap subtree (stride 7^3), exactly as in
         // tile_worker.js. Heights/normals remain the manifest root aggregate.
@@ -2147,77 +2159,60 @@ class PistonViewer {
         }
         this.movingHorizonLocalXZ = localXZ;
         this.movingHorizonChildrenPerTile = childrenPerTile;
-        this.movingHorizonIndex = new Map();
-
         const movingCount = count * childrenPerTile;
         const movingGeo = createGeometryWithSharedStaticBuffers(THREE, this.capGeometry);
         const movingHeights = new Float32Array(movingCount);
         const movingShades = new Float32Array(movingCount);
-        const movingMesh = new THREE.InstancedMesh(movingGeo, material, movingCount);
+        const movingMatrices = new Float32Array(movingCount * 16);
+        const movingXZ = G.levelXZ(movingLevel);
+        this.horizonMovingXZ = movingXZ;
+        const movingMesh = new THREE.InstancedMesh(movingGeo, this.horizonMesh.material, 0);
+        const shades = this.horizonMesh.geometry.getAttribute('instanceShade').array;
         let movingInstance = 0;
-        tiles.forEach((t) => {
-            this.movingHorizonIndex.set(`${t.yq}_${t.yr}`, movingInstance);
+        tiles.forEach((t, i) => {
+            const hidden = Boolean(t.horizonHidden);
             for (let child = 0; child < childrenPerTile; child++, movingInstance++) {
-                this._writeMovingHorizonMatrix(movingMesh, movingInstance, t, child, false);
+                const local = localXZ[child];
+                writeHorizonMatrix(movingMatrices, movingInstance, movingXZ,
+                    t.lx + local.x, t.lz + local.z, hidden);
                 movingHeights[movingInstance] = t.hMean;
-                movingShades[movingInstance] = shades[this.horizonIndex.get(`${t.yq}_${t.yr}`)];
+                movingShades[movingInstance] = shades[i];
             }
         });
+        movingMesh.instanceMatrix = new THREE.InstancedBufferAttribute(movingMatrices, 16);
+        movingMesh.count = movingCount;
         movingGeo.setAttribute('instanceH', new THREE.InstancedBufferAttribute(movingHeights, 1));
         movingGeo.setAttribute('instanceShade', new THREE.InstancedBufferAttribute(movingShades, 1));
         movingMesh.frustumCulled = false;
         movingMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        movingMesh.instanceMatrix.needsUpdate = true;
-        movingMesh.visible = false;
+        movingMesh.visible = this.isMovingView;
         movingMesh.userData.gosperLevel = movingLevel;
         movingMesh.userData.isMovingHorizon = true;
         this.movingHorizonMesh = movingMesh;
         this.scene.add(movingMesh);
-    }
-
-    _writeMovingHorizonMatrix(mesh, instance, tile, child, hidden) {
-        const m = this._horizonMat4;
-        if (hidden) {
-            m.makeScale(0, 0, 0);
-        } else {
-            const xz = G.levelXZ(this.movingLevel);
-            const local = this.movingHorizonLocalXZ[child];
-            m.set(
-                xz.a, 0, xz.b, tile.lx + local.x,
-                0, 1, 0, 0,
-                xz.c, 0, xz.d, tile.lz + local.z,
-                0, 0, 0, 1
-            );
-        }
-        mesh.setMatrixAt(instance, m);
+        console.info(`[HEXAGONS] moving horizon build ${(performance.now() - startedAt).toFixed(1)} ms (${movingCount} instances)`);
     }
 
     setHorizonTileHidden(key, hidden) {
-        if (!this.horizonMesh || !this.horizonIndex?.has(key)) return;
-        const i = this.horizonIndex.get(key);
-        const t = this.manifestGrid.get(key);
-        const m = this._horizonMat4;
-        if (hidden) {
-            m.makeScale(0, 0, 0);
-        } else {
-            const xz = G.levelXZ(TILE_LEVEL);
-            m.set(
-                xz.a, 0, xz.b, t.lx,
-                0, 1, 0, 0,
-                xz.c, 0, xz.d, t.lz,
-                0, 0, 0, 1
-            );
-        }
-        this.horizonMesh.setMatrixAt(i, m);
-        this.horizonMesh.instanceMatrix.needsUpdate = true;
+        const t = this.manifestGrid?.get(key);
+        if (!t || Boolean(t.horizonHidden) === hidden) return;
+        t.horizonHidden = hidden;
+        if (!this.horizonMesh) return;
+        const i = t.horizonInstance;
+        writeHorizonMatrix(this.horizonMesh.instanceMatrix.array, i,
+            this.horizonStaticXZ, t.lx, t.lz, hidden);
+        markHorizonMatrixRange(this.horizonMesh.instanceMatrix, i);
 
-        if (this.movingHorizonMesh && this.movingHorizonIndex?.has(key)) {
-            const base = this.movingHorizonIndex.get(key);
+        if (this.movingHorizonMesh) {
+            const base = i * this.movingHorizonChildrenPerTile;
             for (let child = 0; child < this.movingHorizonChildrenPerTile; child++) {
-                this._writeMovingHorizonMatrix(
-                    this.movingHorizonMesh, base + child, t, child, hidden);
+                const local = this.movingHorizonLocalXZ[child];
+                writeHorizonMatrix(this.movingHorizonMesh.instanceMatrix.array,
+                    base + child, this.horizonMovingXZ,
+                    t.lx + local.x, t.lz + local.z, hidden);
             }
-            this.movingHorizonMesh.instanceMatrix.needsUpdate = true;
+            markHorizonMatrixRange(this.movingHorizonMesh.instanceMatrix,
+                base, this.movingHorizonChildrenPerTile);
         }
     }
 
@@ -3734,6 +3729,7 @@ class PistonViewer {
         // This method runs inside the controls `change` event, before another
         // microtask or the next animation frame can observe stale settled mode.
         this.isMovingView = true;
+        if (this.horizonMesh) this.buildMovingHorizon();
         this._beginGeometryMode(true);
         this._suppressHighTextureWorkForMotion();
         return true;

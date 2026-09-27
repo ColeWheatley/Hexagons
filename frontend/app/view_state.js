@@ -215,7 +215,7 @@ export class ShareableViewState {
         return url;
     }
 
-    async applyPoints(target, camera) {
+    async applyPoints(target, camera, { markMotion = true } = {}) {
         if (!target || !camera || !(await initProjection())) return false;
         const targetScene = this.gpsToScene(target);
         const cameraScene = this.gpsToScene(camera);
@@ -230,7 +230,7 @@ export class ShareableViewState {
         this.viewer.controls.target.set(targetScene.x, targetScene.y, targetScene.z);
         this.viewer.camera.position.set(cameraScene.x, cameraScene.y, cameraScene.z);
         const now = performance.now();
-        this.viewer.notifyCameraMotion(now);
+        if (markMotion) this.viewer.notifyCameraMotion(now);
         this.viewer.controls.update();
         this.viewer.syncHeightFactorFromControls?.();
         this.viewer.lastLODCamPos.copy(this.viewer.camera.position);
@@ -239,7 +239,7 @@ export class ShareableViewState {
         return true;
     }
 
-    async applyUrl(input = window.location.href) {
+    async applyUrl(input = window.location.href, options = {}) {
         let url;
         try {
             url = input.startsWith?.('?')
@@ -251,16 +251,16 @@ export class ShareableViewState {
         if (url.searchParams.get('view') !== SCHEMA_VERSION) return false;
         const target = parsePoint(url.searchParams.get('at'));
         const camera = parsePoint(url.searchParams.get('eye'));
-        return this.applyPoints(target, camera);
+        return this.applyPoints(target, camera, options);
     }
 
     async restoreFromUrl() {
         if (!this.hasExplicitViewUrl()) {
             await initProjection(); // prepare GPS output for the first user move
             const stored = readPersistedEnvelope(this.storage())?.view;
-            return stored ? this.applyPoints(stored.target, stored.camera) : false;
+            return stored ? this.applyPoints(stored.target, stored.camera, { markMotion: false }) : false;
         }
-        const restored = await this.applyUrl(window.location.href);
+        const restored = await this.applyUrl(window.location.href, { markMotion: false });
         if (!restored) this.viewer.log('Invalid shareable view URL; using the default start.', 'warn');
         return restored;
     }
