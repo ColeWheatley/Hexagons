@@ -204,7 +204,7 @@ const MISSING_PAGE_COLOR_DEV = Object.freeze([1.0, 0.0, 1.0]);
 const MISSING_PAGE_COLOR_CONSUMER = Object.freeze([0.19, 0.19, 0.165]); // ~#78786f
 // Concurrent progressive texture jobs (network wait + transcode). Byte-level
 // link admission is the NetScheduler's job, not this count's.
-const PROGRESSIVE_TEXTURE_JOBS = 4;
+const PROGRESSIVE_TEXTURE_JOBS = 6;
 // GPU bytes of low/medium page textures that no resident tile draws may use
 // before the least-recently-demanded pages lose them (they used to be kept for
 // the whole session: ~37 KB/page ASTC, ~110 KB/page BC7, plus CPU copies).
@@ -2161,6 +2161,10 @@ class PistonViewer {
             this.essentialTilesTarget = 1;
 
             this.updateLOD();
+            // Terrain requests are out; now fetch + compile the transcoder
+            // once and hand it to the texture workers so the first KTX2 job
+            // does not wait on it.
+            this._shareBasisModule();
             this.buildHorizon();
         } catch (e) {
             if (scope.signal.aborted || !this.appLifecycle.isCurrent(scope)) return;
@@ -4598,7 +4602,10 @@ class PistonViewer {
         }
         // Texture decoders own an independent lane, so geometry backlog cannot
         // delay first paint or refinement dispatch.
-        this._dispatchTextureJobs(this.workerLanes.texture.length);
+        // Texture jobs mostly wait on the network (NetScheduler admission) or
+        // on the shared transcoder, not on a worker; transcodes queue per
+        // worker. Capping jobs at the texture-lane size serialized imagery.
+        this._dispatchTextureJobs(PROGRESSIVE_TEXTURE_JOBS);
     }
 
     _tileBinUrl(t, expectedGspVersion) {

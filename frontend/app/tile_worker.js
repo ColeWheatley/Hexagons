@@ -235,7 +235,12 @@ self.onmessage = async function (e) {
     const { id, type, data } = e.data;
 
     if (type === 'BASIS_MODULE') {
-        if (!basisModulePromise && data?.module instanceof WebAssembly.Module) sharedBasisModule = data.module;
+        if (!basisModulePromise && data?.module instanceof WebAssembly.Module) {
+            sharedBasisModule = data.module;
+            // Instantiating a precompiled module is cheap: do it now so the
+            // first texture job does not pay importScripts + instantiate.
+            loadBasisModule().catch(() => {});
+        }
         return;
     }
 
