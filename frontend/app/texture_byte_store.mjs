@@ -64,7 +64,9 @@ export class TextureByteStore {
     /** Synchronous view of what is already in memory. */
     peek(url) {
         const entry = this.entries.get(url);
-        if (!entry || !entry.header) return null;
+        if (!entry) return null;
+        if (entry.generic) return { length: entry.length, total: entry.total, inMemory: entry.bytes !== null };
+        if (!entry.header) return null;
         return {
             length: entry.length,
             total: entry.total,
@@ -79,6 +81,45 @@ export class TextureByteStore {
         if (!entry) return;
         entry.priority = priority;
         if (entry.activeHandle) this.scheduler.setPriority(entry.activeHandle, priority);
+    }
+
+    /**
+     * Generic prefix: resolve once bytes [0, needEnd) are present (or the
+     * whole object, if shorter). Used for terrain tiles, whose coarse levels
+     * sit at fixed offsets. Returns { bytes, total, networkBytes }.
+     */
+    ensurePrefix(url, needEnd, { priority = NET_PRIORITY.BACKGROUND, signal = null } = {}) {
+        const entry = this._entry(url);
+        entry.priority = Math.max(entry.priority, priority);
+        entry.generic = true;
+        const run = () => this._ensurePrefix(entry, needEnd, priority, signal);
+        const next = entry.chain.then(run, run);
+        entry.chain = next.catch(() => {});
+        return next;
+    }
+
+    async _ensurePrefix(entry, needEnd, priority, signal) {
+        entry.lastUsed = this.now();
+        await this._reloadEvictedBytes(entry);
+        await this._restore(entry);
+        let networkBytes = 0;
+        try {
+            while (entry.length < needEnd && (entry.total === null || entry.length < entry.total)) {
+                const end = Math.min(needEnd, entry.length + this.chunkBytes);
+                const chunk = await this._fetchRange(entry, entry.length, end, priority, signal);
+                networkBytes += chunk.bytes.byteLength;
+                this._append(entry, chunk);
+            }
+        } finally {
+            this._persist(entry);
+        }
+        entry.lastUsed = this.now();
+        this._enforceMemoryBudget(entry);
+        return {
+            bytes: entry.bytes ? entry.bytes.subarray(0, entry.length) : new Uint8Array(0),
+            total: entry.total,
+            networkBytes,
+        };
     }
 
     /**
@@ -105,13 +146,13 @@ export class TextureByteStore {
             const response = await cache.match(entry.url);
             if (!response) return;
             const bytes = new Uint8Array(await response.arrayBuffer());
-            const header = K.parseHeader(bytes);
-            if (!header || bytes.byteLength <= entry.length) return;
+            const header = entry.generic ? null : K.parseHeader(bytes);
+            if ((!entry.generic && !header) || bytes.byteLength <= entry.length) return;
             const total = Number(response.headers.get('X-Hx-Total')) || null;
             this._setBytes(entry, bytes, bytes.byteLength);
             entry.header = header;
             entry.total = total;
-            entry.header.fileSize = total;
+            if (entry.header) entry.header.fileSize = total;
             entry.persistedLength = bytes.byteLength;
             this.stats.cacheHits++;
             this.stats.cacheBytes += bytes.byteLength;
@@ -131,6 +172,7 @@ export class TextureByteStore {
             // Cache lost it: start over from the network.
             entry.header = null;
             entry.total = null;
+            entry.length = entry.bytes ? entry.bytes.byteLength : 0;
         }
     }
 
@@ -216,7 +258,7 @@ export class TextureByteStore {
     }
 
     _persist(entry) {
-        if (!entry.bytes || entry.length <= entry.persistedLength || !entry.header) return;
+        if (!entry.bytes || entry.length <= entry.persistedLength || (!entry.generic && !entry.header)) return;
         const length = entry.length;
         const body = entry.bytes.slice(0, length);
         this._cache().then(cache => {

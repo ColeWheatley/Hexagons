@@ -188,3 +188,23 @@ test('memory eviction reloads bytes from Cache Storage, not the network', async 
     assert.equal(server.log.length, before);
     assert.deepEqual(Buffer.from(again.bytes), Buffer.from(LOW));
 });
+
+test('generic prefixes grow contiguously and persist (terrain tiles)', async () => {
+    const tile = new Uint8Array(5000).map((_, i) => i % 251);
+    const server = makeServer({ 'tile.bin': tile });
+    const cacheStorage = memoryCacheStorage();
+    const store = new TextureByteStore({
+        scheduler: new NetScheduler({ fetchImpl: server.fetchImpl }), cacheStorage, cacheName: 'gsp', chunkBytes: 1500,
+    });
+    const coarse = await store.ensurePrefix('tile.bin', 952);
+    assert.equal(coarse.bytes.byteLength, 952);
+    const full = await store.ensurePrefix('tile.bin', Infinity);
+    assert.deepEqual(Buffer.from(full.bytes), Buffer.from(tile));
+    assert.equal(full.total, 5000);
+    assert.deepEqual(server.log.map(e => e.range), ['bytes=0-951', 'bytes=952-2451', 'bytes=2452-3951', 'bytes=3952-5451']);
+    await new Promise(r => setTimeout(r, 5));
+    const again = new TextureByteStore({ scheduler: new NetScheduler({ fetchImpl: server.fetchImpl }), cacheStorage, cacheName: 'gsp' });
+    const restored = await again.ensurePrefix('tile.bin', 3000);
+    assert.equal(server.log.length, 4, 'served from Cache Storage');
+    assert.equal(restored.bytes.byteLength, 5000);
+});
