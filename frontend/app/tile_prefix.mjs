@@ -24,3 +24,10 @@ export function tileDepthNeedsRefinement(availableDepth, requiredDepth) {
     return Number.isInteger(availableDepth) && Number.isInteger(requiredDepth)
         && requiredDepth > availableDepth;
 }
+
+/** Heap-order units are grouped contiguously under every ancestor depth. */
+export function sampleTileHeightAtUnitIndex(heightValues, depth, unitIndex) {
+    if (!heightValues || !Number.isInteger(unitIndex) || unitIndex < 0 || unitIndex >= 16807
+        || !Number.isInteger(depth) || depth < 0 || depth > 5) return undefined;
+    return heightValues[Math.floor(unitIndex / (7 ** (5 - depth)))];
+}

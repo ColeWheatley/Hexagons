@@ -75,6 +75,10 @@ import {
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
 import {
+    GSP3_PREFIX_END, requiredTileDepth, sampleTileHeightAtUnitIndex,
+    tileDepthNeedsRefinement,
+} from './tile_prefix.mjs';
+import {
     collectDisplayedTexturePages,
     countUnpaintedVisibleTiles,
 } from './texture_hud_telemetry.js';
@@ -546,6 +550,11 @@ class PistonViewer {
             scheduler: this.netScheduler,
             memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 256 * 1024 * 1024 : 96 * 1024 * 1024,
         });
+        this.tileByteStore = new TextureByteStore({
+            scheduler: this.netScheduler,
+            cacheName: 'hx2-gsp-prefix-v1',
+            memoryBudgetBytes: this.capabilityProfile.name === 'high' ? 192 * 1024 * 1024 : 64 * 1024 * 1024,
+        });
 
         this.initTouchMomentumTracking();
         this.initWorld();
@@ -945,7 +954,7 @@ class PistonViewer {
     }
 
     _workerJobResourceKey(type, data) {
-        if (type === 'LOAD_TILE' || type === 'BUILD_GEOMETRY') return `${data.yq}_${data.yr}`;
+        if (type === 'LOAD_TILE' || type === 'BUILD_GEOMETRY' || type === 'BUILD_TILE_PREFIX') return `${data.yq}_${data.yr}`;
         if (type === 'LOAD_TEXTURE') return (data.urls || []).join(',');
         if (type === 'TRANSCODE_KTX2') return data.resourceKey || type;
         return type;
@@ -3389,6 +3398,55 @@ class PistonViewer {
         });
     }
 
+    _tileRequiredDepth(manifestTile, key, selection = null) {
+        const distanceM = this.visibilityByKey.get(key)?.distanceMeters ?? Infinity;
+        const reliefM = Math.max(0, manifestTile.hMax - manifestTile.hMin);
+        let depth = requiredTileDepth(distanceM, {
+            moving: this.isMovingView,
+            reliefM,
+            rootRadiusM: this.visibilityAdapter.horizontalRadiusByLevel[5],
+            l3RadiusM: this.visibilityAdapter.horizontalRadiusByLevel[3],
+            lodMarginM: this.lodTileMargin,
+        });
+        // The actual L3 frontier is authoritative near a threshold. This
+        // also covers frustum and representative-height differences between
+        // the cheap root metric and individual L3 nodes.
+        if (!this.isMovingView && selection) {
+            for (let d = 3; d <= 5; d++) {
+                if (selection.selectedCounts[d] > 0) depth = Math.max(depth, d);
+            }
+        }
+        return depth;
+    }
+
+    _tileNetPriority(key) {
+        if (!this.loaderHidden && this.tiles.size === 0) return NET_PRIORITY.CRITICAL;
+        return this.visibilityByKey.get(key)?.classification === 'guard'
+            ? NET_PRIORITY.GUARD : NET_PRIORITY.VISIBLE;
+    }
+
+    async _buildTilePrefix(t, key, binUrl, expectedGspVersion, availableDepth, selection) {
+        const prefix = await this.tileByteStore.ensurePrefix(binUrl, GSP3_PREFIX_END[availableDepth], {
+            priority: this._tileNetPriority(key),
+        });
+        if (prefix.bytes.byteLength < GSP3_PREFIX_END[availableDepth]) {
+            throw new Error(`truncated GSP3 depth ${availableDepth} for ${key}`);
+        }
+        // A store view can grow while the watchdog re-posts this job. Send a
+        // dedicated clone, never transfer or expose the store's backing bytes.
+        const result = await this.postWorkerJob('BUILD_TILE_PREFIX', {
+            bytes: prefix.bytes.slice(0, GSP3_PREFIX_END[availableDepth]),
+            availableDepth,
+            yq: t.yq,
+            yr: t.yr,
+            expectedGspVersion,
+            rangesByDepth: selection.rangesByDepth,
+        });
+        result.heightDepth = availableDepth;
+        result.networkBytes = { bin: prefix.networkBytes, tex: 0 };
+        return result;
+    }
+
     _updateTexturePageDemand({ visibleFrustum, guardFrustum, projection }) {
         const adapter = this.texturePageVisibilityAdapter;
         const residency = this.texturePageResidency;
@@ -3619,8 +3677,10 @@ class PistonViewer {
             let resident = this.tiles.get(key);
             if (resident?.binaryVersion >= 2 && classification !== 'outside' && !this.isMovingView) {
                 const desiredSelection = this._planTileGeometry(manifestTile);
+                const requiredDepth = resident.binaryVersion === 3
+                    ? this._tileRequiredDepth(manifestTile, key, desiredSelection) : 5;
                 resident.geometryDesiredSelection = desiredSelection;
-                resident.geometryDesiredSignature = desiredSelection.signature;
+                resident.geometryDesiredSignature = `${desiredSelection.signature}@${requiredDepth}`;
                 this.geometryFrontierStats.plannedTiles++;
                 this.geometryFrontierStats.activeL3 += desiredSelection.activeL3Count;
                 this.geometryFrontierStats.excludedL3 += desiredSelection.excludedL3Count;
@@ -3628,7 +3688,9 @@ class PistonViewer {
                 const needsRebuild = gosperGeometrySelectionNeedsRebuild(
                     resident.geometrySelection,
                     desiredSelection,
-                );
+                ) || (resident.binaryVersion === 3 && tileDepthNeedsRefinement(
+                    resident.availableDepth, requiredDepth,
+                ));
                 if (needsRebuild) {
                     // Keep this tile on the complete L3 cut until the exact
                     // final frontier is ready. Never reveal old-camera detail.
@@ -3638,6 +3700,7 @@ class PistonViewer {
                         manifestTile,
                         desiredSelection,
                         priority,
+                        requiredDepth,
                     )) {
                         this.geometryFrontierStats.rebuilds++;
                     }
@@ -3774,7 +3837,7 @@ class PistonViewer {
         if (isMovingView) this.needsRender = true;
     }
 
-    _queueGeometryRebuild(tile, manifestTile, selection, priority) {
+    _queueGeometryRebuild(tile, manifestTile, selection, priority, requiredDepth = 5) {
         const task = {
             tile,
             manifestTile,
@@ -3782,7 +3845,8 @@ class PistonViewer {
             priority,
             epoch: this.geometryPlanEpoch,
             mode: this.isMovingView ? 'moving' : 'settled',
-            signature: selection.signature,
+            signature: `${selection.signature}@${requiredDepth}`,
+            requiredDepth,
             viewEpoch: this.viewEpoch,
             enqueuedSequence: this.workerDispatchSequence++,
         };
@@ -3812,7 +3876,7 @@ class PistonViewer {
         const { tile, manifestTile, selection } = task;
         const key = `${manifestTile.yq}_${manifestTile.yr}`;
         tile.geometryRebuildQueued = null;
-        if (this.tiles.get(key) !== tile || !(tile.geometrySource instanceof ArrayBuffer)) return false;
+        if (this.tiles.get(key) !== tile) return false;
         if (tile.geometryRebuildPending || !geometryBuildCanCommit({
             taskEpoch: task.epoch,
             currentEpoch: this.geometryPlanEpoch,
@@ -3824,15 +3888,7 @@ class PistonViewer {
 
         tile.geometryRebuildPending = task;
         this.activeWorkerCount++;
-        this.postWorkerJob('BUILD_GEOMETRY', {
-            // Clone, do not transfer: this retained ~258 KB source makes
-            // subsequent L3 expansions local and avoids network flashes.
-            binBuffer: tile.geometrySource,
-            yq: manifestTile.yq,
-            yr: manifestTile.yr,
-            expectedGspVersion: tile.binaryVersion,
-            rangesByDepth: selection.rangesByDepth,
-        }).then(result => {
+        this._buildResidentGeometry(task, key).then(result => {
             if (this.tiles.get(key) !== tile) return;
             if (result.binaryVersion !== tile.binaryVersion) {
                 throw new Error(`geometry rebuild version mismatch for ${key}`);
@@ -3845,7 +3901,7 @@ class PistonViewer {
                 taskMode: task.mode,
                 isMovingView: this.isMovingView,
             })) return;
-            this._replaceTileGeometry(tile, result.lods, result.geometryBytes, selection);
+            this._replaceTileGeometry(tile, result, selection);
         }).catch(error => {
             console.error(`Geometry rebuild failed for ${key}`, error);
         }).finally(() => {
@@ -3871,7 +3927,46 @@ class PistonViewer {
         return true;
     }
 
-    _replaceTileGeometry(tile, lods, geometryBytes, selection) {
+    async _buildResidentGeometry(task, key) {
+        const { tile, manifestTile: t, selection } = task;
+        if (tile.binaryVersion === 3 && !tile.geometrySource) {
+            try {
+                return await this._buildTilePrefix(
+                    t, key, this._tileBinUrl(t, 3), 3,
+                    Math.max(tile.availableDepth, task.requiredDepth), selection,
+                );
+            } catch (error) {
+                // A broken Range endpoint or evicted/corrupt prefix falls
+                // back to the established full-file worker path. Keep the
+                // old mesh on screen throughout this recovery.
+                console.warn(`GSP3 prefix refinement failed for ${key}; fetching full tile`, error);
+                const fallback = await this.postWorkerJob('LOAD_TILE', {
+                    yq: t.yq, yr: t.yr, binUrl: this._tileBinUrl(t, 3),
+                    expectedGspVersion: 3,
+                });
+                const built = await this.postWorkerJob('BUILD_GEOMETRY', {
+                    binBuffer: fallback.geometrySource,
+                    yq: t.yq, yr: t.yr, expectedGspVersion: 3,
+                    rangesByDepth: selection.rangesByDepth,
+                });
+                return {
+                    ...built, availableDepth: 5, heightDepth: 5,
+                    heightValues: fallback.unitHeights,
+                    geometrySource: fallback.geometrySource,
+                    networkBytes: fallback.networkBytes,
+                };
+            }
+        }
+        return this.postWorkerJob('BUILD_GEOMETRY', {
+            binBuffer: tile.geometrySource,
+            yq: t.yq, yr: t.yr,
+            expectedGspVersion: tile.binaryVersion,
+            rangesByDepth: selection.rangesByDepth,
+        });
+    }
+
+    _replaceTileGeometry(tile, result, selection) {
+        const { lods, geometryBytes } = result;
         const replacement = new THREE.Group();
         const builtLevels = {};
         const replacementMaterials = [];
@@ -3941,6 +4036,16 @@ class PistonViewer {
             tile.clonedMaterials = replacementMaterials;
             tile.geometrySelection = selection;
             tile.geometryAwaitingFinal = false;
+            if (result.availableDepth) tile.availableDepth = result.availableDepth;
+            if (result.heightValues) {
+                tile.heightValues = result.heightValues;
+                tile.heightDepth = result.heightDepth;
+                tile.unitHeights = result.heightDepth === 5 ? result.heightValues : null;
+            }
+            if (result.geometrySource) tile.geometrySource = result.geometrySource;
+            if (result.networkBytes?.bin) {
+                this.vramLedger.addNetworkPayload(`${tile.yq}_${tile.yr}`, result.networkBytes);
+            }
             this.vramLedger.registerGeometry(`${tile.yq}_${tile.yr}`, {
                 geometryBytes,
                 q: tile.yq,
@@ -4026,22 +4131,54 @@ class PistonViewer {
         this._dispatchTextureJobs(this.workerLanes.texture.length);
     }
 
+    _tileBinUrl(t, expectedGspVersion) {
+        const binaryBaseKey = this.binaryContract.cache_key
+            ?? `${this.binaryContract.default_format || 'GSP'}${this.binaryContract.default_version || expectedGspVersion}`;
+        const binaryTemplate = this.binaryContract.url_template
+            || 'tiles_bin/gosper_{yq}_{yr}.bin';
+        return appendCacheKey(
+            binaryTemplate.replace('{yq}', String(t.yq)).replace('{yr}', String(t.yr)),
+            `${binaryBaseKey}-gsp${expectedGspVersion}`,
+        );
+    }
+
     async fetchTileOnWorker(task) {
         const tileKey = `${task.t.yq}_${task.t.yr}`;
         try {
             const { t } = task;
             this.resourceLifecycles.begin('geometry', tileKey, { cause: 'worker-fetch' });
             const expectedGspVersion = Number(t.gspVersion ?? this.binaryContract.default_version ?? 1);
-            const binaryBaseKey = this.binaryContract.cache_key
-                ?? `${this.binaryContract.default_format || 'GSP'}${this.binaryContract.default_version || expectedGspVersion}`;
-            const binaryTemplate = this.binaryContract.url_template
-                || 'tiles_bin/gosper_{yq}_{yr}.bin';
-            const binUrl = appendCacheKey(
-                binaryTemplate.replace('{yq}', String(t.yq)).replace('{yr}', String(t.yr)),
-                `${binaryBaseKey}-gsp${expectedGspVersion}`,
-            );
+            const binUrl = this._tileBinUrl(t, expectedGspVersion);
 
             const workerData = await this.resourceRetries.run(`tile:${tileKey}`, async ({ attempt }) => {
+                if (expectedGspVersion === 3) {
+                    if (this.faultGateEnabled) this._recordFaultGateEvent({ kind: 'terrain', url: binUrl, attempt, action: 'attempt' });
+                    if (this._faultGateDrop('terrain', attempt)) {
+                        this._recordFaultGateEvent({ kind: 'terrain', url: binUrl, attempt, action: 'dropped' });
+                        throw new Error(`[AA2_FAULT_GATE] deterministic terrain request drop: ${binUrl}`);
+                    }
+                    const selection = this._planTileGeometry(t, {
+                        coarseOnly: this.isMovingView
+                            || this.visibilityByKey.get(tileKey)?.classification === 'outside',
+                    });
+                    const depth = this._tileRequiredDepth(t, tileKey, selection);
+                    let result;
+                    try {
+                        result = await this._buildTilePrefix(
+                            t, tileKey, binUrl, expectedGspVersion, depth, selection,
+                        );
+                        result.geometrySelection = selection;
+                    } catch (error) {
+                        // Full worker fetch is the compatibility path for
+                        // servers whose Range behavior cannot be used.
+                        console.warn(`GSP3 prefix load failed for ${tileKey}; fetching full tile`, error);
+                        result = await this.postWorkerJob('LOAD_TILE', {
+                            yq: t.yq, yr: t.yr, binUrl, expectedGspVersion,
+                        });
+                    }
+                    if (this.faultGateEnabled) this._recordFaultGateEvent({ kind: 'terrain', url: binUrl, attempt, action: 'success' });
+                    return result;
+                }
                 const result = await this.postWorkerJob('LOAD_TILE', {
                     yq: t.yq, yr: t.yr,
                     binUrl,
@@ -4061,7 +4198,7 @@ class PistonViewer {
 
             this.resourceLifecycles.ready('geometry', tileKey, { cause: 'binary-decoded' });
 
-            if (workerData.binaryVersion >= 2) {
+            if (workerData.binaryVersion >= 2 && !workerData.lods) {
                 if (!(workerData.geometrySource instanceof ArrayBuffer) || !workerData.visibilityData) {
                     throw new Error(`GSP2+ tile ${tileKey} did not provide deferred geometry source/bounds`);
                 }
@@ -4093,6 +4230,11 @@ class PistonViewer {
                 workerData.geometryBytes = geometryResult.geometryBytes;
                 workerData.geometrySelection = geometrySelection;
                 this.resourceLifecycles.ready('geometry', tileKey, { cause: 'detail-built' });
+            }
+            if (workerData.binaryVersion === 3 && !workerData.availableDepth) {
+                workerData.availableDepth = 5;
+                workerData.heightDepth = 5;
+                workerData.heightValues = workerData.unitHeights;
             }
 
             // (silent — structured perf logging only)
@@ -4230,7 +4372,12 @@ class PistonViewer {
                 throw new Error(`tile ${key} reached instantiation before deferred geometry was built`);
             }
             if (workerData.visibilityData) {
-                this.visibilityAdapter.attachDecodedIsland(key, workerData.visibilityData);
+                // The planner stops at depth 2. Unit deltas and deeper
+                // hierarchy arrays belong to the worker build, not tile
+                // residency; keep only the 57 frontier records here.
+                this.visibilityAdapter.attachDecodedIsland(key, {
+                    depths: workerData.visibilityData.depths.slice(0, 3),
+                });
             }
 
             // Page-level demand owns the one-way startup bridge. Instantiating
@@ -4346,7 +4493,10 @@ class PistonViewer {
                 lods: workerData.lods,
                 builtLevels,
                 finestBuilt,
-                unitHeights: workerData.unitHeights,
+                unitHeights: workerData.unitHeights || (workerData.heightDepth === 5 ? workerData.heightValues : null),
+                heightValues: workerData.heightValues || workerData.unitHeights || null,
+                heightDepth: workerData.heightDepth || 5,
+                availableDepth: workerData.availableDepth || 5,
                 stats: workerData.stats,
                 center: workerData.center,
                 binaryVersion: workerData.binaryVersion,
@@ -4509,6 +4659,7 @@ class PistonViewer {
         tile.container = null;
         tile.lods = null;
         tile.unitHeights = null;
+        tile.heightValues = null;
         tile.geometrySource = null;
         tile.geometrySelection = null;
     }
@@ -4541,12 +4692,15 @@ class PistonViewer {
         const tile = this.tiles.get(key);
 
         let sourceElevation;
-        if (tile && tile.center && tile.unitHeights) {
+        if (tile && tile.center && tile.heightValues) {
             const dq = axial.q - tile.center.q;
             const dr = axial.r - tile.center.r;
             const idx = this.unitIndexMap.get(((dq + 128) << 8) | (dr + 128));
-            sourceElevation = (idx !== undefined) ? tile.unitHeights[idx] : undefined;
-            if (sourceElevation === undefined) sourceElevation = tile.stats?.avg;
+            // Heap-order unit indices share contiguous ancestor groups.
+            // Until units arrive, use the finest downloaded aggregate mean
+            // for the same point so camera clearance follows real terrain.
+            sourceElevation = sampleTileHeightAtUnitIndex(tile.heightValues, tile.heightDepth ?? 5, idx);
+            if (!Number.isFinite(sourceElevation)) sourceElevation = tile.stats?.avg;
         } else {
             // The manifest horizon renders hMean until decoded unit geometry
             // arrives, so hMean is the correct eye-clearance surface here.
