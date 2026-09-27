@@ -195,6 +195,9 @@ const TEXTURE_CONFIG = Object.freeze({
     // stealth VRAM residency pool.
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
+// Linear-space colours for geometry whose texture page is not bound yet.
+const MISSING_PAGE_COLOR_DEV = Object.freeze([1.0, 0.0, 1.0]);
+const MISSING_PAGE_COLOR_CONSUMER = Object.freeze([0.19, 0.19, 0.165]); // ~#78786f
 // Concurrent progressive texture jobs (network wait + transcode). Byte-level
 // link admission is the NetScheduler's job, not this count's.
 const PROGRESSIVE_TEXTURE_JOBS = 4;
@@ -476,6 +479,11 @@ class PistonViewer {
             floorOffset: { value: 0.0 },
             cameraPos: { value: new THREE.Vector3() },
             gradientMode: { value: 1.0 },
+            // Colour for geometry whose texture page has not arrived yet.
+            // Consumers see a neutral alpine tone while imagery streams in;
+            // dev mode keeps the unmistakable magenta diagnostic.
+            missingPageColor: { value: new THREE.Vector3(...(isDevModeEnabled()
+                ? MISSING_PAGE_COLOR_DEV : MISSING_PAGE_COLOR_CONSUMER)) },
             movingLodRadii: { value: new THREE.Vector2(0.0, 1e12) },
             lodRadii: Array.from({ length: TILE_LEVEL + 1 }, () => ({
                 value: new THREE.Vector2(0.0, 1e9),
@@ -1547,6 +1555,9 @@ class PistonViewer {
         offBtn.addEventListener('click', () => setDevMode(false));
 
         onDevModeChange((enabled) => {
+            this.sharedMaterialUniforms.missingPageColor.value.set(
+                ...(enabled ? MISSING_PAGE_COLOR_DEV : MISSING_PAGE_COLOR_CONSUMER));
+            this.needsRender = true;
             const active = enabled ? onBtn : offBtn;
             const inactive = enabled ? offBtn : onBtn;
             active.classList.add('active');
@@ -2440,10 +2451,10 @@ class PistonViewer {
                         vWorldPos.x + uSourceOrigin.x,
                         uSourceOrigin.y - vWorldPos.z
                     );
-                    vec4 texColor = vec4(1.0, 0.0, 1.0, 1.0);
+                    vec4 texColor = vec4(uMissingPageColor, 1.0);
                     bool sampledPage = false;
                     ${pageSamplingBranches}
-                    if (!sampledPage) texColor = vec4(1.0, 0.0, 1.0, 1.0);
+                    if (!sampledPage) texColor = vec4(uMissingPageColor, 1.0);
 
                     float ao = 1.0 - (vSkirtY * 0.4);
                     float jitter = 1.0;
@@ -2472,6 +2483,7 @@ class PistonViewer {
             this.userData.shader = shader;
             shader.uniforms.uHeightFactor = sharedUniforms.heightFactor;
             shader.uniforms.uGradientMode = sharedUniforms.gradientMode;
+            shader.uniforms.uMissingPageColor = sharedUniforms.missingPageColor;
             shader.uniforms.uFloorOffset = sharedUniforms.floorOffset;
             shader.uniforms.uCameraPos = sharedUniforms.cameraPos;
             const lodIdx = this.userData.lodIdx ?? 0;
@@ -2652,6 +2664,7 @@ class PistonViewer {
             shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
                 #include <common>
                 uniform float uGradientMode;
+                uniform vec3 uMissingPageColor;
                 uniform vec3 uCameraPos;
                 uniform vec2 uLodRadii;
                 ${pageFragmentDeclarations}
