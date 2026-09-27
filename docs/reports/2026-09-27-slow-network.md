@@ -77,16 +77,29 @@ Times are seconds; VC = block-SSIM visual completeness against the settled frame
 | Scenario | Build | Loader | VC50 | VC85 | VC95 | MB | Re-DL MB |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Cold first visit | live | 1.7 | 3.5 | 5.0 | 14.5 | 51.0 | 0.8 |
-| | staged | 1.0 | 3.0 | 5.5 | 6.0 | 11.6 | 0.0 |
+| | staged (final) | 1.0 | 2.0 | 3.0 | 4.0 | 9.1 | 0.0 |
 | Repeat visit (HTTP cache cleared) | live | 1.7 | 2.5 | 5.0 | 14.0 | 50.1 | 0.0 |
-| | staged | 1.0 | 1.5 | 2.0 | 2.0 | 1.4 | 0.0 |
+| | staged (final) | 1.0 | 1.5 | 2.0 | 2.0 | 1.4 | 0.0 |
 | Jump 12 km west (phase after jump) | live | – | 1.0 | 4.0 | 9.0 | 104.2* | 0.8 |
-| | staged | – | 0.5 | 4.5 | 5.0 | 21.6* | 0.0 |
-| Pan 3 km east and back (return phase) | live | – | 6.0 | 6.0 | 12.0 | 144.6* | 35.0 |
-| | staged | – | 6.0 | 6.0 | 6.5 | 19.8* | 0.03 |
+| | staged (final) | – | 0.5 | 2.5 | 3.0 | 16.8* | 0.0 |
+| Pan 3 km east and back (return phase) | live | – | 6.0 | 6.0 | 6.0–12.0 | 17.6–144.6* | 4.6–35.0 |
+| | staged (final) | – | 6.0 | 6.0 | 6.5 | 15.5* | 0.0 |
 
 \* whole scenario. Pan phases include the 6 s camera move, so 6.0 is the floor.
-Live pan varied run to run (17.6–144.6 MB, 4.6–35 MB re-downloaded).
+Live pan varied run to run (two runs shown as a range). Frames are sampled every
+0.5 s. "final" = split brotli terrain tiles + everything below; the earlier
+candidate without split tiles measured cold VC95 6.0 s / 11.6 MB.
+
+Coarse-first terrain on vs off (`?coarse=0`) was a wash on this link (cold VC95
+5.5 vs 5.0 s, loader 1.0 vs 1.5 s), so the adaptive default stays.
+
+Slow profile (5 Mbit/s, 150 ms, +600 ms under load), staged before split tiles:
+loader 2.4 s, VC95 11.5 s, 9.1 MB. The live replay could not complete offline on
+that profile (no service worker, loader never hid), so there is no fair live number.
+
+Harness note: until `f54158b` the server log was attributed by time window only;
+a reused log tag mixed an older session into a run (a 9.1 MB run read as 60 MB).
+All numbers above were recomputed per session; baselines were unaffected.
 
 ### Real wifi (owner's link, ~4–7 Mbit/s effective at the time, through Cloudflare)
 
@@ -94,6 +107,27 @@ Two runs each, screenshots every 1 s (`~/dev/Hexagons-codex/realvc.py`):
 live VC95 11–12 s, staged VC95 8–9 s; staged transferred ~9.6 MB for the default
 view versus ~51 MB. The staged build was ready (all visible pages at their
 screen-space level) in ~19 s on a ~5 Mbit/s moment of the link.
+
+## Hardening (evening pass, after an independent review)
+
+- `NetScheduler`: a request with no response/body progress for 20 s is aborted
+  with a retryable `NetStallError` (timer restarts on every body chunk), so a dead
+  connection cannot hold a slot and the byte budget forever. Slow prefetch
+  windows (one small latency-bound request) may raise but not lower the
+  throughput estimate (real wifi: 17 → 0.8 Mbit/s after settling, before the fix).
+- `TextureByteStore`: priority = most urgent caller still waiting (in-flight
+  request bumped when one joins), not a permanent max starting at BACKGROUND;
+  callers resolve as soon as their bytes are present; the memory budget holds
+  when Cache Storage is missing or rejects writes; never evicted mid-download.
+- Prefetch and terrain-rebuild failures back off exponentially (no hot loops
+  offline); texture/terrain prefix caches are scope-namespaced, pruned per
+  release by the service worker, and capped on disk (`prefix_cache_budget.mjs`:
+  2 GiB high / 768 MiB mid / 256 MiB low, least-recently-written first); hidden
+  tiles are rebound so they no longer pin disposed textures; the high-admission
+  block is cleared from the final screen-space tier only.
+- Texture jobs wait at most 10 s for the shared Basis module and post only the
+  mips they need; the stage script uploads hashed shell assets as q11 brotli
+  (main.js 268 → 220 KB, transcoder wasm 408 → 326 KB on the wire).
 
 ## How to promote `/hexagons/next` to `/hexagons/app`
 
@@ -103,8 +137,9 @@ parts under `hexagons/next/releases/<id>/tiles_split/`).
 
 ```sh
 node frontend/app/build.mjs                       # or HEXAGONS_DIST_DIR=... for a scratch build
-python3 scripts/stage_next.py --target app --promote-live [--tile-split '<template>'] --dry-run
-python3 scripts/stage_next.py --target app --promote-live [--tile-split '<template>']
+SPLIT='/hexagons/next/releases/<release>/tiles_split/gosper_{yq}_{yr}.{part}.bin'
+python3 scripts/stage_next.py --target app --promote-live --tile-split "$SPLIT" --dry-run
+python3 scripts/stage_next.py --target app --promote-live --tile-split "$SPLIT"
 ```
 
 The script uploads the compact manifest and hashed bundles first and
