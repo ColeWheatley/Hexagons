@@ -163,6 +163,10 @@ a little Retina sharpness for speed, scaling `detailBias` by `1 / devicePixelRat
 
 ### Follow-ups (independent review of the late commits, 20:40 — both low severity)
 
+Both are fixed on branch `perf/followups` (`3d8405b`, unit test added; netlab cold run
+identical to the staged build: loader 1.0 s, VC95 4.0 s, 8.5 MB). Not staged yet —
+merge it into `perf/slow-network` and restage when convenient.
+
 1. `main.js` `_idleResweep`: `_idleResweepRound` only resets on the `online` event, so
    after a burst of server errors later failures wait the 120 s cap instead of 15 s.
    Reset it on a successful texture install or on the settle-transition resweep.
