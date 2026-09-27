@@ -108,6 +108,7 @@ import {
 import {
     ResourceRetryScheduler,
     ResweepScheduler,
+    markPermanentError,
 } from './fetch_retry.js';
 import {
     WORKER_JOB_TIMEOUT_MS,
@@ -1929,6 +1930,24 @@ class PistonViewer {
         }
     }
 
+    _parseManifestJson(text) {
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            throw markPermanentError(error);
+        }
+    }
+
+    _validateLoadedManifest(manifest) {
+        try {
+            const expanded = expandManifest(manifest);
+            this._validateManifestContract(expanded);
+            return expanded;
+        } catch (error) {
+            throw markPermanentError(error);
+        }
+    }
+
     async _loadManifestWithRetry(scope) {
         return this.resourceRetries.run(MANIFEST_RETRY_KEY, async () => {
             this.resourceLifecycles.begin('manifest', 'tile_manifest.json', { cause: 'fetch-attempt' });
@@ -1940,9 +1959,8 @@ class PistonViewer {
                 const declaredRes = await fetch(new URL(declared, window.location.href).href, { signal: scope.signal });
                 if (!declaredRes.ok) throw new Error(`Manifest HTTP ${declaredRes.status}`);
                 const declaredText = await declaredRes.text();
-                const declaredManifest = expandManifest(JSON.parse(declaredText));
+                const declaredManifest = this._validateLoadedManifest(this._parseManifestJson(declaredText));
                 this.loadingScreen.manifestLoaded(declaredText.length);
-                this._validateManifestContract(declaredManifest);
                 this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
                 return declaredManifest;
             }
@@ -1958,7 +1976,7 @@ class PistonViewer {
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
             let text = await res.text();
-            let manifest = JSON.parse(text);
+            let manifest = this._parseManifestJson(text);
             let manifestBytes = text.length;
             // A release pointer names an immutable, content-addressed manifest.
             // Only the pointer is revalidated per visit; the manifest itself is
@@ -1969,11 +1987,10 @@ class PistonViewer {
                 if (!immutable.ok) throw new Error(`Manifest HTTP ${immutable.status}`);
                 text = await immutable.text();
                 manifestBytes += text.length;
-                manifest = JSON.parse(text);
+                manifest = this._parseManifestJson(text);
             }
-            manifest = expandManifest(manifest);
+            manifest = this._validateLoadedManifest(manifest);
             this.loadingScreen.manifestLoaded(manifestBytes);
-            this._validateManifestContract(manifest);
             this.resourceLifecycles.ready('manifest', 'tile_manifest.json', { cause: 'validated' });
             return manifest;
         }, {

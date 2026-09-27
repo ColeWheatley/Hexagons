@@ -1,6 +1,11 @@
 // Dependency-free retry/backoff helpers for recoverable asset loading.
 export const DEFAULT_RETRY_DELAYS_MS = Object.freeze([1000, 4000, 9000]);
 
+export function markPermanentError(error) {
+    error.permanent = true;
+    return error;
+}
+
 function abortReason(signal) {
     return signal?.reason || new Error('Operation cancelled');
 }
@@ -97,7 +102,7 @@ export class ResourceRetryScheduler {
             } catch (error) {
                 if (signal?.aborted) throw abortReason(signal);
                 entry.lastError = error;
-                if (entry.attempts >= this.maxAttempts) {
+                if (error?.permanent || entry.attempts >= this.maxAttempts) {
                     entry.exhausted = true;
                     if (onExhausted) onExhausted({ key, attempts: entry.attempts, error });
                     throw error;
