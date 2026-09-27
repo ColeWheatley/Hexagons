@@ -74,6 +74,11 @@ export class NetScheduler {
         maxBudgetBytes = 8 * 1024 * 1024,
         targetQueueSeconds = 0.5,
         maxConcurrent = 6,
+        // Extra slots only tiny urgent requests may use. Over HTTP/2 they
+        // share one connection, so the cost is a few KB of queue, while a
+        // cold start's ~40 coverage/terrain-prefix requests stop paying the
+        // Cloudflare→S3 latency (200-400 ms) in seven serial rounds.
+        tinyExtraConcurrent = 10,
         initialThroughputBps = 1.5e6,
         prefetchMaxConcurrent = 1,
         // A dead connection (wifi hand-off, captive portal, lost packets
@@ -90,6 +95,7 @@ export class NetScheduler {
         this.maxBudgetBytes = maxBudgetBytes;
         this.targetQueueSeconds = targetQueueSeconds;
         this.maxConcurrent = maxConcurrent;
+        this.tinyExtraConcurrent = tinyExtraConcurrent;
         this.prefetchMaxConcurrent = prefetchMaxConcurrent;
         this.stallTimeoutMs = stallTimeoutMs;
         this.setTimer = setTimer;
@@ -202,7 +208,11 @@ export class NetScheduler {
         while (this.queue.length) {
             const index = this._next();
             const item = this.queue[index];
-            if (this.inFlight.size >= this.maxConcurrent) return;
+            // Tiny urgent requests (coverage imagery, coarse terrain) add
+            // almost no queueing, so they never wait behind the byte budget
+            // and may use a few extra concurrency slots.
+            const tinyUrgent = item.expectedBytes <= TINY_REQUEST_BYTES && item.priority >= NET_PRIORITY.VISIBLE;
+            if (this.inFlight.size >= this.maxConcurrent + (tinyUrgent ? this.tinyExtraConcurrent : 0)) return;
             if (item.priority <= NET_PRIORITY.PREFETCH) {
                 // Prefetch only uses an otherwise idle link.
                 let prefetching = 0;
@@ -212,9 +222,6 @@ export class NetScheduler {
                 }
                 if (prefetching >= this.prefetchMaxConcurrent) return;
             }
-            // Tiny urgent requests (coverage imagery, coarse terrain) add
-            // almost no queueing, so they never wait behind the byte budget.
-            const tinyUrgent = item.expectedBytes <= TINY_REQUEST_BYTES && item.priority >= NET_PRIORITY.VISIBLE;
             if (!tinyUrgent && this.inFlight.size > 0
                 && this.inFlightBytes + item.expectedBytes > this.budgetBytes) return;
             this.queue.splice(index, 1);

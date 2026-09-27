@@ -205,3 +205,28 @@ test('latency-bound prefetch windows cannot drag the throughput estimate down', 
     await scheduler.request({ url: 'd', priority: NET_PRIORITY.VISIBLE }).promise;
     assert.ok(scheduler.throughputBps < before);
 });
+
+test('tiny urgent requests may use extra concurrency slots; large or background ones may not', async () => {
+    const held = [];
+    const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(abortError()), { once: true });
+        held.push({ url, release: () => resolve(new Response(new Uint8Array(10), { status: 200 })) });
+    });
+    const scheduler = new NetScheduler({ fetchImpl, maxConcurrent: 2, tinyExtraConcurrent: 3, stallTimeoutMs: 0 });
+    const all = [];
+    for (let i = 0; i < 7; i++) {
+        all.push(scheduler.request({ url: `tiny${i}`, priority: NET_PRIORITY.VISIBLE, expectedBytes: 8 * 1024 }).promise);
+    }
+    await sleep(1);
+    assert.equal(scheduler.inFlight.size, 5, 'maxConcurrent 2 + 3 tiny extra');
+    all.push(scheduler.request({ url: 'big', priority: NET_PRIORITY.CRITICAL, expectedBytes: 1 << 20 }).promise);
+    all.push(scheduler.request({ url: 'tinybg', priority: NET_PRIORITY.BACKGROUND, expectedBytes: 1024 }).promise);
+    await sleep(1);
+    assert.equal(scheduler.inFlight.size, 5, 'a large request waits for a regular slot');
+    while (held.length) {
+        held.shift().release();
+        await sleep(2);
+    }
+    await Promise.all(all);
+    assert.equal(scheduler.stats.completed, 9);
+});

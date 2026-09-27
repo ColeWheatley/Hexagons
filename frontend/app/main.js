@@ -621,6 +621,7 @@ class PistonViewer {
         // later terrain); the byte store persists every fetched prefix.
         this.netScheduler = new NetScheduler({
             maxConcurrent: this.capabilityProfile.name === 'low' ? 3 : 6,
+            tinyExtraConcurrent: this.capabilityProfile.name === 'low' ? 2 : 10,
         });
         // ?prefetch=0 disables idle pre-download (benchmarks that must reach
         // a quiet network, or users who want strictly on-demand traffic).
