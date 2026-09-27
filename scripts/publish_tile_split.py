@@ -6,7 +6,7 @@ level (L5..L1) and [44,864, 280,166) the 16,807 unit records. HTTP Range
 prefixes of the raw object serve far/coarse tiles, but Range and
 Content-Encoding cannot be combined, so near tiles used to pay full raw
 size. This writes, per tile, `<name>.agg.bin` and `<name>.units.bin`, each
-the brotli-11 encoding of exactly that span, stored with
+the brotli-10 encoding of exactly that span (q10 measured smaller than q11 on GSP units, at 2.7x the speed), stored with
 `Content-Encoding: br` (browsers decode transparently), under a NEW prefix —
 never the live app's. The viewer switches to them when the manifest's
 `binary.split` block is present (see stage_next.py --tile-split).
@@ -67,7 +67,7 @@ def split_one(args: tuple[str, str, str]) -> tuple[str, int, int]:
     for part, data in (("agg", raw[:BOUNDARY]), ("units", raw[BOUNDARY:])):
         dest = Path(out_dir) / f"{stem}.{part}.bin"
         if not dest.exists():
-            encoded = subprocess.run([exe, "-c", "-q", "11", "-w", "24"], input=data,
+            encoded = subprocess.run([exe, "-c", "-q", "10", "-w", "24"], input=data,
                                      capture_output=True, check=True).stdout
             tmp = dest.with_suffix(".tmp")
             tmp.write_bytes(encoded)
