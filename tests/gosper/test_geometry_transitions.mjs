@@ -185,3 +185,16 @@ assert.deepEqual(pausedViewerState, {
 });
 
 console.log('geometry transitions: wheel latch + stale build guards ok');
+
+// Regression (2026-09-27): rebuild tasks carry `selection@depth`; the tile's
+// desired signature must be set from the task, or geometryBuildCanCommit
+// refuses every rebuild and tiles stay awaitingFinal forever.
+{
+    const mainSource = await fs.readFile(path.join(ROOT, 'frontend/app/main.js'), 'utf8');
+    const queueBody = mainSource.slice(mainSource.indexOf('    _queueGeometryRebuild('),
+        mainSource.indexOf('    _startGeometryRebuild('));
+    assert.match(queueBody, /tile\.geometryDesiredSignature = task\.signature;/,
+        '_queueGeometryRebuild must store the task signature (selection@depth)');
+    assert.doesNotMatch(queueBody, /tile\.geometryDesiredSignature = selection\.signature;/);
+    console.log('rebuild signature contract: ok');
+}
