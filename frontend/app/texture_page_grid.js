@@ -59,9 +59,9 @@ function normalizedBounds(bounds) {
 
 function fillTemplate(template, pageX, pageY, tier) {
     return template
-        .replace('{page_x}', String(pageX))
-        .replace('{page_y}', String(pageY))
-        .replace('{tier}', String(tier));
+        .split('{page_x}').join(String(pageX))
+        .split('{page_y}').join(String(pageY))
+        .split('{tier}').join(String(tier));
 }
 
 export class TexturePageGrid {
@@ -203,7 +203,8 @@ export class TexturePageGrid {
         if (!page?.available) return null;
         const explicit = page.urls?.[tier];
         if (explicit) return explicit;
-        if (!this.urlTemplate) return null;
-        return fillTemplate(this.urlTemplate, page.pageX, page.pageY, tier);
+        const template = tier === 'bootstrap' ? this.contract.bootstrap?.url_template : this.urlTemplate;
+        if (!template) return null;
+        return fillTemplate(template, page.pageX, page.pageY, tier);
     }
 }
