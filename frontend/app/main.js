@@ -489,6 +489,11 @@ class PistonViewer {
                 value: new THREE.Vector2(0.0, 1e9),
             })),
         };
+        onDevModeChange((enabled) => {
+            this.sharedMaterialUniforms.missingPageColor.value.set(
+                ...(enabled ? MISSING_PAGE_COLOR_DEV : MISSING_PAGE_COLOR_CONSUMER));
+            this.needsRender = true;
+        });
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
         this.bootstrapPhaseActive = true;
         const faultParams = new URLSearchParams(window.location.search);
@@ -1555,9 +1560,6 @@ class PistonViewer {
         offBtn.addEventListener('click', () => setDevMode(false));
 
         onDevModeChange((enabled) => {
-            this.sharedMaterialUniforms.missingPageColor.value.set(
-                ...(enabled ? MISSING_PAGE_COLOR_DEV : MISSING_PAGE_COLOR_CONSUMER));
-            this.needsRender = true;
             const active = enabled ? onBtn : offBtn;
             const inactive = enabled ? offBtn : onBtn;
             active.classList.add('active');
