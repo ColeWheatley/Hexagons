@@ -207,6 +207,14 @@ const COVERAGE_TEXTURE_BUDGET_BYTES = Object.freeze({
     mid: 48 * 1024 * 1024,
     low: 24 * 1024 * 1024,
 });
+// Network bytes idle prefetch (tiles + texture prefixes) may spend per session.
+// Generous on desktop (bandwidth is rarely the constraint there), tight on
+// constrained profiles, whose links/data plans are.
+const PREFETCH_SESSION_BUDGET_BYTES = Object.freeze({
+    high: 64 * 1024 * 1024,
+    mid: 24 * 1024 * 1024,
+    low: 0,
+});
 // Initial tile loads stop at this GSP3 depth while measured throughput is
 // below the threshold (bytes/s); refinement follows immediately.
 const TILE_COARSE_FIRST_DEPTH = 3;
@@ -2864,6 +2872,7 @@ class PistonViewer {
     _prefetchTexturePrefixes({ throttle = false } = {}) {
         const states = this.textureStates;
         if (!states || !this.loaderHidden || this.isMovingView) return;
+        if (this._prefetchBudgetLeft() <= 0) return;
         if (throttle) {
             const now = performance.now();
             if (now - (this._lastTexturePrefetchScanMs || 0) < 500) {
@@ -2902,7 +2911,10 @@ class PistonViewer {
             this._texturePrefetchDone.add(state.key);
             this._texturePrefetchInFlight = (this._texturePrefetchInFlight || 0) + 1;
             this.textureByteStore.ensureLevel(url, MEDIUM_TEXTURE_LEVEL, { priority: NET_PRIORITY.PREFETCH })
-                .then(() => { this.texturePrefetchStats.pages++; })
+                .then(result => {
+                    this.texturePrefetchStats.pages++;
+                    this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
+                })
                 .catch(() => { this._texturePrefetchDone.delete(state.key); })
                 .finally(() => {
                     this._texturePrefetchInFlight--;
@@ -2922,6 +2934,12 @@ class PistonViewer {
         }, delayMs);
     }
 
+    _prefetchBudgetLeft() {
+        const budget = PREFETCH_SESSION_BUDGET_BYTES[this.capabilityProfile.name]
+            ?? PREFETCH_SESSION_BUDGET_BYTES.mid;
+        return budget - (this.prefetchNetworkBytes || 0);
+    }
+
     _prefetchBusy() {
         return this.netScheduler.hasDemand || this.loadQueue.length > 0 || this.activeWorkerCount > 0
             || this.textureQueue.length > 0 || this.activeTextureJobs > 0
@@ -2930,6 +2948,7 @@ class PistonViewer {
 
     _prefetchTilePrefixes({ throttle = false } = {}) {
         if (!this.tileByteStore || !this.manifestGrid || !this.loaderHidden || this.isMovingView) return;
+        if (this._prefetchBudgetLeft() <= 0) return;
         if (throttle) {
             const now = performance.now();
             if (now - (this._lastTilePrefetchScanMs || 0) < 500) {
@@ -2965,7 +2984,10 @@ class PistonViewer {
             this._tilePrefetchInFlight = (this._tilePrefetchInFlight || 0) + 1;
             this.tileByteStore.ensurePrefix(this._tileBinUrl(manifestTile, 3), GSP3_PREFIX_END[depth], {
                 priority: NET_PRIORITY.PREFETCH,
-            }).then(() => { this.tilePrefetchStats.tiles++; })
+            }).then(result => {
+                this.tilePrefetchStats.tiles++;
+                this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
+            })
                 .catch(() => { this._tilePrefetchDone.delete(key); })
                 .finally(() => {
                     this._tilePrefetchInFlight--;
