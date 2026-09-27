@@ -137,4 +137,32 @@ assert.equal(stores.has('hx2-hexagons-app-shell-other-scope'), true, 'activate n
 assert.equal(stores.has('hexagons-runtime-v0.10.0-rc6'), true, 'activate leaves v1 worker caches to that worker');
 assert.equal(stores.has('unrelated-cache'), true, 'activate does not delete caches it does not own');
 
+// The same worker promoted to /hexagons/app/ inherits (and removes) v1's caches.
+{
+    const appStores = new Map();
+    const appStorage = {
+        async open(name) { if (!appStores.has(name)) appStores.set(name, new MemoryCache()); return appStores.get(name); },
+        async keys() { return [...appStores.keys()]; },
+        async delete(name) { return appStores.delete(name); },
+    };
+    const appHandlers = new Map();
+    const appSelf = {
+        location: { origin: 'https://viewer.example', href: 'https://viewer.example/hexagons/app/service-worker.js' },
+        registration: { scope: 'https://viewer.example/hexagons/app/' },
+        clients: { claim: async () => {} },
+        skipWaiting: async () => {},
+        addEventListener(type, handler) { appHandlers.set(type, handler); },
+    };
+    const appContext = vm.createContext({ self: appSelf, caches: appStorage, Request, Response, URL, console, JSON });
+    appContext.fetch = context.fetch;
+    vm.runInContext(source, appContext, { filename: 'service_worker.js' });
+    for (const name of ['hexagons-shell-v0.10.0-rc6', 'hexagons-runtime-v0.10.0-rc6', 'hexagons-cache-meta',
+        'hx2-hexagons-next-runtime', 'unrelated-cache']) await appStorage.open(name);
+    let work;
+    appHandlers.get('activate')({ waitUntil(value) { work = value; } });
+    await work;
+    assert.deepEqual([...appStores.keys()].sort(), ['hx2-hexagons-next-runtime', 'unrelated-cache'],
+        'app-scope v2 removes orphaned v1 caches only');
+}
+
 console.log('service worker policy: ok');

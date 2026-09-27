@@ -120,11 +120,24 @@ self.addEventListener('install', event => {
     event.waitUntil(self.skipWaiting());
 });
 
+// v1 workers only ever ran at /hexagons/app/ (and the retired /beta/). When
+// v2 takes over one of those scopes it inherits v1's unscoped caches, which no
+// longer have an owner; any other scope (e.g. /hexagons/next/) must leave them
+// alone because a v1 worker may still be serving them.
+const V1_SCOPE_TAGS = new Set(['hexagons-app', 'hexagons-beta']);
+
+function isV1CacheName(name) {
+    return name === 'hexagons-cache-meta'
+        || name.startsWith('hexagons-shell-')
+        || name.startsWith('hexagons-runtime-');
+}
+
 self.addEventListener('activate', event => {
     event.waitUntil((async () => {
         const names = await caches.keys();
         await Promise.all(names
-            .filter(name => name.startsWith(`${PREFIX}shell-`) && name !== SHELL_CACHE)
+            .filter(name => (name.startsWith(`${PREFIX}shell-`) && name !== SHELL_CACHE)
+                || (V1_SCOPE_TAGS.has(SCOPE_TAG) && isV1CacheName(name)))
             .map(name => caches.delete(name)));
         await self.clients.claim();
     })());
