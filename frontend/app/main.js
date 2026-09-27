@@ -192,6 +192,15 @@ const TEXTURE_CONFIG = Object.freeze({
 // Concurrent progressive texture jobs (network wait + transcode). Byte-level
 // link admission is the NetScheduler's job, not this count's.
 const PROGRESSIVE_TEXTURE_JOBS = 4;
+// GPU bytes of low/medium page textures that no resident tile draws may use
+// before the least-recently-demanded pages lose them (they used to be kept for
+// the whole session: ~37 KB/page ASTC, ~110 KB/page BC7, plus CPU copies).
+// Re-demand transcodes from the persistent byte store, not the network.
+const COVERAGE_TEXTURE_BUDGET_BYTES = Object.freeze({
+    high: 96 * 1024 * 1024,
+    mid: 48 * 1024 * 1024,
+    low: 24 * 1024 * 1024,
+});
 // Idle-link pre-download of nearby off-screen 256 px page prefixes.
 const TEXTURE_PREFETCH = Object.freeze({
     maxInFlight: 3,
@@ -2858,6 +2867,42 @@ class PistonViewer {
         }
     }
 
+    _enforceCoverageTextureBudget() {
+        const now = performance.now();
+        if (now - (this._lastCoverageBudgetMs || 0) < 1000) return;
+        this._lastCoverageBudgetMs = now;
+        const budget = COVERAGE_TEXTURE_BUDGET_BYTES[this.capabilityProfile.name]
+            ?? COVERAGE_TEXTURE_BUDGET_BYTES.mid;
+        const idle = [];
+        let idleBytes = 0;
+        for (const state of this.textureStates.values()) {
+            if (textureStateHasDemand(state, { includeOutside: false })) {
+                state.lastDemandedMs = now;
+                continue;
+            }
+            const low = state.assets.get(TEXTURE_TIER.LOW);
+            const medium = state.assets.get(TEXTURE_TIER.MEDIUM);
+            if (!low && !medium) continue;
+            // Only pages no resident tile draws may lose their coverage tiers.
+            let bound = false;
+            for (const consumer of state.consumers) {
+                if (this.tiles.has(consumer)) { bound = true; break; }
+            }
+            if (bound) continue;
+            const bytes = (low?.bytes || 0) + (medium?.bytes || 0);
+            idle.push([state, bytes]);
+            idleBytes += bytes;
+        }
+        if (idleBytes <= budget) return;
+        idle.sort((a, b) => (a[0].lastDemandedMs || 0) - (b[0].lastDemandedMs || 0));
+        for (const [state, bytes] of idle) {
+            if (idleBytes <= budget) break;
+            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM, false, true);
+            this._dropTextureTier(state.key, TEXTURE_TIER.LOW, false, true);
+            idleBytes -= bytes;
+        }
+    }
+
     _textureNetPriority(state, task) {
         const base = state.classification === 'visible'
             ? NET_PRIORITY.VISIBLE
@@ -3573,6 +3618,7 @@ class PistonViewer {
         }
         promoteVisibleConsumerPages(residency.states, visibleConsumerPages);
         this._applyScreenSpaceTextureLevels(residency.states, projection);
+        this._enforceCoverageTextureBudget();
 
         // Camera motion can leave old lows and refinements in the queue. On a
         // world-scale manifest those stale lows must never become a hidden
