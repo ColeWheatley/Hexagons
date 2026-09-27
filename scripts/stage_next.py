@@ -41,6 +41,14 @@ USER_AGENT = "hexagons-stage-next/1.0"
 
 
 AWS_REGION = "eu-central-2"  # the wheatley.cloud bucket lives in Zurich
+# Hashed, immutable shell assets are uploaded as max-quality brotli with
+# Content-Encoding: br instead of relying on Cloudflare's on-the-fly level
+# (measured: main.js 268 -> 220 KB, transcoder wasm 408 -> 326 KB on the wire).
+PRECOMPRESS_SUFFIXES = {".js", ".wasm", ".css", ".json", ".svg"}
+
+
+def precompress(path: Path, cache: str, encoding: str | None) -> bool:
+    return cache == IMMUTABLE and not encoding and path.suffix in PRECOMPRESS_SUFFIXES
 
 
 def run(args: list[str], dry: bool) -> None:
@@ -63,7 +71,7 @@ def load_manifest(source: str) -> dict:
 
 def brotli(data: bytes) -> bytes:
     exe = shutil.which("brotli") or "/Users/cole/dev/ml-env/.pixi/envs/default/bin/brotli"
-    return subprocess.run([exe, "-c", "-q", "11"], input=data, capture_output=True, check=True).stdout
+    return subprocess.run([exe, "-c", "-q", "11", "-w", "24"], input=data, capture_output=True, check=True).stdout
 
 
 def put_bytes(bucket: str, key: str, data: bytes, *, content_type: str, cache: str,
@@ -104,6 +112,11 @@ def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool, manifest_rel: 
             staged_html.write_text(declare_manifest(path.read_text(), manifest_rel))
             path = staged_html
         content_type, cache, encoding = metadata(path)
+        if precompress(path, cache, encoding):
+            put_bytes(bucket, f"{prefix}/{rel.as_posix()}", brotli(path.read_bytes()),
+                      content_type=content_type, cache=cache, encoding="br", dry=dry)
+            count += 1
+            continue
         command = ["aws", "s3", "cp", str(path), f"s3://{bucket}/{prefix}/{rel.as_posix()}",
                    "--only-show-errors", "--content-type", content_type, "--cache-control", cache,
                    "--metadata", f"sha256={sha256(path)}"]
@@ -143,6 +156,10 @@ def write_local(out: Path, dist: Path, manifest_rel: str, payload: bytes, encode
                 target.write_text(declare_manifest(path.read_text(), manifest_rel))
                 continue
             shutil.copy2(path, target)
+            content_type, cache, encoding = metadata(path)
+            sibling = target.with_name(target.name + ".br")
+            if precompress(path, cache, encoding) and not (dist / rel).with_name(rel.name + ".br").exists():
+                sibling.write_bytes(brotli(path.read_bytes()))  # what the S3 object will carry
     manifest_path = out / manifest_rel
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_bytes(payload)
