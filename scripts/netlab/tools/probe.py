@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/python3.14
 """Minimal CDP probe: open a URL in headless Chrome, sample viewer state.
 
-usage: probe.py URL SECONDS [SAMPLE_EVERY]
+usage: [PROBE_OFFLINE=start,end] probe.py URL SECONDS [SAMPLE_EVERY]
 Prints one JSON line per sample with texture/geometry/network scheduler state.
 Profile dir lives under Hexagons-codex/tmp (the external tripwire keys on it).
 """
@@ -84,10 +84,22 @@ async def main(url, seconds, every):
                 await call('Emulation.setTouchEmulationEnabled', {'enabled': True, 'maxTouchPoints': 5})
                 await call('Emulation.setUserAgentOverride', {'userAgent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36'})
                 await call('Page.addScriptToEvaluateOnNewDocument', {'source': "Object.defineProperty(Navigator.prototype,'deviceMemory',{get:()=>4});Object.defineProperty(Navigator.prototype,'hardwareConcurrency',{get:()=>6});"})
+            # PROBE_OFFLINE="start,end" (seconds after navigation): cut the
+            # page's network in that window, e.g. to watch recovery and backoff.
+            offline = [float(x) for x in os.environ.get('PROBE_OFFLINE', '').split(',') if x.strip()]
+            offline_state = False
+            if offline: await call('Network.enable')
             await call('Page.navigate', {'url': url})
             t0 = time.time()
             while time.time() - t0 < seconds:
                 await asyncio.sleep(every)
+                if len(offline) == 2:
+                    want = offline[0] <= time.time() - t0 < offline[1]
+                    if want != offline_state:
+                        offline_state = want
+                        await call('Network.emulateNetworkConditions', {'offline': want, 'latency': 0,
+                                                                        'downloadThroughput': -1, 'uploadThroughput': -1})
+                        print(json.dumps({'offline': want, 't': round((time.time() - t0) * 1000)}), flush=True)
                 r = await call('Runtime.evaluate', {'expression': STATE_JS, 'returnByValue': True})
                 print(json.dumps(r.get('result', {}).get('value')), flush=True)
     finally:

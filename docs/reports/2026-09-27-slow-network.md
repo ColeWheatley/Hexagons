@@ -139,6 +139,14 @@ An earlier pair before the tiny-request concurrency fix: staged VC95 10/22 s vs 
   rounds against the same build without it: time until every visible page has
   imagery 12.9/14.0/8.6 s → 9.1/7.0/5.4 s, loader 4.3/2.9/2.0 s → 2.5/2.0/1.4 s.
   Neutral in netlab, whose mirror has no origin latency.
+- Failed textures/tiles are now also retried on the window `online` event and on an
+  idle backoff (15 s → 2 min) — before, only a camera settle after a move retried
+  them. Real network, 25 s outage mid-load (`PROBE_OFFLINE=4,29 tools/probe.py`):
+  before, 17 visible pages stayed at 256 px through 66 s; after, all 20 reached their
+  screen-space level 12 s after reconnecting. No fatal state, no retry storm offline.
+- Tried and reverted: fetching coverage bytes ahead for queued texture tasks (16 extra
+  lookahead fetches) measured no better on the real link (median time to coverage
+  7.0 s vs 5.5 s without, three interleaved rounds).
 - Texture jobs wait at most 10 s for the shared Basis module and post only the
   mips they need; the stage script uploads hashed shell assets as q11 brotli
   (main.js 268 → 220 KB, transcoder wasm 408 → 326 KB on the wire).
