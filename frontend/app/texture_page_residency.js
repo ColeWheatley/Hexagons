@@ -318,6 +318,13 @@ export function highAdmissionRetryReady(state, cacheRevision, priority) {
     return revisionChanged || rankImproved;
 }
 
+export function clearHighAdmissionIfNotDesired(state) {
+    if (state.desiredTier === PAGE_TEXTURE_TIER.HIGH) return;
+    state.highAdmissionBlocked = false;
+    state.highAdmissionBlockedRevision = -1;
+    state.highAdmissionBlockedPriority = -Infinity;
+}
+
 // The page frustum is exact while a terrain island carries a conservative
 // page-AABB. If a visible island still binds an adjacent page, retain medium
 // for that page even when its own page box is just outside the frustum. This
@@ -451,11 +458,6 @@ export class TexturePageResidency {
                 state.classification,
                 thresholds,
             );
-            if (state.desiredTier !== PAGE_TEXTURE_TIER.HIGH) {
-                state.highAdmissionBlocked = false;
-                state.highAdmissionBlockedRevision = -1;
-                state.highAdmissionBlockedPriority = -Infinity;
-            }
         }
         return this.states.values();
     }

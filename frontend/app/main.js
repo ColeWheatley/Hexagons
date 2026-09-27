@@ -63,6 +63,7 @@ import {
     textureStateHasDemand,
     textureTierRequestPlan,
     highAdmissionRetryReady,
+    clearHighAdmissionIfNotDesired,
     BOOTSTRAP_GPU_BYTES_PER_PAGE,
     BOOTSTRAP_MAX_RESIDENT_BYTES,
     BOOTSTRAP_PAGE_SIZE_PX,
@@ -2919,14 +2920,7 @@ class PistonViewer {
             state.screenLevel = level;
             state.desiredHighLevel = Math.min(level, HIGH_TEXTURE_LEVEL.COARSEST);
             const tier = tierForTextureLevel(level);
-            if (tier !== state.desiredTier) {
-                state.desiredTier = tier;
-                if (tier !== TEXTURE_TIER.HIGH) {
-                    state.highAdmissionBlocked = false;
-                    state.highAdmissionBlockedRevision = -1;
-                    state.highAdmissionBlockedPriority = -Infinity;
-                }
-            }
+            state.desiredTier = tier;
         }
     }
 
@@ -3973,6 +3967,7 @@ class PistonViewer {
         }
         promoteVisibleConsumerPages(residency.states, visibleConsumerPages);
         this._applyScreenSpaceTextureLevels(residency.states, projection);
+        for (const state of residency.states.values()) clearHighAdmissionIfNotDesired(state);
         this._enforceCoverageTextureBudget();
 
         // Camera motion can leave old lows and refinements in the queue. On a
