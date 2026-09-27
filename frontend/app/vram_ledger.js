@@ -6,6 +6,7 @@ export class VRAMLedger {
         // Geometry entries keep the historic public shape used by telemetry.
         this.entries = new Map(); // key -> { geometryBytes, q, r, lx, lz }
         this.textureEntries = new Map(); // `${key}:${tier}` -> { key, tier, bytes, ... }
+        this.textureIdsByKey = new Map(); // page key -> resident tier ids
 
         this.totalGeometryBytes = 0;
         this.totalTextureBytes = 0;
@@ -56,6 +57,8 @@ export class VRAMLedger {
             lz: source.lz,
             bounds: source.bounds || null,
         });
+        if (!this.textureIdsByKey.has(key)) this.textureIdsByKey.set(key, new Set());
+        this.textureIdsByKey.get(key).add(id);
         this.totalTextureBytes += bytes || 0;
     }
 
@@ -65,12 +68,15 @@ export class VRAMLedger {
         if (!entry) return;
         this.totalTextureBytes -= entry.bytes;
         this.textureEntries.delete(id);
+        const ids = this.textureIdsByKey.get(key);
+        ids.delete(id);
+        if (ids.size === 0) this.textureIdsByKey.delete(key);
     }
 
     updateTextureLocation(key, location) {
         if (!location) return;
-        for (const entry of this.textureEntries.values()) {
-            if (entry.key !== key) continue;
+        for (const id of this.textureIdsByKey.get(key) || []) {
+            const entry = this.textureEntries.get(id);
             entry.kind = location.kind || entry.kind;
             entry.q = location.q;
             entry.r = location.r;
@@ -84,8 +90,8 @@ export class VRAMLedger {
 
     textureBytesFor(key) {
         let total = 0;
-        for (const entry of this.textureEntries.values()) {
-            if (entry.key === key) total += entry.bytes;
+        for (const id of this.textureIdsByKey.get(key) || []) {
+            total += this.textureEntries.get(id).bytes;
         }
         return total;
     }
