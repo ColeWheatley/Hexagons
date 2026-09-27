@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,30 @@ test('compact manifest expands to the full manifest', () => {
         const compact = JSON.parse(readFileSync(out, 'utf8'));
         assert.ok(isCompactManifest(compact));
         const full = JSON.parse(readFileSync(source, 'utf8'));
+        assertClose(expandManifest(compact), full);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('Python to JS round trip retains the binary split contract', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hexagons-split-manifest-'));
+    try {
+        const full = JSON.parse(readFileSync(source, 'utf8'));
+        full.binary.split = {
+            url_template: '/releases/example/tiles_split/gosper_{yq}_{yr}_{part}.br',
+            boundary: 44864,
+            total: 280166,
+            range_max_end: 6444,
+            encoding: 'br',
+        };
+        const input = join(dir, 'full.json');
+        const output = join(dir, 'compact.json');
+        writeFileSync(input, JSON.stringify(full));
+        execFileSync('python3', [join(repo, 'scripts', 'compact_manifest.py'), input, output], { stdio: 'pipe' });
+        const compact = JSON.parse(readFileSync(output, 'utf8'));
+        assert.ok(isCompactManifest(compact));
+        assert.deepEqual(compact.binary.split, full.binary.split);
         assertClose(expandManifest(compact), full);
     } finally {
         rmSync(dir, { recursive: true, force: true });

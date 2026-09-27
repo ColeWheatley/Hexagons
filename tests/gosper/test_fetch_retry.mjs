@@ -15,6 +15,7 @@ const {
     ResourceRetryScheduler,
     ResweepScheduler,
     backoffDelayMs,
+    markPermanentError,
 } = module.namespace;
 
 const slept = [];
@@ -66,6 +67,24 @@ await assert.rejects(
     /fresh budget/,
 );
 assert.equal(secondCallAttempts, 3);
+
+let permanentAttempts = 0;
+let permanentFailures = 0;
+const permanentScheduler = new ResourceRetryScheduler({
+    sleep: async () => { throw new Error('must not back off'); },
+});
+const invalidManifest = markPermanentError(new SyntaxError('invalid manifest JSON'));
+await assert.rejects(permanentScheduler.run('manifest', async () => {
+    permanentAttempts++;
+    throw invalidManifest;
+}, { onExhausted: () => permanentFailures++ }), error => error === invalidManifest);
+assert.equal(permanentAttempts, 1);
+assert.equal(permanentFailures, 1);
+assert.equal(permanentScheduler.snapshot('manifest').exhausted, true);
+await assert.rejects(permanentScheduler.run('manifest', async () => {
+    permanentAttempts++;
+}), error => error === invalidManifest);
+assert.equal(permanentAttempts, 1);
 
 assert.equal(backoffDelayMs(1, { jitterRatio: 0.25, random: () => 0 }), 750);
 assert.equal(backoffDelayMs(1, { jitterRatio: 0.25, random: () => 1 }), 1250);
