@@ -79,6 +79,7 @@ import {
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
 import { prefixCacheNames } from './scope_cache.mjs';
+import { PREFIX_CACHE_CAP_BYTES, enforcePrefixCacheBudget } from './prefix_cache_budget.mjs';
 import { nextRetry, retryDelayMs, retryReady } from './retry_backoff.mjs';
 import {
     GSP3_PREFIX_END, requiredTileDepth, sampleTileHeightAtUnitIndex,
@@ -204,6 +205,8 @@ const LOADER_MIN_VISIBLE_MS = 400;
 // Longest a texture job waits for the shared Basis module before its worker
 // loads its own copy instead.
 const BASIS_SHARE_WAIT_MS = 10000;
+// Trim the persistent prefix caches well after first paint, off the critical path.
+const PREFIX_CACHE_TRIM_DELAY_MS = 20000;
 // Concurrent geometry loads/rebuilds per geometry worker (network-bound).
 const GEOMETRY_PIPELINE_DEPTH = 3;
 // Linear-space colours for geometry whose texture page is not bound yet.
@@ -971,6 +974,18 @@ class PistonViewer {
             return module;
         })();
         return this._basisModuleShared;
+    }
+
+    /** Keep the persisted Range prefixes (every page/tile ever viewed) under a
+     * per-device disk cap; the oldest-written entries go first. */
+    _trimPrefixCaches() {
+        const capBytes = PREFIX_CACHE_CAP_BYTES[this.capabilityProfile.name] ?? PREFIX_CACHE_CAP_BYTES.mid;
+        enforcePrefixCacheBudget({
+            cacheNames: [this.textureByteStore?.cacheName, this.tileByteStore?.cacheName].filter(Boolean),
+            capBytes,
+        }).then(result => {
+            if (result?.deleted) console.info('[HEXAGONS] trimmed prefix caches', result);
+        }).catch(error => console.warn('[HEXAGONS] prefix cache trim failed', error));
     }
 
     /** Wait for the shared module, but never longer than
@@ -2187,6 +2202,7 @@ class PistonViewer {
             // once and hand it to the texture workers so the first KTX2 job
             // does not wait on it.
             this._shareBasisModule();
+            setTimeout(() => this._trimPrefixCaches(), PREFIX_CACHE_TRIM_DELAY_MS);
             this.buildHorizon();
         } catch (e) {
             if (scope.signal.aborted || !this.appLifecycle.isCurrent(scope)) return;
