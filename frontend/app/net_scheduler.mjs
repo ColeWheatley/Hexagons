@@ -16,6 +16,7 @@ export const NET_PRIORITY = Object.freeze({
 });
 
 const TINY_REQUEST_BYTES = 64 * 1024;
+const isTinyUrgent = item => item.expectedBytes <= TINY_REQUEST_BYTES && item.priority >= NET_PRIORITY.VISIBLE;
 
 export class NetAbortError extends Error {
     constructor(message = 'Request cancelled') {
@@ -204,15 +205,37 @@ export class NetScheduler {
         return best;
     }
 
+    _nextTinyUrgent() {
+        let best = -1;
+        for (let i = 0; i < this.queue.length; i++) {
+            const item = this.queue[i];
+            if (!isTinyUrgent(item)) continue;
+            const current = best < 0 ? null : this.queue[best];
+            if (!current || item.priority > current.priority
+                || (item.priority === current.priority && item.sequence < current.sequence)) best = i;
+        }
+        return best;
+    }
+
     _pump() {
         while (this.queue.length) {
-            const index = this._next();
-            const item = this.queue[index];
+            let index = this._next();
+            let item = this.queue[index];
             // Tiny urgent requests (coverage imagery, coarse terrain) add
             // almost no queueing, so they never wait behind the byte budget
             // and may use a few extra concurrency slots.
-            const tinyUrgent = item.expectedBytes <= TINY_REQUEST_BYTES && item.priority >= NET_PRIORITY.VISIBLE;
-            if (this.inFlight.size >= this.maxConcurrent + (tinyUrgent ? this.tinyExtraConcurrent : 0)) return;
+            let tinyUrgent = isTinyUrgent(item);
+            const headBlocked = this.inFlight.size >= this.maxConcurrent + (tinyUrgent ? this.tinyExtraConcurrent : 0)
+                || (!tinyUrgent && this.inFlight.size > 0 && this.inFlightBytes + item.expectedBytes > this.budgetBytes);
+            if (headBlocked) {
+                // A large head waits for a regular slot or budget; tiny urgent
+                // requests queued behind it may still take an extra slot.
+                if (tinyUrgent || this.inFlight.size >= this.maxConcurrent + this.tinyExtraConcurrent) return;
+                index = this._nextTinyUrgent();
+                if (index < 0) return;
+                item = this.queue[index];
+                tinyUrgent = true;
+            }
             if (item.priority <= NET_PRIORITY.PREFETCH) {
                 // Prefetch only uses an otherwise idle link.
                 let prefetching = 0;

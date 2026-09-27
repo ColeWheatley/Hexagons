@@ -3810,6 +3810,7 @@ class PistonViewer {
                     return;
                 }
                 this.textureResultQueue.push({ task, result });
+                this._idleResweepRound = 0; // the network works again: next idle retry starts at 15 s
                 this.resourceLifecycles.ready('texture', `${task.key}/${task.tier}`, {
                     cause: 'decoded', tier: task.tier,
                 });

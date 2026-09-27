@@ -230,3 +230,25 @@ test('tiny urgent requests may use extra concurrency slots; large or background 
     await Promise.all(all);
     assert.equal(scheduler.stats.completed, 9);
 });
+
+test('tiny urgent requests use extra slots even when a large request heads the queue', async () => {
+    const held = [];
+    const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(abortError()), { once: true });
+        held.push({ url, release: () => resolve(new Response(new Uint8Array(10), { status: 200 })) });
+    });
+    const scheduler = new NetScheduler({ fetchImpl, maxConcurrent: 1, tinyExtraConcurrent: 2, stallTimeoutMs: 0 });
+    const all = [
+        scheduler.request({ url: 'big1', priority: NET_PRIORITY.VISIBLE, expectedBytes: 1 << 20 }).promise,
+        scheduler.request({ url: 'big2', priority: NET_PRIORITY.CRITICAL, expectedBytes: 1 << 20 }).promise,
+        scheduler.request({ url: 'tiny', priority: NET_PRIORITY.VISIBLE, expectedBytes: 4096 }).promise,
+    ];
+    await sleep(1);
+    assert.deepEqual(held.map(h => h.url).sort(), ['big1', 'tiny'], 'tiny overtakes the blocked large head via an extra slot');
+    while (held.length) {
+        held.shift().release();
+        await sleep(2);
+    }
+    await Promise.all(all);
+    assert.equal(scheduler.stats.completed, 3);
+});
