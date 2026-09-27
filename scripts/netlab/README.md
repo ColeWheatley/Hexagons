@@ -74,3 +74,11 @@ The driver samples a 720×450 JPEG every 500 ms. `vc_frames.py` computes mean SS
 ## Limits
 
 The server uses HTTP/2 rather than production HTTP/3 and does not model Cloudflare edge caches, uploads, packet loss, DNS, or radio contention. Offline replay is deterministic for the seeded URL set but dynamic page behavior can still vary. Fresh Chrome profiles remove cross-run Cache Storage; the `warm` scenario keeps it only between its seed and measured navigation. The 8-second quiet rule observes server requests, not hidden client work. Browser screenshots include UI overlays and animation, so VC has visual noise. The server stores full upstream compressed bytes without decoding them. HTTP cache and service-worker hits never cross the server and therefore do not count as network bytes.
+
+## Gotchas (learned 2026-09-27)
+
+- The server appends to its log across restarts and restarts its clock at 0. Network totals are attributed to the server session that holds the run's markers (since `f54158b`); before that, reusing a log tag mixed sessions (a 9.1 MB run read as 60 MB).
+- The mirror answers immediately. It does not model the 200–400 ms Cloudflare→S3 origin wait that every real Range request pays, so changes that save request round trips gain more on the real site than here.
+- VC scores each build against its own settled frame. A build that never finishes sharpening inside the window reaches "95%" of a blurrier picture, so compare the reference frames (for example edge energy) before comparing VC times across builds.
+- Stage candidates with `?prefetch=0` in the URL: idle pre-download otherwise keeps the network busy and the quiet-settle rule hits its 90 s cap.
+- Real-network tools: `tools/realvc.py URL OUTDIR` (fresh profile, screenshot VC against the live CDN), `tools/probe.py URL SECONDS` (viewer/scheduler state samples), `tools/ab_table.py BASE CAND --tag=T` (A/B markdown table). They create Chrome profiles under `$HEXAGONS_PROFILE_DIR`.
