@@ -359,7 +359,12 @@ async function main() {
     );
 
     const { mainPath, workerPath } = await buildJavaScript({ basisJsPath, basisWasmPath });
-    const serviceWorkerPath = await buildServiceWorker(appVersion);
+    // The worker's build id names its shell cache. APP_VERSION alone does not
+    // change between deploys, which kept unhashed shell files (search index)
+    // stale and old shell caches alive; include the bundles' content hashes.
+    const bundleHashes = [mainPath, workerPath, cssPath]
+        .map(file => /\.([0-9a-f]{12})\./.exec(file)?.[1] || '').join('').slice(0, 12);
+    const serviceWorkerPath = await buildServiceWorker(`${appVersion}+${bundleHashes}`);
     await rewriteHtml({ appVersion, basisWasmPath, cssPath, mainPath, serviceWorkerPath });
 
     const shellAndBundles = ['index.html', cssPath, mainPath, workerPath, basisJsPath, serviceWorkerPath];
