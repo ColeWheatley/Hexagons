@@ -615,6 +615,8 @@ class PistonViewer {
         // ?prefetch=0 disables idle pre-download (benchmarks that must reach
         // a quiet network, or users who want strictly on-demand traffic).
         this.prefetchEnabled = new URLSearchParams(window.location.search).get('prefetch') !== '0';
+        // ?coarse=0 disables coarse-first terrain (A/B and diagnostics).
+        this.coarseFirstEnabled = new URLSearchParams(window.location.search).get('coarse') !== '0';
         this.texturePrefetchStats = { pages: 0 };
         this.tilePrefetchStats = { tiles: 0 };
         this.textureByteStore = new TextureByteStore({
@@ -4643,7 +4645,8 @@ class PistonViewer {
                     // puts real terrain across the whole view almost at once;
                     // the resident-refinement path then appends the rest
                     // (no byte is fetched twice). Fast links skip the step.
-                    const depth = this.netScheduler.throughputBps < TILE_COARSE_FIRST_BELOW_BPS
+                    const depth = this.coarseFirstEnabled
+                        && this.netScheduler.throughputBps < TILE_COARSE_FIRST_BELOW_BPS
                         ? Math.min(requiredDepth, TILE_COARSE_FIRST_DEPTH)
                         : requiredDepth;
                     let result;
