@@ -9,6 +9,7 @@ def metrics(r):
     result = {
         'Network body bytes': r['network']['totalBytes'],
         'Requests': r['network']['requestCount'],
+        'Measured-phase bytes': r['network'].get('measuredPhaseBytes'),
         'Re-download bytes': r['network']['redownloadBytes'],
         'Manifest last byte ms': r['network']['manifestLastByteMs'],
         'First tile last byte ms': r['network']['firstTileLastByteMs'],

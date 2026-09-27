@@ -121,42 +121,46 @@ def category(path):
 
 
 def network_summary(logfile, run_id):
-    start=end=None; rows=[]; phase_marks={}
-    for line in Path(logfile).read_text().splitlines():
-        try: x=json.loads(line)
-        except ValueError: continue
-        mark=x.get('mark')
-        if mark == f'{run_id}:run-start': start=x['t']; continue
-        if mark == f'{run_id}:run-end': end=x['t']; break
-        if start is None: continue
-        if mark and mark.startswith(run_id+':'): phase_marks[mark.split(':',1)[1]]=x['t']
-        if 'path' in x and not x['path'].startswith('/__netlab/'):
-            rows.append(x)
+    records=[json.loads(line) for line in Path(logfile).read_text().splitlines() if line.strip()]
+    marks={x['mark'].split(':',1)[1]:x['t'] for x in records
+           if x.get('mark','').startswith(run_id+':')}
+    start=marks.get('run-start'); end=marks.get('run-end')
     if start is None or end is None: raise RuntimeError('run markers absent from server log')
+    rows=sorted((x for x in records if 'path' in x and not x['path'].startswith('/__netlab/')
+                 and start<=x['t0']<=end),key=lambda x:x['t0'])
     windows=[]
-    for name,t in phase_marks.items():
+    for name,t in marks.items():
         if name.endswith(':start'):
             phase=name[:-6]
-            if phase+':end' in phase_marks: windows.append((t,phase_marks[phase+':end']))
+            if phase+':end' in marks: windows.append((t,marks[phase+':end']))
     first_phase_start=min((a for a,_ in windows),default=end)
-    rows=[x for x in rows if start<=x['t0']<first_phase_start or any(a<=x['t0']<=b for a,b in windows)]
-    totals={}; ranges=[]; seen=set(); redownload=0; manifest_last=None; first_tile=None
+    measured=[x for x in rows if start<=x['t0']<first_phase_start or
+              any(a<=x['t0']<=b for a,b in windows)]
+    totals={}; ranges=[]; completed={}; redownload=0; manifest_last=None; first_tile=None
+    by_profile={}
     for x in rows:
         if x['status'] not in (200,206): continue
         cat=category(x['path']); bucket=totals.setdefault(cat,{'requests':0,'bytes':0})
         bucket['requests']+=1; bucket['bytes']+=x['bytes']
+        by_profile[x['profile']]=by_profile.get(x['profile'],0)+x['bytes']
         pair=(x['path'],x.get('query'),x.get('range'))
-        if pair in seen: redownload+=x['bytes']
-        if x.get('complete'): seen.add(pair)
+        if completed.get(pair,float('inf'))<=x['t0']: redownload+=x['bytes']
+        if x.get('complete'):
+            completed[pair]=min(completed.get(pair,float('inf')),x['t0']+x['durMs'])
         if x.get('range') and cat.startswith(('tiles_bin','aerial_pages')):
             ranges.append({'path':x['path'],'range':x['range'],'bytes':x['bytes']})
         finish=x['t0']+x['durMs']-start
         if cat=='manifest': manifest_last=max(manifest_last or 0,finish)
         if cat=='tiles_bin': first_tile=min(first_tile or finish,finish)
-    return {'totalBytes':sum(x['bytes'] for x in rows if x['status'] in (200,206)),
-      'requestCount':sum(x['status'] in (200,206) for x in rows), 'categories':totals,
+    successful=lambda items: [x for x in items if x['status'] in (200,206)]
+    return {'totalBytes':sum(x['bytes'] for x in successful(rows)),
+      'requestCount':len(successful(rows)),
+      'measuredPhaseBytes':sum(x['bytes'] for x in successful(measured)),
+      'measuredPhaseRequests':len(successful(measured)),
+      'byProfileBytes':by_profile,'categories':totals,
       'redownloadBytes':redownload,'ranges':ranges,'manifestLastByteMs':manifest_last,
-      'firstTileLastByteMs':first_tile,'phaseMarksMs':{k:round(v-start,1) for k,v in phase_marks.items()},
+      'firstTileLastByteMs':first_tile,'phaseMarksMs':{k:round(v-start,1) for k,v in marks.items()
+        if k not in ('run-start','run-end')},
       'serverWindowMs':round(end-start,1),'errors':[x for x in rows if x['status']>=400]}
 
 
@@ -259,7 +263,7 @@ def summarize(result):
       '| Phase | SpeedIndex ms | VC50 ms | VC85 ms | VC95 ms |', '|---|---:|---:|---:|---:|']
     for phase,v in result['visual'].items():
         lines.append(f'| {phase} | {v["speedIndexMs"]} | {v["tVC50Ms"]} | {v["tVC85Ms"]} | {v["tVC95Ms"]} |')
-    n=result['network']; lines += ['',f'Network: {n["totalBytes"]:,} bytes in {n["requestCount"]} requests; repeat bytes {n["redownloadBytes"]:,}.',
+    n=result['network']; lines += ['',f'Network: {n["totalBytes"]:,} bytes in {n["requestCount"]} requests (measured phases {n["measuredPhaseBytes"]:,} bytes); repeat bytes {n["redownloadBytes"]:,}.',
       f'Manifest last byte: {n["manifestLastByteMs"]} ms; first tile last byte: {n["firstTileLastByteMs"]} ms.',
       f'Loader hidden: {result["milestones"]["loaderHiddenMs"]} ms.',
       f'JS heap: {result["memory"]["jsHeapUsedBytes"]} bytes; Chrome tree RSS: {result["memory"]["chromeTreeRssKiB"]} KiB.',
