@@ -321,7 +321,15 @@ def main():
             try: proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill(); proc.wait()
-        shutil.rmtree(profile,ignore_errors=True)
+        for attempt in range(5):
+            try:
+                shutil.rmtree(profile)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt == 4: raise
+                time.sleep(.5)
         if not a.frames: shutil.rmtree(frames_dir,ignore_errors=True)
 
 if __name__=='__main__': main()
