@@ -76,6 +76,7 @@ import {
 } from './texture_page_residency.js';
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
+import { retryDelayMs } from './retry_backoff.mjs';
 import {
     GSP3_PREFIX_END, requiredTileDepth, sampleTileHeightAtUnitIndex,
     tileDepthNeedsRefinement,
@@ -2944,6 +2945,7 @@ class PistonViewer {
     _textureprefetchPlan(radius) {
         const stages = [[], [], []];
         for (const state of this.textureStates.values()) {
+            if ((this._texturePrefetchFailures?.get(state.key)?.retryAt || 0) > Date.now()) continue;
             const done = this._texturePrefetchDone.get(state.key);
             if (state.classification === 'outside') {
                 if (state.assets.size > 0 || !(state.distanceMeters <= radius)) continue;
@@ -2988,6 +2990,7 @@ class PistonViewer {
             return;
         }
         this._texturePrefetchDone ??= new Map(); // page key -> finest level prefetched
+        this._texturePrefetchFailures ??= new Map();
         const radius = Math.max(TEXTURE_PREFETCH.minRadiusM,
             TEXTURE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y));
         const plan = this._textureprefetchPlan(radius);
@@ -3002,19 +3005,29 @@ class PistonViewer {
             const previous = this._texturePrefetchDone.get(state.key);
             this._texturePrefetchDone.set(state.key, level);
             this._texturePrefetchInFlight = (this._texturePrefetchInFlight || 0) + 1;
+            let failed = false;
             this.textureByteStore.ensureLevel(url, level, { priority: NET_PRIORITY.PREFETCH })
                 .then(result => {
+                    this._texturePrefetchFailures.delete(state.key);
                     this.texturePrefetchStats.pages++;
                     this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
                 })
                 .catch(() => {
+                    failed = true;
                     if (previous === undefined) this._texturePrefetchDone.delete(state.key);
                     else this._texturePrefetchDone.set(state.key, previous);
+                    const failures = (this._texturePrefetchFailures.get(state.key)?.failures || 0) + 1;
+                    const delay = retryDelayMs(failures, 2000, 300000);
+                    this._texturePrefetchFailures.set(state.key, { failures, retryAt: Date.now() + delay });
+                    this._schedulePrefetch(delay);
                 })
                 .finally(() => {
                     this._texturePrefetchInFlight--;
-                    this._prefetchTexturePrefixes();
+                    if (!failed) this._prefetchTexturePrefixes();
                 });
+        }
+        for (const { retryAt } of this._texturePrefetchFailures.values()) {
+            if (retryAt > Date.now()) this._schedulePrefetch(retryAt - Date.now());
         }
     }
 
@@ -3062,6 +3075,7 @@ class PistonViewer {
         const radius = Math.min(TILE_PREFETCH.maxRadiusM, Math.max(TILE_PREFETCH.minRadiusM,
             TILE_PREFETCH.altitudeRadiusScale * Math.abs(this.camera.position.y)));
         this._tilePrefetchDone ??= new Map();
+        this._tilePrefetchFailures ??= new Map();
         const candidates = [];
         for (const [key, visibility] of this.visibilityByKey) {
             if (visibility?.classification !== 'outside' || this.tiles.has(key)) continue;
@@ -3069,24 +3083,37 @@ class PistonViewer {
             if (!(distance <= radius)) continue;
             const depth = distance <= TILE_PREFETCH.detailRadiusM ? 3 : 2;
             if ((this._tilePrefetchDone.get(key) || 0) >= depth) continue;
+            if ((this._tilePrefetchFailures.get(key)?.retryAt || 0) > Date.now()) continue;
             const manifestTile = this.manifestGrid.get(key);
             if (!manifestTile || Number(manifestTile.gspVersion ?? this.binaryContract?.default_version) !== 3) continue;
             candidates.push({ key, distance, depth, manifestTile });
+        }
+        for (const { retryAt } of this._tilePrefetchFailures.values()) {
+            if (retryAt > Date.now()) this._schedulePrefetch(retryAt - Date.now());
         }
         if (candidates.length === 0) return;
         candidates.sort((a, b) => a.distance - b.distance);
         for (const { key, depth, manifestTile } of candidates.slice(0, TILE_PREFETCH.maxInFlight - inFlight)) {
             this._tilePrefetchDone.set(key, depth);
             this._tilePrefetchInFlight = (this._tilePrefetchInFlight || 0) + 1;
+            let failed = false;
             this._ensureTileBytes(manifestTile, this._tileBinUrl(manifestTile, 3), GSP3_PREFIX_END[depth],
                 NET_PRIORITY.PREFETCH).then(result => {
+                this._tilePrefetchFailures.delete(key);
                 this.tilePrefetchStats.tiles++;
                 this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result?.networkBytes || 0);
             })
-                .catch(() => { this._tilePrefetchDone.delete(key); })
+                .catch(() => {
+                    failed = true;
+                    this._tilePrefetchDone.delete(key);
+                    const failures = (this._tilePrefetchFailures.get(key)?.failures || 0) + 1;
+                    const delay = retryDelayMs(failures, 2000, 300000);
+                    this._tilePrefetchFailures.set(key, { failures, retryAt: Date.now() + delay });
+                    this._schedulePrefetch(delay);
+                })
                 .finally(() => {
                     this._tilePrefetchInFlight--;
-                    this._prefetchTilePrefixes();
+                    if (!failed) this._prefetchTilePrefixes();
                 });
         }
     }
