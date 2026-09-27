@@ -14,16 +14,29 @@ split, not an occasional trick.
 > (the `--add-dir` for `.git`, the process-introspection ban) do not apply
 > there. Verify rather than assume when working on Rechner.
 
-### The binary is not on PATH
+### The binary (updated 2026-09-27)
 
 ```
-/Applications/Codex.app/Contents/Resources/codex
+/Applications/ChatGPT.app/Contents/Resources/codex
 ```
 
-Auth is already configured (`codex login status` → "Logged in using ChatGPT").
-Default config (`~/.codex/config.toml`) is `model = "gpt-5.5"`,
-`model_reasoning_effort = "xhigh"` — fine to rely on those defaults, or pass
-`-m`/`-c model_reasoning_effort=...` explicitly for clarity in scripts.
+`~/.local/bin/codex` is a symlink to it, but **launch the real path**: through
+the symlink Codex resolves its helper `codex-code-mode-host` next to the
+symlink, fails to spawn it, and code mode breaks (`failed to spawn code-mode
+host .../.local/bin/codex-code-mode-host`). Models in use: `gpt-6-sol`
+(`-c model_reasoning_effort="xhigh"`) for real work; see the subagents skill
+repo (`~/dev/subagents/SKILL.md`) for the current model policy.
+
+**Secrets:** `~/.zshenv` loads the owner's credentials (AWS, GitHub, HF, Vast,
+…) into *every* zsh — including the `zsh -lc` shells Codex runs commands in —
+so `env -i` alone does not isolate an agent. Launch with a scrubbed
+environment *and* an empty zsh dotdir, e.g.
+`env -i HOME="$HOME" ZDOTDIR=<dir with a PATH-only .zshenv> PATH=... codex exec ...`,
+and verify with `zsh -lc 'env | grep -c -E "^AWS_|TOKEN=|_KEY="'` → `0`.
+With `--dangerously-bypass-approvals-and-sandbox` (full access, no macOS
+sandbox: `.git` writes and `ps` work) this scrubbing is the only thing
+keeping an agent away from S3/GitHub credentials — tell it never to push.
+A working launcher lives at `~/dev/Hexagons-codex/launch_codex.sh`.
 
 ### Isolation: use a standalone clone, not a worktree — AND pass `--add-dir` for `.git` regardless
 
