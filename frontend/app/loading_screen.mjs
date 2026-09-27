@@ -378,7 +378,7 @@ export class LoadingScreen {
         this._stopTimer();
         if (!this.root) return;
         this.root.classList.add('hide');
-        setTimeout(() => { this.root.style.display = 'none'; }, 600);
+        setTimeout(() => { this.root.style.display = 'none'; }, 400);
     }
 
     // Full reset for a user retry: fresh hero clock, fresh counters.

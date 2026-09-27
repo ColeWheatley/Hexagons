@@ -195,6 +195,7 @@ const TEXTURE_CONFIG = Object.freeze({
     // stealth VRAM residency pool.
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
+const LOADER_MIN_VISIBLE_MS = 400;
 // Concurrent geometry loads/rebuilds per geometry worker (network-bound).
 const GEOMETRY_PIPELINE_DEPTH = 3;
 // Linear-space colours for geometry whose texture page is not bound yet.
@@ -5109,10 +5110,12 @@ class PistonViewer {
     hideLoader() {
         if (this.loaderHidden) return;
 
-        // Force a minimum "hero" moment for the loader so it doesn't just flash
+        // A brief minimum "hero" moment so the loader doesn't just flash.
+        // (Was 900 ms: with streamed data a repeat visit is ready well
+        // before that, and every extra loader millisecond reads as slowness.)
         const elapsed = performance.now() - this.appStartTime;
-        if (elapsed < 900) {
-            setTimeout(() => this.hideLoader(), 900 - elapsed);
+        if (elapsed < LOADER_MIN_VISIBLE_MS) {
+            setTimeout(() => this.hideLoader(), LOADER_MIN_VISIBLE_MS - elapsed);
             return;
         }
 
