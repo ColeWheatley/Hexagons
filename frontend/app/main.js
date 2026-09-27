@@ -531,6 +531,7 @@ class PistonViewer {
             firstTextureHeapBytes: null,
         };
         this._textureMilestonesDone = false;
+        this._textureMilestoneFlags = { firstTexture: false, visibleTexturedCoverage: false };
         this._updateTextureMilestones(); // seed texture bootstrap/milestone tracking immediately
         this.devTools?.onTextureActivity();
 
@@ -1351,6 +1352,7 @@ class PistonViewer {
         this.bootstrapPhaseActive = true;
         this.bootstrapDiagnostics = { firstConsumer: null, matchingInstalls: [] };
         this._textureMilestonesDone = false;
+        this._textureMilestoneFlags = { firstTexture: false, visibleTexturedCoverage: false };
         this.loadingScreen.reset();
         this.needsLODUpdate = true;
         this.needsRender = true;
@@ -1811,10 +1813,13 @@ class PistonViewer {
             this.resourceLifecycles.begin('manifest', 'tile_manifest.json', { cause: 'fetch-attempt' });
             // This small file is the cache-identity authority for every large
             // asset, so rebakes must revalidate it even when app code did not
-            // change. Binaries and textures remain explicitly recipe-keyed.
+            // change. Freshness comes from its `no-store` response headers and
+            // the service worker's network-only route; the request itself uses
+            // the default cache mode so it can consume the <link rel=preload>
+            // issued by index.html (a no-store request never matches it).
             const res = await fetch(
                 appendCacheKey('tile_manifest.json', APP_VERSION),
-                { cache: 'no-store', signal: scope.signal },
+                { signal: scope.signal },
             );
             if (!res.ok) throw new Error(`Manifest HTTP ${res.status}`);
             let text = await res.text();
@@ -2719,9 +2724,13 @@ class PistonViewer {
         const slider = Number.isFinite(this.highTextureDistanceM)
             ? this.highTextureDistanceM
             : TEXTURE_CONFIG.highEnterDistanceM;
-        const detailBias = Math.max(0.25, Math.min(2, slider / TEXTURE_CONFIG.highEnterDistanceM));
+        // Capability profiles keep their historical appetite: low never
+        // streams the high tier (as before), mid is slightly less eager.
+        const profileBias = Math.max(0.5, Math.min(1, (this.capabilityProfile.highTextureDistanceM
+            || TEXTURE_CONFIG.highEnterDistanceM) / TEXTURE_CONFIG.highEnterDistanceM));
+        const detailBias = Math.max(0.25, Math.min(2, slider / TEXTURE_CONFIG.highEnterDistanceM)) * profileBias;
         const finest = this.capabilityProfile.name === 'low'
-            ? HIGH_TEXTURE_LEVEL.FIRST_STEP
+            ? MEDIUM_TEXTURE_LEVEL
             : HIGH_TEXTURE_LEVEL.FINEST;
         const camera = this.camera.position;
         for (const state of states.values()) {
@@ -3201,11 +3210,18 @@ class PistonViewer {
         });
 
         if (task.tier === TEXTURE_TIER.HIGH) {
+            const upgradedAt = performance.now();
             this.recentlyUpgradedTextures.push({
                 q: task.textureResource.pageX,
                 r: task.textureResource.pageY,
-                time: performance.now(),
+                time: upgradedAt,
             });
+            // Only the last ~100 ms matter to the engine-state and hitch
+            // correlation readers; keep the list bounded for long sessions.
+            if (this.recentlyUpgradedTextures.length > 32) {
+                this.recentlyUpgradedTextures = this.recentlyUpgradedTextures
+                    .filter(u => upgradedAt - u.time < 1000).slice(-32);
+            }
             // Progressive refinement: queue the next finer step right away
             // instead of waiting for the next camera-driven demand pass.
             if (highRefinementPending(state) && textureStateHasDemand(state)) {
@@ -4172,22 +4188,30 @@ class PistonViewer {
         const hasDisplayedPage = Object.values(displayed).some(pages => pages.size > 0);
         if (hasDisplayedPage) this._finishTextureBootstrapPhase();
         if (!this._textureMilestonesDone && hasDisplayedPage) {
-            this.profiler?.milestone('firstTexture');
+            if (!this._textureMilestoneFlags.firstTexture) {
+                this._textureMilestoneFlags.firstTexture = true;
+                this.profiler?.milestone('firstTexture');
+            }
             // Do not wait for guard/background geometry to drain: that is not
             // part of the visible-coverage claim and can stream indefinitely.
             // Instead require every currently visible island to be resident
             // plus every rendered visible material to have a real page bound.
-            const visibleGeometryPending = Array.from(this.visibilityByKey.entries()).some(
-                ([key, visibility]) => visibility?.classification === 'visible' && !this.tiles.has(key),
-            );
+            let visibleGeometryPending = false;
+            for (const [key, visibility] of this.visibilityByKey) {
+                if (visibility?.classification === 'visible' && !this.tiles.has(key)) {
+                    visibleGeometryPending = true;
+                    break;
+                }
+            }
             if (!visibleGeometryPending && countUnpaintedVisibleTiles(this.tiles, this.visibilityByKey) === 0) {
+                this._textureMilestoneFlags.visibleTexturedCoverage = true;
                 this.profiler?.milestone('visibleTexturedCoverage');
             }
-            const milestones = this.profiler?.milestones || {};
-            this._textureMilestonesDone = (
-                milestones.firstTexture !== undefined &&
-                milestones.visibleTexturedCoverage !== undefined
-            );
+            // Tracked locally: production builds have no profiler, and gating
+            // on profiler milestones kept this O(islands) walk running on
+            // every rendered frame for the whole session.
+            this._textureMilestonesDone = this._textureMilestoneFlags.firstTexture
+                && this._textureMilestoneFlags.visibleTexturedCoverage;
         }
     }
 

@@ -54,10 +54,14 @@ export function resolveCapabilityProfile({
     const memory = finiteOrNull(deviceMemory);
     const cores = finiteOrNull(hardwareConcurrency);
     const losses = Math.max(0, Number(contextLosses) || 0);
+    // '3g' is deliberately NOT constrained: Chrome derives effectiveType from
+    // observed RTT, and ordinary bufferbloated wifi (18 Mbit/s, 400-600 ms
+    // under load) reports '3g' — which used to drop such visits to the low
+    // profile (2 workers, 1 texture job, no high imagery). Slow links are now
+    // handled by the NetScheduler + progressive texture levels instead.
     const constrainedNetwork = saveData === true
         || effectiveType === 'slow-2g'
-        || effectiveType === '2g'
-        || effectiveType === '3g';
+        || effectiveType === '2g';
 
     if (constrainedNetwork || losses >= 2
         || (memory !== null && memory < 4)

@@ -194,15 +194,16 @@ function stressScenario(t, ctx) {
 }
 
 /** Objective AA-11 gate: approach the starting focus point from a nearly
- * top-down, flat-map view. At 700 m the 1,024 m texture-page footprint is
- * genuinely larger than the production 512 px high-tier threshold. This
- * exercises real high-quality demand without changing the threshold itself. */
+ * top-down, flat-map view. Texture resolution follows the screen-space rule
+ * (>= 1 texel per device pixel at the page's nearest point), so the camera
+ * descends to 250 m, where the page below needs its full 4096 px level at any
+ * DPR/FOV this viewer uses — exercising real full-resolution demand. */
 function capabilityScenario(t, ctx) {
     const p = easeInOut(t / Math.min(5, ctx.totalDuration / 2));
     return {
         camPos: sphericalPosition(
             ctx.pivot,
-            lerp(ctx.initialRadius, 700, p),
+            lerp(ctx.initialRadius, 250, p),
             ctx.initialTheta,
             lerp(ctx.initialPhi, 0.04, p),
         ),
