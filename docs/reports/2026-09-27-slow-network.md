@@ -161,6 +161,16 @@ a little Retina sharpness for speed, scaling `detailBias` by `1 / devicePixelRat
   mips they need; the stage script uploads hashed shell assets as q11 brotli
   (main.js 268 → 220 KB, transcoder wasm 408 → 326 KB on the wire).
 
+### Follow-ups (independent review of the late commits, 20:40 — both low severity)
+
+1. `main.js` `_idleResweep`: `_idleResweepRound` only resets on the `online` event, so
+   after a burst of server errors later failures wait the 120 s cap instead of 15 s.
+   Reset it on a successful texture install or on the settle-transition resweep.
+2. `net_scheduler.mjs` `_pump`: when the most urgent queued item is a large request
+   blocked on concurrency, tiny urgent items behind it cannot use the extra slots.
+   When the head item is blocked, also try the best tiny urgent item. No deadlock;
+   the speedup just doesn't apply in that case.
+
 ## How to promote `/hexagons/next` to `/hexagons/app`
 
 Nothing about the live release changes: the new shell reads the same immutable
