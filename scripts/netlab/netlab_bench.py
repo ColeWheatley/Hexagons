@@ -122,6 +122,17 @@ def category(path):
 
 def network_summary(logfile, run_id):
     records=[json.loads(line) for line in Path(logfile).read_text().splitlines() if line.strip()]
+    # The server appends to its log and a restarted server's clock starts at
+    # 0 again, so time windows alone mix sessions. Keep only the session
+    # holding this run's marks (a new session = clock jumps back > 60 s).
+    sessions=[[]]; latest=None
+    for x in records:
+        t=x.get('t0',x.get('t'))
+        if t is not None:
+            if latest is not None and t<latest-60000: sessions.append([]); latest=None
+            latest=t if latest is None else max(latest,t)
+        sessions[-1].append(x)
+    records=next((s for s in sessions if any(x.get('mark','').startswith(run_id+':') for x in s)),records)
     marks={x['mark'].split(':',1)[1]:x['t'] for x in records
            if x.get('mark','').startswith(run_id+':')}
     start=marks.get('run-start'); end=marks.get('run-end')
