@@ -168,7 +168,9 @@ async def run(args, proc, ws_url, frames_dir):
     origin=urllib.parse.urlsplit(args.url)
     control=f'{origin.scheme}://{origin.netloc}'
     run_id=uuid.uuid4().hex
-    async with websockets.connect(ws_url,max_size=64*1024*1024) as ws:
+    # No keepalive pings: the bench makes blocking control calls to the local
+    # server, and a starved ping loop killed healthy runs (1011 ping timeout).
+    async with websockets.connect(ws_url,max_size=64*1024*1024,ping_interval=None) as ws:
         cdp=CDP(ws)
         for method in ('Runtime.enable','Page.enable','Performance.enable','Network.enable'): await cdp.call(method)
         await cdp.call('Emulation.setDeviceMetricsOverride',{'width':1440,'height':900,'deviceScaleFactor':args.dpr,'mobile':False})
