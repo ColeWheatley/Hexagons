@@ -195,6 +195,8 @@ const TEXTURE_CONFIG = Object.freeze({
     // stealth VRAM residency pool.
     bootstrapBudgetBytes: BOOTSTRAP_MAX_RESIDENT_BYTES,
 });
+// Concurrent geometry loads/rebuilds per geometry worker (network-bound).
+const GEOMETRY_PIPELINE_DEPTH = 3;
 // Linear-space colours for geometry whose texture page is not bound yet.
 const MISSING_PAGE_COLOR_DEV = Object.freeze([1.0, 0.0, 1.0]);
 const MISSING_PAGE_COLOR_CONSUMER = Object.freeze([0.19, 0.19, 0.165]); // ~#78786f
@@ -4458,7 +4460,10 @@ class PistonViewer {
     }
 
     processQueues() {
-        const maxConcurrent = this.workerLanes.geometry.length;
+        // GSP3 loads and refinements now spend most of their life waiting on
+        // the network (main-thread NetScheduler), not on a worker, so keep a
+        // few per worker in flight; their parse jobs simply queue.
+        const maxConcurrent = this.workerLanes.geometry.length * GEOMETRY_PIPELINE_DEPTH;
         // New-root loads and resident range rebuilds share one priority lane.
         // A visible missing tile must outrank a guard-only refinement, while a
         // centered visible refinement can still beat speculative guard loads.

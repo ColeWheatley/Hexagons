@@ -37,9 +37,9 @@ export class NetScheduler {
     constructor({
         fetchImpl = (...args) => globalThis.fetch(...args),
         now = () => globalThis.performance?.now?.() ?? Date.now(),
-        minBudgetBytes = 192 * 1024,
-        maxBudgetBytes = 6 * 1024 * 1024,
-        targetQueueSeconds = 0.35,
+        minBudgetBytes = 1024 * 1024,
+        maxBudgetBytes = 8 * 1024 * 1024,
+        targetQueueSeconds = 0.5,
         maxConcurrent = 6,
         initialThroughputBps = 1.5e6,
         prefetchMaxConcurrent = 1,
@@ -64,7 +64,12 @@ export class NetScheduler {
     }
 
     get budgetBytes() {
-        const budget = this.throughputBps * this.targetQueueSeconds;
+        // Keep the pipe full across request latency (which balloons under
+        // bufferbloat) plus a bounded queue. Measured on real wifi: a
+        // throughput-only budget left the link idle between requests, which
+        // depressed the estimate and shrank the budget further.
+        const latencySeconds = (this.ttfbMs || 0) / 1000;
+        const budget = this.throughputBps * (this.targetQueueSeconds + latencySeconds);
         return Math.max(this.minBudgetBytes, Math.min(this.maxBudgetBytes, budget));
     }
 
