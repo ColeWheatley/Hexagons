@@ -233,18 +233,23 @@ export class NetScheduler {
         }
     }
 
-    _sampleThroughput(bytes) {
+    _sampleThroughput(bytes, priority = NET_PRIORITY.BACKGROUND) {
         this._bytesSinceSample += bytes;
         const busyMs = this._busyMs + (this._busySince !== null ? this.now() - this._busySince : 0);
         // Only trust windows long enough to average over RTT and slow start.
         if (busyMs < 120 || this._bytesSinceSample < 64 * 1024) return;
         const sample = this._bytesSinceSample / (busyMs / 1000);
-        const alpha = this.stats.samples === 0 ? 1 : 0.35;
-        this.throughputBps = alpha * sample + (1 - alpha) * this.throughputBps;
-        this.stats.samples++;
         this._bytesSinceSample = 0;
         this._busyMs = 0;
         if (this._busySince !== null) this._busySince = this.now();
+        // Idle prefetch runs one small request at a time, so its windows
+        // measure latency, not the link (real wifi: ~0.8 vs ~17 Mbit/s). They
+        // may raise the estimate but must not drag down the budget that the
+        // next burst of visible requests is admitted with.
+        if (priority <= NET_PRIORITY.PREFETCH && this.stats.samples > 0 && sample < this.throughputBps) return;
+        const alpha = this.stats.samples === 0 ? 1 : 0.35;
+        this.throughputBps = alpha * sample + (1 - alpha) * this.throughputBps;
+        this.stats.samples++;
     }
 
     async _start(item) {
@@ -299,7 +304,7 @@ export class NetScheduler {
                 total: range ? range.total : bytes.byteLength,
             };
             this.stats.bytes += bytes.byteLength;
-            this._sampleThroughput(bytes.byteLength);
+            this._sampleThroughput(bytes.byteLength, item.priority);
         } catch (caught) {
             if (item.stalled && !item.cancelled) error = new NetStallError(item.url, this.stallTimeoutMs);
             else error = item.cancelled || caught?.name === 'AbortError' ? new NetAbortError() : caught;

@@ -181,3 +181,27 @@ test('the memory budget holds when Cache Storage rejects writes (quota)', async 
     const again = await store.ensureLevel('p1', 0, { priority: NET_PRIORITY.VISIBLE });
     assert.deepEqual(again.bytes, LOW.subarray(0, again.bytes.byteLength));
 });
+
+test('latency-bound prefetch windows cannot drag the throughput estimate down', async () => {
+    let clock = 0;
+    const plan = [];
+    const fetchImpl = async () => {
+        const { bytes, ms } = plan.shift();
+        clock += ms;
+        return new Response(new Uint8Array(bytes), { status: 200 });
+    };
+    const scheduler = new NetScheduler({ fetchImpl, now: () => clock, stallTimeoutMs: 0 });
+    plan.push({ bytes: 1_000_000, ms: 500 }); // visible burst: 2 MB/s
+    await scheduler.request({ url: 'a', priority: NET_PRIORITY.VISIBLE }).promise;
+    assert.equal(Math.round(scheduler.throughputBps), 2_000_000);
+    plan.push({ bytes: 100_000, ms: 1000 }); // lone prefetch: 0.1 MB/s
+    await scheduler.request({ url: 'b', priority: NET_PRIORITY.PREFETCH }).promise;
+    assert.equal(Math.round(scheduler.throughputBps), 2_000_000, 'slow prefetch window ignored');
+    plan.push({ bytes: 4_000_000, ms: 1000 }); // fast prefetch: 4 MB/s
+    await scheduler.request({ url: 'c', priority: NET_PRIORITY.PREFETCH }).promise;
+    assert.ok(scheduler.throughputBps > 2_000_000, 'a faster prefetch window still raises it');
+    plan.push({ bytes: 100_000, ms: 1000 }); // slow visible window does count
+    const before = scheduler.throughputBps;
+    await scheduler.request({ url: 'd', priority: NET_PRIORITY.VISIBLE }).promise;
+    assert.ok(scheduler.throughputBps < before);
+});
