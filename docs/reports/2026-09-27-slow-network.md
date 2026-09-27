@@ -77,13 +77,13 @@ Times are seconds; VC = block-SSIM visual completeness against the settled frame
 | Scenario | Build | Loader | VC50 | VC85 | VC95 | MB | Re-DL MB |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Cold first visit | live | 1.7 | 3.5 | 5.0 | 14.5 | 51.0 | 0.8 |
-| | staged (final) | 1.0 | 2.0 | 3.0 | 4.0 | 9.1 | 0.0 |
+| | staged (final) | 1.2 | 1.5 | 3.0 | 4.0 | 8.5 | 0.0 |
 | Repeat visit (HTTP cache cleared) | live | 1.7 | 2.5 | 5.0 | 14.0 | 50.1 | 0.0 |
-| | staged (final) | 1.0 | 1.5 | 2.0 | 2.0 | 1.4 | 0.0 |
+| | staged (final) | 1.0 | 1.0 | 1.5 | 1.5 | 0.8 | 0.0 |
 | Jump 12 km west (phase after jump) | live | – | 1.0 | 4.0 | 9.0 | 104.2* | 0.8 |
-| | staged (final) | – | 0.5 | 2.5 | 3.0 | 16.8* | 0.0 |
+| | staged (final) | – | 0.5 | 1.0 | 2.0 | 16.1* | 0.0 |
 | Pan 3 km east and back (return phase) | live | – | 6.0 | 6.0 | 6.0–12.0 | 17.6–144.6* | 4.6–35.0 |
-| | staged (final) | – | 6.0 | 6.0 | 6.5 | 15.5* | 0.0 |
+| | staged (final) | – | 6.0 | 6.0 | 6.5 | 14.8* | 0.0 |
 
 \* whole scenario. Pan phases include the 6 s camera move, so 6.0 is the floor.
 Live pan varied run to run (two runs shown as a range). Frames are sampled every
@@ -180,6 +180,18 @@ untouched so any old shell still open in a browser keeps working. The v2
 service worker replaces v1 on the next visit and deletes v1's orphaned caches
 (only in the `/hexagons/app/` scope). Rollback = re-upload the previous
 `index.html` (its hashed bundles are still there).
+
+## S3 vs Cloudflare (measured 27 Sep 20:22, Vienna PoP)
+
+Bucket: 72.8 GB / 84,706 objects; the live release the viewer reads is ~28.7 GB
+(high pages 26.2 GB, tiles 2.35 GB, small tiers 0.16 GB) + 1.2 GB split tiles.
+TTFB for a 32 KB range: S3 via Cloudflare (DYNAMIC) median 0.33 s (one cold 1.4 s),
+Cloudflare edge HIT median 0.26 s → ~70–100 ms per request is all an edge cache
+can save here (Zurich is close; the rest is the wifi). Expect ~0.3–0.5 s sooner
+first views and no cold-S3 stalls; repeat visits unchanged (browser Cache Storage).
+Recommendation: a Cache Rule (URI path contains `/releases/` → eligible, edge TTL
+from Cache-Control) + Smart Tiered Cache; R2 is a cost/ops choice (server-side
+copy via Super Slurper/Sippy), not a speed one; Pages is not needed for the shell.
 
 ## Recommendations outside the code
 
