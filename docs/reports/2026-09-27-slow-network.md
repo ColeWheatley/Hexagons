@@ -125,6 +125,11 @@ screen-space level) in ~19 s on a ~5 Mbit/s moment of the link.
   2 GiB high / 768 MiB mid / 256 MiB low, least-recently-written first); hidden
   tiles are rebound so they no longer pin disposed textures; the high-admission
   block is cleared from the final screen-space tier only.
+- Tiny urgent requests (≤ 64 KiB, ≥ VISIBLE: coverage imagery, coarse terrain) may use
+  10 extra concurrency slots (2 on the low profile). Real network, three interleaved
+  rounds against the same build without it: time until every visible page has
+  imagery 12.9/14.0/8.6 s → 9.1/7.0/5.4 s, loader 4.3/2.9/2.0 s → 2.5/2.0/1.4 s.
+  Neutral in netlab, whose mirror has no origin latency.
 - Texture jobs wait at most 10 s for the shared Basis module and post only the
   mips they need; the stage script uploads hashed shell assets as q11 brotli
   (main.js 268 → 220 KB, transcoder wasm 408 → 326 KB on the wire).
