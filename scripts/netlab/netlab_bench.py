@@ -138,7 +138,8 @@ def network_summary(logfile, run_id):
         if name.endswith(':start'):
             phase=name[:-6]
             if phase+':end' in phase_marks: windows.append((t,phase_marks[phase+':end']))
-    rows=[x for x in rows if any(a<=x['t0']<=b for a,b in windows)]
+    first_phase_start=min((a for a,_ in windows),default=end)
+    rows=[x for x in rows if start<=x['t0']<first_phase_start or any(a<=x['t0']<=b for a,b in windows)]
     totals={}; ranges=[]; seen=set(); redownload=0; manifest_last=None; first_tile=None
     for x in rows:
         if x['status'] not in (200,206): continue
