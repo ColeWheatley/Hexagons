@@ -40,6 +40,12 @@ test('busy queue inflates a new first byte',async()=>{
     await big; assert.equal(link.firstByteDelay(),90);}
   finally {f.cleanup();}
 });
+test('control body uses the same scheduler',async()=>{
+  const link=new Downlink({bandwidthBps:1000,rttMs:0,bloatMs:0});
+  const out=new PassThrough(); let received=0; out.on('data',b=>received+=b.length);
+  const started=performance.now(); await link.sendBuffer(Buffer.alloc(1000),out);
+  assert.equal(received,1000); assert.ok(performance.now()-started>900);
+});
 test('single byte ranges and invalid ranges',()=>{
   assert.deepEqual(parseRange('bytes=2-4',10),{start:2,end:4});
   assert.deepEqual(parseRange('bytes=4-',10),{start:4,end:9});

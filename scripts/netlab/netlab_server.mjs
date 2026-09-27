@@ -34,10 +34,15 @@ export class Downlink {
       ? p.bloatMs * Math.min(1, this.queuedBytes / (p.bandwidthBps * .5)) : 0);
   }
   send(file, start, length, response) {
+    return this.enqueue({fd: fs.openSync(file, 'r'), offset: start, remaining: length}, response);
+  }
+  sendBuffer(buffer, response) {
+    return this.enqueue({fd: null, buffer, offset: 0, remaining: buffer.length}, response);
+  }
+  enqueue(source, response) {
     return new Promise((resolve, reject) => {
-      if (!length) { response.end(resolve); return; }
-      const job = {fd: fs.openSync(file, 'r'), offset: start, remaining: length, sent: 0,
-        response, resolve, reject, blocked: false, done: false};
+      if (!source.remaining) { if (source.fd !== null) fs.closeSync(source.fd); response.end(resolve); return; }
+      const job = {...source, sent: 0, response, resolve, reject, blocked: false, done: false};
       this.jobs.push(job);
       const closed = () => {
         if (!job.done) { const error = new Error('client closed'); error.sent = job.sent; this.finish(job, error); }
@@ -49,7 +54,7 @@ export class Downlink {
   finish(job, error = null) {
     if (job.done) return;
     job.done = true;
-    fs.closeSync(job.fd);
+    if (job.fd !== null) fs.closeSync(job.fd);
     const i = this.jobs.indexOf(job);
     if (i >= 0) this.jobs.splice(i, 1);
     if (error) job.reject(error);
@@ -57,9 +62,21 @@ export class Downlink {
     this.schedule();
   }
   schedule() {
-    if (this.timer || !this.jobs.some(j => !j.blocked)) return;
-    const delay = Number.isFinite(this.profile.bandwidthBps)
-      ? Math.max(0, this.nextAt - this.now()) : 0;
+    if (this.timer || !this.jobs.length) return;
+    this.cursor %= this.jobs.length;
+    let job;
+    for (let n = 0; n < this.jobs.length; n++) {
+      const candidate = this.jobs[(this.cursor + n) % this.jobs.length];
+      if (!candidate.blocked) { job = candidate; break; }
+    }
+    if (!job) return;
+    let delay = 0;
+    if (Number.isFinite(this.profile.bandwidthBps)) {
+      const now = this.now();
+      if (!this.nextAt || this.nextAt < now - 100) this.nextAt = now;
+      this.nextAt += Math.min(16384, job.remaining) / this.profile.bandwidthBps * 1000;
+      delay = Math.max(0, this.nextAt - now);
+    }
     const run = () => { this.timer = null; this.tick(); };
     this.timer = delay < 1 ? setImmediate(run) : setTimeout(run, delay);
   }
@@ -76,18 +93,14 @@ Downlink.prototype.tick = function () {
     if (!candidate.blocked) { job = candidate; this.cursor = (this.jobs.indexOf(job) + 1) % this.jobs.length; break; }
   }
   if (!job) return;
-  const bytes = Math.min(16384, job.remaining), buf = Buffer.allocUnsafe(bytes);
+  const bytes = Math.min(16384, job.remaining);
+  const buf = job.buffer ? job.buffer.subarray(job.offset, job.offset + bytes) : Buffer.allocUnsafe(bytes);
   try {
-    const got = fs.readSync(job.fd, buf, 0, bytes, job.offset);
+    const got = job.buffer ? bytes : fs.readSync(job.fd, buf, 0, bytes, job.offset);
     if (got !== bytes) throw new Error('short read');
     job.offset += got; job.remaining -= got; job.sent += got;
-    const now = this.now();
-    if (Number.isFinite(this.profile.bandwidthBps)) {
-      if (!this.nextAt || this.nextAt < now - 100) this.nextAt = now;
-      this.nextAt += got / this.profile.bandwidthBps * 1000;
-    }
     if (job.remaining === 0) {
-      job.done = true; fs.closeSync(job.fd);
+      job.done = true; if (job.fd !== null) fs.closeSync(job.fd);
       this.jobs.splice(this.jobs.indexOf(job), 1);
       if (!this.jobs.length) this.nextAt = 0;
       job.response.end(buf, job.resolve);
@@ -201,16 +214,26 @@ export async function startServer(cfg) {
     const row = {t0, ttfbMs:null, durMs:null, method:req.method, path:pathname, query,
       range, status:500, bytes:0, complete:false, encoding:null, mirror:null,
       streamId:req.stream?.id ?? null, connId:req.socket?.remotePort ?? null, profile};
-    const sendControl = (status, obj) => { const body = Buffer.from(JSON.stringify(obj)); res.writeHead(status, {'content-type':'application/json','content-length':body.length}); res.end(body); row.status=status; row.bytes=body.length; };
+    const sendControl = async (status, obj) => {
+      const body = Buffer.from(JSON.stringify(obj));
+      const delay = downlink.firstByteDelay();
+      await new Promise(resolve=>setTimeout(resolve,Math.max(0,arrived+delay-performance.now())));
+      res.writeHead(status, {'content-type':'application/json','content-length':body.length});
+      row.ttfbMs=Math.round((performance.now()-arrived)*10)/10;
+      row.status=status;
+      await downlink.sendBuffer(body,res);
+      row.bytes=body.length; row.complete=true;
+    };
     try {
-      if (pathname === '/__netlab/health') sendControl(200, {ok:true, profile:cfg.profile, offline:cfg.offline});
-      else if (pathname === '/__netlab/stats') sendControl(200, {...stats, queuedBytes:downlink.queuedBytes, profile:cfg.profile, nowMs:stamp()});
+      if (req.method !== 'GET') await sendControl(405,{error:'GET only'});
+      else if (pathname === '/__netlab/health') await sendControl(200, {ok:true, profile:cfg.profile, offline:cfg.offline});
+      else if (pathname === '/__netlab/stats') await sendControl(200, {...stats, queuedBytes:downlink.queuedBytes, profile:cfg.profile, nowMs:stamp()});
       else if (pathname === '/__netlab/profile') {
         const name = requestUrl.searchParams.get('name');
-        if (!PROFILES[name]) sendControl(400, {error:'unknown profile'});
-        else { cfg.profile=name; downlink.profile=PROFILES[name]; sendControl(200, {profile:name}); }
+        if (!PROFILES[name]) await sendControl(400, {error:'unknown profile'});
+        else { cfg.profile=name; downlink.profile=PROFILES[name]; await sendControl(200, {profile:name}); }
       } else if (pathname === '/__netlab/mark') {
-        writeLog({mark:requestUrl.searchParams.get('name'), t:stamp()}); sendControl(200,{ok:true});
+        writeLog({mark:requestUrl.searchParams.get('name'), t:stamp()}); await sendControl(200,{ok:true});
       } else {
         stats.requests++; stats.active++; stats.lastRequestMs=t0;
         let resource;
@@ -235,8 +258,10 @@ export async function startServer(cfg) {
         // S3 ignores Range for encoded bodies. Mirror replay follows the same 200-full rule.
         const parsed=resource.headers['content-encoding'] ? null : parseRange(range,size);
         if (parsed===false) {
+          const delay=downlink.firstByteDelay();
+          await new Promise(resolve=>setTimeout(resolve,Math.max(0,arrived+delay-performance.now())));
           res.writeHead(416, {'content-range':`bytes */${size}`,'accept-ranges':'bytes'});
-          res.end(); row.status=416;
+          res.end(); row.status=416; row.ttfbMs=Math.round((performance.now()-arrived)*10)/10;
         } else {
           const from=parsed?.start ?? 0, to=parsed?.end ?? size-1;
           const bytes=to-from+1;
@@ -253,10 +278,10 @@ export async function startServer(cfg) {
       }
     } catch (error) {
       stats.errors++; row.bytes=error.sent||0; stats.bytes+=row.bytes;
-      if (!res.headersSent) { row.status=error.status||500; sendControl(row.status,{error:error.message}); }
+      if (!res.headersSent) { row.status=error.status||500; await sendControl(row.status,{error:error.message}); }
       else if (!res.destroyed) res.destroy(error);
     } finally {
-      if (!pathname.startsWith('/__netlab/')) stats.active--;
+      if (req.method === 'GET' && !pathname.startsWith('/__netlab/')) stats.active--;
       row.durMs=Math.round((performance.now()-arrived)*10)/10;
       if (row.ttfbMs===null) row.ttfbMs=row.durMs;
       writeLog(row);
