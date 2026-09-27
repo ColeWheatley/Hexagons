@@ -9,6 +9,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
 
 export const PROFILES = {
   cafe: { bandwidthBps: 18e6 / 8, rttMs: 90, bloatMs: 450 },
@@ -30,11 +31,11 @@ export class Downlink {
   send(file, start, length, response) {
     return new Promise((resolve, reject) => {
       if (!length) { response.end(resolve); return; }
-      const job = {fd: fs.openSync(file, 'r'), offset: start, remaining: length,
+      const job = {fd: fs.openSync(file, 'r'), offset: start, remaining: length, sent: 0,
         response, resolve, reject, blocked: false, done: false};
       this.jobs.push(job);
       response.on('close', () => {
-        if (!job.done) this.finish(job, new Error('client closed'));
+        if (!job.done) { const error = new Error('client closed'); error.sent = job.sent; this.finish(job, error); }
       });
       this.schedule();
     });
@@ -73,7 +74,7 @@ Downlink.prototype.tick = function () {
   try {
     const got = fs.readSync(job.fd, buf, 0, bytes, job.offset);
     if (got !== bytes) throw new Error('short read');
-    job.offset += got; job.remaining -= got;
+    job.offset += got; job.remaining -= got; job.sent += got;
     const now = this.now();
     if (Number.isFinite(this.profile.bandwidthBps))
       this.nextAt = Math.max(now - 100, this.nextAt) + got / this.profile.bandwidthBps * 1000;
@@ -152,12 +153,13 @@ export async function startServer(cfg) {
   const start = performance.now(), downlink = new Downlink(PROFILES[cfg.profile]);
   const stats = {requests: 0, bytes: 0, hits: 0, misses: 0, errors: 0, lastRequestMs: 0};
   const pending = new Map();
-  const certDir = path.join(import.meta.dirname, '.cert');
+  const certDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '.cert');
   await fsp.mkdir(certDir, {recursive:true});
   const key = path.join(certDir, 'key.pem'), cert = path.join(certDir, 'cert.pem');
   if (!fs.existsSync(key) || !fs.existsSync(cert)) execFileSync('openssl', ['req','-x509','-newkey','rsa:2048',
     '-nodes','-keyout',key,'-out',cert,'-days','3650','-subj','/CN=localhost',
     '-addext','subjectAltName=DNS:localhost,IP:127.0.0.1'], {stdio:'ignore'});
+  if (cfg.log) await fsp.mkdir(path.dirname(cfg.log), {recursive:true});
   const log = cfg.log ? fs.createWriteStream(cfg.log, {flags:'a'}) : null;
   const writeLog = row => log?.write(JSON.stringify(row) + '\n');
   const stamp = () => Math.round((performance.now() - start) * 10) / 10;
@@ -189,7 +191,7 @@ export async function startServer(cfg) {
     const pathname = requestUrl.pathname, query = requestUrl.search.slice(1);
     const range = req.headers.range || null, profile = cfg.profile;
     const row = {t0, ttfbMs:null, durMs:null, method:req.method, path:pathname, query,
-      range, status:500, bytes:0, encoding:null, mirror:null,
+      range, status:500, bytes:0, complete:false, encoding:null, mirror:null,
       streamId:req.stream?.id ?? null, connId:req.socket?.remotePort ?? null, profile};
     const sendControl = (status, obj) => { const body = Buffer.from(JSON.stringify(obj)); res.writeHead(status, {'content-type':'application/json','content-length':body.length}); res.end(body); row.status=status; row.bytes=body.length; };
     try {
@@ -237,13 +239,14 @@ export async function startServer(cfg) {
           res.writeHead(parsed?206:200,headers); row.ttfbMs=Math.round((performance.now()-arrived)*10)/10;
           row.status=parsed?206:200; row.encoding=headers['content-encoding']||null;
           await downlink.send(resource.file,from,bytes,res);
-          row.bytes=bytes; stats.bytes+=bytes;
+          row.bytes=bytes; row.complete=true; stats.bytes+=bytes;
           if (resource.mirror==='hit') stats.hits++; if (resource.mirror==='miss') stats.misses++;
         }
       }
     } catch (error) {
-      stats.errors++; row.status=error.status||500;
-      if (!res.headersSent) sendControl(row.status,{error:error.message}); else res.destroy(error);
+      stats.errors++; row.bytes=error.sent||0; stats.bytes+=row.bytes;
+      if (!res.headersSent) { row.status=error.status||500; sendControl(row.status,{error:error.message}); }
+      else if (!res.destroyed) res.destroy(error);
     } finally {
       row.durMs=Math.round((performance.now()-arrived)*10)/10;
       if (row.ttfbMs===null) row.ttfbMs=row.durMs;
