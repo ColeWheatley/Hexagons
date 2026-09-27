@@ -4765,7 +4765,7 @@ class PistonViewer {
         this.texStats.count++;
         this.texStats.totalTranscodeMs += texResult.transcodeMs || 0;
         this.texStats.maxTranscodeMs = Math.max(this.texStats.maxTranscodeMs, texResult.transcodeMs || 0);
-        this.texStats.formatKey = texResult.formatKey;
+        if (!texResult.bootstrap) this.texStats.formatKey = texResult.formatKey;
         this.texStats.totalGpuBytes += texResult.gpuBytes || 0;
         this._updateTextureMilestones();
         this.devTools?.onTextureActivity();
