@@ -26,6 +26,7 @@ const PREFIX = `hx2-${SCOPE_TAG}-`;
 const SHELL_CACHE = `${PREFIX}shell-${BUILD_ID}`;
 const RUNTIME_CACHE = `${PREFIX}runtime`;
 const META_CACHE = `${PREFIX}meta`;
+const PREFIX_CACHES = [`${PREFIX}ktx2-prefix-v1`, `${PREFIX}gsp-prefix-v1`];
 const RELEASE_KEY = new Request(new URL(`/__hexagons_release__/${SCOPE_TAG}`, self.location.origin).href);
 
 function isCacheable(response) {
@@ -85,14 +86,16 @@ async function pruneOtherReleases(currentRelease) {
     const previous = await meta.match(RELEASE_KEY);
     const previousRelease = previous ? await previous.text() : null;
     if (previousRelease === currentRelease) return;
-    const cache = await caches.open(RUNTIME_CACHE);
-    const keys = await cache.keys();
-    await Promise.all(keys
-        .filter(request => {
-            const release = releaseOf(new URL(request.url));
-            return release !== null && release !== currentRelease;
-        })
-        .map(request => cache.delete(request)));
+    await Promise.all([RUNTIME_CACHE, ...PREFIX_CACHES].map(async cacheName => {
+        const cache = await caches.open(cacheName);
+        const keys = await cache.keys();
+        await Promise.all(keys
+            .filter(request => {
+                const release = releaseOf(new URL(request.url));
+                return release !== null && release !== currentRelease;
+            })
+            .map(request => cache.delete(request)));
+    }));
     await meta.put(RELEASE_KEY, new Response(currentRelease));
 }
 
@@ -137,6 +140,7 @@ self.addEventListener('activate', event => {
         const names = await caches.keys();
         await Promise.all(names
             .filter(name => (name.startsWith(`${PREFIX}shell-`) && name !== SHELL_CACHE)
+                || name === 'hx2-ktx2-prefix-v1' || name === 'hx2-gsp-prefix-v1'
                 || (V1_SCOPE_TAGS.has(SCOPE_TAG) && isV1CacheName(name)))
             .map(name => caches.delete(name)));
         await self.clients.claim();

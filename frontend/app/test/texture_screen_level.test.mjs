@@ -11,6 +11,9 @@ const {
     nextHighLevel,
     highRefinementPending,
     textureTierRequestPlan,
+    TexturePageResidency,
+    clearHighAdmissionIfNotDesired,
+    highAdmissionRetryReady,
 } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 test('screen-space levels refine at the exact pixel boundary and coarsen after hysteresis', () => {
@@ -26,6 +29,28 @@ test('screen-space levels refine at the exact pixel boundary and coarsen after h
     assert.equal(screenSpaceTextureLevel(1e9, 1000, { ...options, maxLevel: 4 }), 4);
     assert.equal(screenSpaceTextureLevel(0, 1000, options), 0);
     assert.equal(screenSpaceTextureLevel(-1, 1000, options), 0);
+});
+
+test('distance pass keeps a blocked high admission until screen-space tier is final', () => {
+    const residency = new TexturePageResidency({ pages: [{ key: 'page' }] });
+    const state = residency.state('page');
+    state.highAdmissionBlocked = true;
+    state.highAdmissionBlockedRevision = 7;
+    state.highAdmissionBlockedPriority = -3000;
+    residency.beginDemandPass();
+    residency.contribute('page', { classification: 'visible', distanceMeters: 3000 });
+    residency.finishDemandPass();
+    assert.equal(state.desiredTier, PAGE_TEXTURE_TIER.MEDIUM);
+    assert.equal(state.highAdmissionBlocked, true, 'distance is not the final tier');
+    state.desiredTier = tierForTextureLevel(2);
+    clearHighAdmissionIfNotDesired(state);
+    assert.equal(state.highAdmissionBlocked, true);
+    assert.equal(highAdmissionRetryReady(state, 7, -3000), false);
+    state.desiredTier = PAGE_TEXTURE_TIER.MEDIUM;
+    clearHighAdmissionIfNotDesired(state);
+    assert.equal(state.highAdmissionBlocked, false);
+    assert.equal(state.highAdmissionBlockedRevision, -1);
+    assert.equal(state.highAdmissionBlockedPriority, -Infinity);
 });
 
 test('screen-space levels map to durable medium or progressive high', () => {
