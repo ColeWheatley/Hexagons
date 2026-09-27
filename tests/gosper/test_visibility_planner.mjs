@@ -308,6 +308,21 @@ function testGosperAdapter() {
     assert.ok(Math.abs(gsp3Bounds[1] - 921.1) < 1e-6); // 1000 - 78.9
     assert.ok(Math.abs(gsp3Bounds[4] - 1032.1) < 1e-6); // 1000 + 32.1
 
+    // A prefix carries only the L3 frontier. Missing deeper records use the
+    // existing loose root bounds instead of rejecting the attachment.
+    const partial = decodedFixture({ gsp3: true });
+    partial.depths = partial.depths.slice(0, 3);
+    delete partial.unit;
+    gsp3Adapter.attachDecodedIsland('0_0', partial);
+    const depth3Node = gsp3Adapter.getChild(
+        gsp3Adapter.getChild(
+            gsp3Adapter.getChild(gsp3Adapter.getRootHandle('0_0'), 0), 0,
+        ), 0,
+    );
+    const partialBounds = gsp3Adapter.writeBounds(depth3Node);
+    assert.ok(partialBounds[1] <= 387.9 + 1e-6);
+    assert.ok(partialBounds[4] >= 1600.1 - 1e-6);
+
     adapter.setVerticalTransform({ factor: 0, floor: 900, offset: 7 });
     const flatBounds = adapter.writeBounds(root);
     assert.equal(flatBounds[1], 7);

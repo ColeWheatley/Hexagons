@@ -248,10 +248,10 @@ export class GosperVisibilityAdapter {
     attachDecodedIsland(keyOrIslandIndex, decoded) {
         const island = this._resolveIsland(keyOrIslandIndex);
         const depths = decoded?.depths;
-        if (!Array.isArray(depths) || depths.length !== GOSPER_LEVEL_COUNT) {
-            throw new TypeError('decoded.depths must contain depths 0..5');
+        if (!Array.isArray(depths) || depths.length < 3 || depths.length > GOSPER_LEVEL_COUNT) {
+            throw new TypeError('decoded.depths must contain at least depths 0..2');
         }
-        for (let depth = 0; depth <= GOSPER_MAX_DEPTH; depth++) {
+        for (let depth = 0; depth < depths.length; depth++) {
             const record = depths[depth];
             const expected = GOSPER_DEPTH_COUNTS[depth];
             if (!record?.h || record.h.length !== expected) {
