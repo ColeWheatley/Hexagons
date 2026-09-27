@@ -1298,6 +1298,15 @@ class PistonViewer {
         // those retained objects dirty so r160's normal WebGLGeometries and
         // WebGLTextures upload paths recreate the GPU buffers/textures on the
         // next compile/render, without refetching asset files.
+        // Bootstrap ImageBitmaps are closed after their first upload, so their
+        // textures cannot be re-uploaded. Rebind any consumers to retained
+        // KTX2 tiers (or the missing-page fallback) before renderer.compile.
+        for (const state of this.textureStates.values()) {
+            const bootstrap = state.assets.get(TEXTURE_TIER.BOOTSTRAP);
+            if (!bootstrap) continue;
+            bootstrap.result?.imageBitmap?.close?.();
+            this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP, false, true);
+        }
         this.renderer.resetState();
         this.materialChurn.traversalCalls++;
         this.scene.traverse(object => {
