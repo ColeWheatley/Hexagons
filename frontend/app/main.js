@@ -1469,6 +1469,7 @@ class PistonViewer {
     }
 
     _resetWorldForInitRetry() {
+        this._startImageryAbort?.abort();
         this.worldGeneration++;
         for (const key of Array.from(this.tiles.keys())) this.unloadTile(key);
         this._disposeHorizon();
@@ -2198,6 +2199,9 @@ class PistonViewer {
             // URL / saved-view restoration is complete: preload the actual
             // initial location, never the default location behind a shared link.
             if (this.prefetchEnabled) {
+                this._startImageryAbort?.abort();
+                this._startImageryAbort = new AbortController();
+                const startGeneration = this.worldGeneration;
                 preloadStartImagery({
                     pages: this.texturePageGrid.pages,
                     target: {
@@ -2206,8 +2210,10 @@ class PistonViewer {
                     },
                     store: this.textureByteStore,
                     urlForPage: page => this._textureUrls(TEXTURE_TIER.HIGH, page.key)[0],
-                    signal: scope.signal,
-                    isCurrent: () => this.appLifecycle.isCurrent(scope),
+                    // First-view warming survives BOOTING -> IDLE. Cancel
+                    // only when the world is replaced, not when its loader hides.
+                    signal: this._startImageryAbort.signal,
+                    isCurrent: () => this.worldGeneration === startGeneration,
                     maxPages: this.capabilityProfile.name === 'low' ? 8 : 24,
                     onLoaded: (page, result) => {
                         this.texturePrefetchStats.pages++;
