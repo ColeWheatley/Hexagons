@@ -163,7 +163,6 @@ export class ShareableViewState {
 
     getPublicSettings() {
         return sanitizePublicSettings({
-            hazeDistanceKm: Math.round((this.viewer.atmosphereSettings?.hazeDistance || 0) / 1000),
             highTextureDistanceM: this.viewer.highTextureDistanceM,
             gradientMode: this.viewer.gradientMode,
         });

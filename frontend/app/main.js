@@ -78,6 +78,7 @@ import {
 } from './texture_page_residency.js';
 import { NET_PRIORITY, NetScheduler } from './net_scheduler.mjs';
 import { TextureByteStore } from './texture_byte_store.mjs';
+import { preloadStartImagery } from './start_imagery.mjs';
 import { prefixCacheNames } from './scope_cache.mjs';
 import { PREFIX_CACHE_CAP_BYTES, enforcePrefixCacheBudget } from './prefix_cache_budget.mjs';
 import { nextRetry, retryDelayMs, retryReady } from './retry_backoff.mjs';
@@ -279,9 +280,6 @@ function worldToUnitAxial(x, y) {
 }
 
 // --- CONFIG ---
-// Non-mini atmospheric transition only. Geometry and texture residency are
-// governed by the frustum planner, never this visual haze control.
-const DEFAULT_HAZE_DISTANCE = 4000;
 const HORIZON_DISTANCE = 60000;
 const FLOOR_MODE = 'view-min';
 const LOCK_FLOOR_ON_RISE = true;
@@ -535,7 +533,6 @@ class PistonViewer {
         this.globalStats = { min: Infinity, max: -Infinity, avgSum: 0.0, baseSum: 0.0, count: 0 };
         this.frustum = new THREE.Frustum();
         this.projScreenMatrix = new THREE.Matrix4();
-        this.atmosphereSettings = { hazeDistance: DEFAULT_HAZE_DISTANCE };
 
         // Navigation overlay (consumer UI)
         this.distanceScaleBarEl = document.getElementById('distance-scale-bar');
@@ -586,7 +583,7 @@ class PistonViewer {
         this.initConsumerControls();
         this.initLodTruthLabels();
         this.viewState.restorePublicSettings();
-        this.updateFogAndClip();
+        this.updateCameraClip();
 
         // WORKER SYSTEM
         this.workers = [];
@@ -1644,7 +1641,6 @@ class PistonViewer {
     }
 
     applyPublicSettings(settings) {
-        this.atmosphereSettings.hazeDistance = settings.hazeDistanceKm * 1000;
         this.highTextureDistanceM = settings.highTextureDistanceM;
         this.gradientMode = settings.gradientMode;
         const terrainBtn = document.getElementById('gradient-terrain');
@@ -1658,7 +1654,7 @@ class PistonViewer {
             gradientBtn.style.background = terrain ? 'transparent' : '#74b9ff';
             gradientBtn.style.color = terrain ? '#ccc' : '#fff';
         }
-        this.updateFogAndClip();
+        this.updateCameraClip();
         this.needsLODUpdate = true;
         this.devTools?.syncControls();
     }
@@ -1888,28 +1884,14 @@ class PistonViewer {
         this.frameScheduler?.wake('resize');
     }
 
-    updateFogAndClip() {
-        const dist = this.atmosphereSettings.hazeDistance;
-        const fogEnd = dist;
-        const fogStart = dist * 0.6;
-        if (this.isMiniBake) {
-            // Mini-bakes cover a compact debugging area, so a kilometre-scale
-            // fog wall only hides the geometry/LOD boundaries under inspection.
-            this.scene.fog = null;
-        } else {
-            if (!this.scene.fog) this.scene.fog = new THREE.Fog(0x0a0a0a, fogStart, fogEnd); // Match Bg
-            this.scene.fog.near = fogStart;
-            this.scene.fog.far = fogEnd;
-        }
-        // Streamed tiles fade into the visual haze distance; the horizon mesh is
-        // fog-exempt (manual haze) and needs the far plane out past Tirol.
-        this.camera.far = Math.max(dist + 2000, HORIZON_DISTANCE + 5000);
+    updateCameraClip() {
+        // Visibility and screen-space LOD choose what to draw. No distance fog
+        // hides the terrain; retain a finite clip plane for depth precision.
+        this.scene.fog = null;
+        const bounds = this.manifest?.bounds;
+        const extent = bounds ? Math.hypot(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y) : 0;
+        this.camera.far = Math.max(HORIZON_DISTANCE + 5000, extent + (this.controls?.maxDistance || 50000));
         this.camera.updateProjectionMatrix();
-        // Keep the horizon haze band tied to the fog wall so the transition
-        // from textured tiles to silhouettes reads as one atmosphere.
-        if (this.horizonMesh?.material?.userData?.shader) {
-            this.horizonMesh.material.userData.shader.uniforms.uHazeRange.value.set(dist * 0.8, HORIZON_DISTANCE);
-        }
         this.needsRender = true;
     }
 
@@ -2088,7 +2070,7 @@ class PistonViewer {
             // This is release configuration, not a geographic heuristic.
             this.isMiniBake = this.releaseMode.profile === 'beta-stubai';
             this.devTools?.syncControls();
-            this.updateFogAndClip();
+            this.updateCameraClip();
             const { min_x, min_y } = this.manifest.bounds;
             this.worldOrigin = { x: min_x, y: min_y };
 
@@ -2213,6 +2195,26 @@ class PistonViewer {
             // once and hand it to the texture workers so the first KTX2 job
             // does not wait on it.
             this._shareBasisModule();
+            // URL / saved-view restoration is complete: preload the actual
+            // initial location, never the default location behind a shared link.
+            if (this.prefetchEnabled) {
+                preloadStartImagery({
+                    pages: this.texturePageGrid.pages,
+                    target: {
+                        x: this.controls.target.x + this.worldOrigin.x,
+                        y: this.worldOrigin.y - this.controls.target.z,
+                    },
+                    store: this.textureByteStore,
+                    urlForPage: page => this._textureUrls(TEXTURE_TIER.HIGH, page.key)[0],
+                    signal: scope.signal,
+                    isCurrent: () => this.appLifecycle.isCurrent(scope),
+                    maxPages: this.capabilityProfile.name === 'low' ? 8 : 24,
+                    onLoaded: (page, result) => {
+                        this.texturePrefetchStats.pages++;
+                        this.prefetchNetworkBytes = (this.prefetchNetworkBytes || 0) + (result.networkBytes || 0);
+                    },
+                });
+            }
             setTimeout(() => this._trimPrefixCaches(), PREFIX_CACHE_TRIM_DELAY_MS);
             this.buildHorizon();
         } catch (e) {
@@ -2280,14 +2282,12 @@ class PistonViewer {
 
         const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
         material.fog = false;
-        material.customProgramCacheKey = () => 'piston_horizon_v1';
+        material.customProgramCacheKey = () => 'piston_horizon_v2';
         material.onBeforeCompile = (shader) => {
             material.userData.shader = shader;
             shader.uniforms.uHeightFactor = this.sharedMaterialUniforms.heightFactor;
             shader.uniforms.uFloorOffset = this.sharedMaterialUniforms.floorOffset;
             shader.uniforms.uCameraPos = this.sharedMaterialUniforms.cameraPos;
-            shader.uniforms.uHazeColor = { value: new THREE.Color(0x0a0a0a) };
-            shader.uniforms.uHazeRange = { value: new THREE.Vector2(DEFAULT_HAZE_DISTANCE * 0.8, HORIZON_DISTANCE) };
             shader.vertexShader = shader.vertexShader.replace('#include <common>', `
                 #include <common>
                 uniform float uHeightFactor;
@@ -2296,35 +2296,23 @@ class PistonViewer {
                 attribute float instanceShade;
                 varying float vH;
                 varying float vShade;
-                varying vec3 vWorldPosH;
             `).replace('#include <begin_vertex>', `
                 #include <begin_vertex>
                 transformed.y += (instanceH - uFloorOffset) * uHeightFactor;
                 vH = instanceH;
                 vShade = instanceShade;
-                #ifdef USE_INSTANCING
-                    vWorldPosH = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
-                #else
-                    vWorldPosH = (modelMatrix * vec4(transformed, 1.0)).xyz;
-                #endif
             `);
             shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
                 #include <common>
-                uniform vec3 uCameraPos;
-                uniform vec3 uHazeColor;
-                uniform vec2 uHazeRange;
                 varying float vH;
                 varying float vShade;
-                varying vec3 vWorldPosH;
             `).replace('#include <color_fragment>', `
                 #include <color_fragment>
-                // Hypsometric tint x baked lambert, hazed toward the sky with
-                // distance but never fully erased (mountains stay silhouetted).
+                // Hypsometric tint x baked lambert; distant terrain stays visible.
                 vec3 lowC = vec3(0.16, 0.22, 0.16);
                 vec3 highC = vec3(0.42, 0.44, 0.47);
                 vec3 terrain = mix(lowC, highC, clamp((vH - 800.0) / 2600.0, 0.0, 1.0)) * (0.55 + 0.45 * vShade);
-                float haze = smoothstep(uHazeRange.x, uHazeRange.y, distance(vWorldPosH, uCameraPos)) * 0.85;
-                diffuseColor.rgb = mix(terrain, uHazeColor, haze);
+                diffuseColor.rgb = terrain;
             `);
         };
 
@@ -3491,6 +3479,10 @@ class PistonViewer {
         }
         if (state.desiredTier !== TEXTURE_TIER.HIGH && state.assets.has(TEXTURE_TIER.HIGH)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.HIGH);
+        }
+        if (state.desiredTier === TEXTURE_TIER.LOW && state.assets.has(TEXTURE_TIER.LOW)
+            && state.assets.has(TEXTURE_TIER.MEDIUM)) {
+            this._dropTextureTier(state.key, TEXTURE_TIER.MEDIUM);
         }
         if (state.classification === 'outside' && state.assets.has(TEXTURE_TIER.BOOTSTRAP)) {
             this._dropTextureTier(state.key, TEXTURE_TIER.BOOTSTRAP, false, true);

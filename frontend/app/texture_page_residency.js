@@ -279,7 +279,7 @@ export function screenSpaceTextureLevel(nearestDistance, focalLengthPx, {
 export function tierForTextureLevel(level) {
     if (level <= HIGH_TEXTURE_LEVEL.COARSEST) return PAGE_TEXTURE_TIER.HIGH;
     if (level <= MEDIUM_TEXTURE_LEVEL) return PAGE_TEXTURE_TIER.MEDIUM;
-    return PAGE_TEXTURE_TIER.MEDIUM; // medium is the durable floor for demanded pages
+    return PAGE_TEXTURE_TIER.LOW; // distant coverage needs only the 128 px mip
 }
 
 export function residentHighLevel(state) {

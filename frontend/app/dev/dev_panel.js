@@ -109,17 +109,6 @@ const STATS_TEMPLATE = `
             <span class="arrow" aria-hidden="true">▼</span>
         </button>
         <div class="collapsible-content" id="geometry-content" hidden aria-hidden="true">
-            <!-- VISUAL HAZE ONLY; hidden for mini-bakes -->
-            <div class="hud-item" id="haze-distance-control" style="flex-direction: column; margin-top: 5px;">
-                <div style="display: flex; justify-content: space-between; width: 100%;">
-                    <span id="haze-distance-label">ATMOSPHERE DISTANCE</span>
-                    <span class="value" id="haze-distance-val">4km</span>
-                </div>
-                <input type="range" id="haze-distance-slider" min="1" max="50" step="1" value="4"
-                    aria-labelledby="haze-distance-label haze-distance-val"
-                    style="width: 100%;">
-            </div>
-
             <!-- TEXTURE UPGRADE -->
             <div class="hud-item" style="flex-direction: column; margin-top: 10px;">
                 <div style="display: flex; justify-content: space-between; width: 100%;">
@@ -283,9 +272,6 @@ export function buildDevPanel(viewer, handlers = {}) {
 
         geometrySectionEl: root.querySelector('[data-section="geometry"]'),
         geometryContentEl: root.querySelector('#geometry-content'),
-        hazeControlEl: root.querySelector('#haze-distance-control'),
-        hazeSliderEl: root.querySelector('#haze-distance-slider'),
-        hazeValEl: root.querySelector('#haze-distance-val'),
         texSliderEl: root.querySelector('#tex-upgrade-slider'),
         texValEl: root.querySelector('#tex-upgrade-val'),
         nearLodBandsEl: root.querySelector('#near-lod-bands'),
@@ -300,15 +286,6 @@ export function buildDevPanel(viewer, handlers = {}) {
     };
 
     // --- Slider / toggle wiring (verbatim semantics from the old initLODSliders) ---
-    if (els.hazeSliderEl) {
-        els.hazeSliderEl.addEventListener('input', () => {
-            viewer.atmosphereSettings.hazeDistance = parseInt(els.hazeSliderEl.value, 10) * 1000;
-            if (els.hazeValEl) els.hazeValEl.textContent = `${els.hazeSliderEl.value}km`;
-            viewer.updateFogAndClip();
-            viewer.viewState?.commitSettingsChange();
-        });
-    }
-
     if (els.texSliderEl) {
         els.texSliderEl.addEventListener('input', () => {
             viewer.highTextureDistanceM = parseInt(els.texSliderEl.value, 10);

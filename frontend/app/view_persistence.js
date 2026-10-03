@@ -46,7 +46,6 @@ export function sanitizeStoredView(view) {
 
 export function sanitizePublicSettings(settings) {
     if (!settings || typeof settings !== 'object') return null;
-    const hazeDistanceKm = settings.hazeDistanceKm;
     let highTextureDistanceM = settings.highTextureDistanceM;
     // One-time v1 migration from the former projected-footprint knob. The
     // historical/default 512px value maps back to the project's 2km range;
@@ -60,11 +59,10 @@ export function sanitizePublicSettings(settings) {
             Math.round((2000 * 512 / settings.highTextureEnterPx) / 100) * 100));
     }
     const gradientMode = settings.gradientMode;
-    if (!Number.isInteger(hazeDistanceKm) || hazeDistanceKm < 1 || hazeDistanceKm > 50 ||
-        !Number.isInteger(highTextureDistanceM) || highTextureDistanceM < 0 ||
+    if (!Number.isInteger(highTextureDistanceM) || highTextureDistanceM < 0 ||
         highTextureDistanceM > 5000 || highTextureDistanceM % 100 !== 0 ||
         (gradientMode !== 0 && gradientMode !== 1)) return null;
-    return { hazeDistanceKm, highTextureDistanceM, gradientMode };
+    return { highTextureDistanceM, gradientMode };
 }
 
 export function sanitizeStoredEnvelope(value) {

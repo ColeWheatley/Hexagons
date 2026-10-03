@@ -53,9 +53,10 @@ test('distance pass keeps a blocked high admission until screen-space tier is fi
     assert.equal(state.highAdmissionBlockedPriority, -Infinity);
 });
 
-test('screen-space levels map to durable medium or progressive high', () => {
+test('screen-space levels keep distant coverage at 128 px', () => {
     for (const level of [0, 1, 2, 3]) assert.equal(tierForTextureLevel(level), PAGE_TEXTURE_TIER.HIGH);
-    for (const level of [4, 5]) assert.equal(tierForTextureLevel(level), PAGE_TEXTURE_TIER.MEDIUM);
+    assert.equal(tierForTextureLevel(4), PAGE_TEXTURE_TIER.MEDIUM);
+    assert.equal(tierForTextureLevel(5), PAGE_TEXTURE_TIER.LOW);
 });
 
 test('high refinement starts at 1024 px, advances one level, and stops at the target', () => {

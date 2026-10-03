@@ -139,14 +139,6 @@ export class DevTools {
         const els = this._panel?.els;
         if (!els) return;
 
-        if (els.hazeSliderEl) {
-            const km = viewer.atmosphereSettings.hazeDistance / 1000;
-            els.hazeSliderEl.value = String(km);
-            if (els.hazeValEl) els.hazeValEl.textContent = `${km}km`;
-        }
-        if (els.hazeControlEl) {
-            els.hazeControlEl.hidden = Boolean(viewer.isMiniBake);
-        }
         if (els.texSliderEl) {
             els.texSliderEl.value = String(viewer.highTextureDistanceM);
             if (els.texValEl) els.texValEl.textContent = formatTextureDistance(viewer.highTextureDistanceM);
