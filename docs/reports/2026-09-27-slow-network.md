@@ -1,5 +1,7 @@
 # Slow-network load performance — 2026-09-27
 
+**Deployment update, 2026-10-03:** merged into `master`, including `perf/followups`, and promoted to <https://wheatley.cloud/hexagons/app/>. Compressed split terrain now lives under `/hexagons/app/releases/`, so the app has no dependency on `/next/`. The staging and old viewer routes are being removed at the owner's request. Measurements below are the original September 27 results; no new benchmarks were run. Fog remains unchanged pending the separate distant-terrain discussion.
+
 Branch: `perf/slow-network`. Staged (not live): <https://wheatley.cloud/hexagons/next/>.
 The live app at `/hexagons/app/` is untouched.
 
