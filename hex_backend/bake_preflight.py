@@ -45,6 +45,7 @@ from waffle_iron import (
     texture_page_cache_version,
     verify_basisu_xuastc,
 )
+import r2_target  # scripts/ is on sys.path via waffle_iron; the one place for the R2 target
 
 
 GIB = 1024 ** 3
@@ -55,7 +56,7 @@ EXPECTED_FULL_CORPUS_FILES = 3_718
 # with a different effort can never match a marker, and every already-baked
 # page then looks stale to a regenerated inventory.
 PRODUCTION_ENCODING_EFFORT = 4
-DEFAULT_BUCKET = "wheatley.cloud"
+DEFAULT_BUCKET = r2_target.BUCKET  # Cloudflare R2 bucket (wheatley.cloud moved off S3 2026-10-11)
 DEFAULT_PREFIX = "hexagons/app"
 
 
@@ -423,13 +424,16 @@ def dependency_versions() -> dict[str, str | None]:
     return versions
 
 
-def aws_credentials_available() -> tuple[bool, str]:
+def aws_credentials_available(bucket: str | None = None) -> tuple[bool, str]:
+    bucket = bucket or r2_target.BUCKET
     if not shutil.which("aws"):
         return False, "aws CLI not found"
+    # R2 has no STS: prove the R2 credentials + endpoint by listing one key of the target bucket.
     result = subprocess.run(
-        ["aws", "sts", "get-caller-identity"], text=True, capture_output=True, check=False
+        r2_target.aws("s3api", "list-objects-v2", "--bucket", bucket, "--max-keys", "1"),
+        text=True, capture_output=True, check=False, env=r2_target.aws_env(),
     )
-    return result.returncode == 0, (result.stdout or result.stderr).strip()
+    return result.returncode == 0, (f"R2 bucket {bucket} reachable" if result.returncode == 0 else result.stderr.strip())
 
 
 def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -512,9 +516,9 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
         failures.append(f"BasisU is incompatible or absent: {exc}")
 
     upload_enabled = profile.progressive_upload and not args.no_upload
-    aws_ok, aws_detail = aws_credentials_available() if upload_enabled else (False, "disabled")
+    aws_ok, aws_detail = aws_credentials_available(args.bucket) if upload_enabled else (False, "disabled")
     if upload_enabled and not aws_ok:
-        failures.append(f"AWS credentials unavailable while upload is enabled: {aws_detail}")
+        failures.append(f"R2 credentials unavailable while upload is enabled: {aws_detail}")
     if not args.no_publish and (not shutil.which("node") or not shutil.which("npm")):
         failures.append("final publication requires node and npm")
     systemd_state = run_text(["systemctl", "--user", "is-system-running"]) if shutil.which("systemctl") else "absent"

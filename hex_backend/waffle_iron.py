@@ -90,7 +90,10 @@ def latlon_to_world_meters(lat, lon):
 # GLOBAL CONFIG (Modified by args)
 # =============================================================================
 S3_ENABLED = False # Default to False
-S3_BUCKET = "wheatley.cloud"
+# Upload target = Cloudflare R2 (S3 API); bucket/endpoint/profile live in scripts/r2_target.py.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+import r2_target
+S3_BUCKET = r2_target.BUCKET
 S3_PREFIX = "powfinder/app"
 
 # =============================================================================
@@ -478,8 +481,8 @@ def run_basisu_encode(
 
 def upload_to_s3(local_path):
     """
-    Uploads a file to S3 immediately.
-    Maps local 'frontend/app/...' to S3 'powfinder/app/...'
+    Uploads a file to R2 (S3 API) immediately.
+    Maps local 'frontend/app/...' to 'powfinder/app/...' in the R2 bucket.
     """
     if not S3_ENABLED: return
     
@@ -498,7 +501,7 @@ def upload_to_s3(local_path):
 
     s3_url = f"s3://{S3_BUCKET}/{S3_PREFIX}/{rel_path}"
     
-    cmd = ["aws", "s3", "cp", local_path, s3_url, "--quiet"]
+    cmd = r2_target.aws("s3", "cp", local_path, s3_url, "--quiet")
     
     # Set Cache-Control for immutable assets
     if local_path.endswith(('.ktx2', '.bin', '.webp')):
@@ -510,9 +513,9 @@ def upload_to_s3(local_path):
 
     try:
         # Launch in background, do not wait
-        subprocess.Popen(cmd)
+        subprocess.Popen(cmd, env=r2_target.aws_env())
     except Exception as e:
-        print(f"⚠️  S3 Upload failed for {local_path}: {e}")
+        print(f"⚠️  R2 Upload failed for {local_path}: {e}")
 
 # =============================================================================
 # BAKING FUNCTIONS

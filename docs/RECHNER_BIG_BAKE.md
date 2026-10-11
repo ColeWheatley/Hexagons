@@ -76,8 +76,13 @@ AWS CLI v2 is pinned by Pixi. Credentials must work non-interactively:
 pixi run aws sts get-caller-identity
 ```
 
-The production bucket/prefix default to `s3://wheatley.cloud/hexagons/app`.
-Override with `HEXAGONS_S3_BUCKET` and `HEXAGONS_S3_PREFIX` if required.
+The production bucket/prefix default to `s3://wheatley-cloud/hexagons/app` on **Cloudflare R2**
+(the site moved off AWS S3 on 2026-10-11; the old `wheatley.cloud` S3 bucket is a frozen fallback and
+must not be deployed to). Override with `HEXAGONS_S3_BUCKET` and `HEXAGONS_S3_PREFIX` if required.
+The endpoint, aws profile (`r2`, holding the R2 access keys in `~/.aws/credentials`) and region (`auto`)
+are defined once in `scripts/r2_target.py` and overridable via `WHEATLEY_S3_ENDPOINT`,
+`WHEATLEY_AWS_PROFILE` (empty string = use ambient `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) and
+`WHEATLEY_AWS_REGION`. The Rechner therefore needs an `r2` profile (or those env vars) before preflight.
 
 ## Commands
 

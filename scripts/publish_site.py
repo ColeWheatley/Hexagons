@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish landing and built app shells without deleting any existing S3 key."""
+"""Publish landing and built app shells without deleting any existing key (target: Cloudflare R2, see r2_target.py)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,11 @@ import json
 import mimetypes
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import r2_target  # noqa: E402
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 REVALIDATE = "no-cache, no-store, must-revalidate"
@@ -48,7 +52,7 @@ def metadata(path: Path) -> tuple[str, str, str | None]:
 
 
 def run(args: list[str]) -> bytes:
-    return subprocess.run(args, check=True, capture_output=True).stdout
+    return subprocess.run(args, check=True, capture_output=True, env=r2_target.aws_env()).stdout
 
 
 def upload_tree(bucket: str, prefix: str, root: Path, *, exclude: set[str] | None = None) -> int:
@@ -61,17 +65,17 @@ def upload_tree(bucket: str, prefix: str, root: Path, *, exclude: set[str] | Non
         key = f"{prefix.strip('/')}/{relative}"
         content_type, cache, encoding = metadata(path)
         digest = sha256(path)
-        command = [
-            "aws", "s3", "cp", str(path), f"s3://{bucket}/{key}",
+        command = r2_target.aws(
+            "s3", "cp", str(path), r2_target.s3_url(key, bucket),
             "--only-show-errors", "--content-type", content_type,
             "--cache-control", cache, "--metadata", f"sha256={digest}",
-        ]
+        )
         if encoding:
             command += ["--content-encoding", encoding]
         run(command)
-        head = json.loads(run([
-            "aws", "s3api", "head-object", "--bucket", bucket, "--key", key,
-        ]))
+        head = json.loads(run(r2_target.aws(
+            "s3api", "head-object", "--bucket", bucket, "--key", key,
+        )))
         if (
             int(head["ContentLength"]) != path.stat().st_size
             or head.get("ContentType") != content_type
@@ -86,7 +90,7 @@ def upload_tree(bucket: str, prefix: str, root: Path, *, exclude: set[str] | Non
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     root = Path(__file__).resolve().parents[1]
-    parser.add_argument("--bucket", default="wheatley.cloud")
+    parser.add_argument("--bucket", default=r2_target.BUCKET)
     parser.add_argument("--base-prefix", default="hexagons")
     parser.add_argument("--landing", type=Path, default=root / "frontend/landing")
     parser.add_argument("--app-dist", type=Path, default=root / "frontend/app/dist")

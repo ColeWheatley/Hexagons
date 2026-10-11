@@ -62,7 +62,9 @@ new_run() {
   UNIT="hexagons-big-bake-$RUN_ID"
   AERIAL_DIR="${HEXAGONS_AERIAL_DIR:-$ROOT/hex_backend/aerial_tifs}"
   DEM_PATH="${HEXAGONS_DEM_PATH:-$ROOT/hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif}"
-  S3_BUCKET="${HEXAGONS_S3_BUCKET:-wheatley.cloud}"
+  # Cloudflare R2 bucket (same default as scripts/r2_target.py; wheatley.cloud moved off S3 2026-10-11).
+  # The aws profile/endpoint come from scripts/r2_target.py (WHEATLEY_AWS_PROFILE, WHEATLEY_S3_ENDPOINT).
+  S3_BUCKET="${HEXAGONS_S3_BUCKET:-${WHEATLEY_BUCKET:-wheatley-cloud}}"
   S3_PREFIX="${HEXAGONS_S3_PREFIX:-hexagons/app}"
   mkdir -p "$RUN_ROOT" "$OUTPUT_ROOT"
   write_current

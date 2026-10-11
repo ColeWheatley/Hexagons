@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise atomic release publication in an isolated, disposable S3 prefix."""
+"""Exercise atomic release publication in an isolated, disposable prefix of the R2 bucket."""
 from __future__ import annotations
 import argparse, hashlib, importlib.util, json, os, subprocess, sys, tempfile
 from pathlib import Path
@@ -7,11 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("release_publish", ROOT / "scripts" / "release_publish.py")
 release_publish = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = release_publish; SPEC.loader.exec_module(release_publish)
+r2_target = release_publish.r2_target
 
 def write(path: Path, data: bytes): path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
 def digest(data: bytes) -> str: return hashlib.sha256(data).hexdigest()
 def delete_prefix(bucket: str, prefix: str) -> None:
-    subprocess.run(["aws", "s3", "rm", f"s3://{bucket}/{prefix.strip('/')}/", "--recursive", "--only-show-errors"], check=True)
+    subprocess.run(r2_target.aws("s3", "rm", f"s3://{bucket}/{prefix.strip('/')}/", "--recursive", "--only-show-errors"), check=True, env=r2_target.aws_env())
 
 def fixture(root: Path) -> tuple[Path, Path]:
     app = root / "app"; x, y = 1, 2
@@ -41,8 +42,8 @@ def tattoo_checks() -> dict:
     return {"real_beta_stubai_accepted_with_explicit_flag":accepted, "real_beta_stubai_rejected_without_flag":rejected_without_flag, "production_mode_copy_rejected_with_flag":rejected_production_copy}
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--bucket", default="wheatley.cloud"); parser.add_argument("--region", default="eu-central-2"); parser.add_argument("--prefix", required=True); parser.add_argument("--evidence", type=Path, required=True)
-    args = parser.parse_args(); os.environ["AWS_DEFAULT_REGION"] = args.region; prefix = args.prefix.strip("/")
+    parser = argparse.ArgumentParser(); parser.add_argument("--bucket", default=r2_target.BUCKET); parser.add_argument("--prefix", required=True); parser.add_argument("--evidence", type=Path, required=True)
+    args = parser.parse_args(); prefix = args.prefix.strip("/")
     if not prefix.startswith("hexagons/beta-drills/"): parser.error("prefix must stay below hexagons/beta-drills/")
     store = release_publish.AwsStore(args.bucket, prefix); old = b'{"sentinel":"old-live-pointer"}'
     evidence = {"bucket":args.bucket,"prefix":prefix,"live_beta_pointer_touched":False,"tattoo_policy":tattoo_checks()}

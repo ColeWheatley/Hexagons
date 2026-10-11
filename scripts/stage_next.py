@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage a candidate app shell at /hexagons/next/ that reuses a live release.
 
-Writes ONLY under s3://<bucket>/<base-prefix>/next/ — never the live /app/.
+Writes ONLY under <bucket>/<base-prefix>/next/ (Cloudflare R2, see r2_target.py) — never the live /app/.
 The candidate shell reads a compact, content-addressed manifest whose asset
 url templates point at the existing immutable release under /hexagons/app/,
 so no terrain or imagery is copied.
@@ -32,6 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import compact_manifest  # noqa: E402
+import r2_target  # noqa: E402
 from publish_site import IMMUTABLE, REVALIDATE, metadata, sha256  # noqa: E402
 
 LIVE_MANIFEST = "https://wheatley.cloud/hexagons/app/tile_manifest.json"
@@ -40,7 +41,6 @@ PUBLIC = "https://wheatley.cloud"
 USER_AGENT = "hexagons-stage-next/1.0"
 
 
-AWS_REGION = "eu-central-2"  # the wheatley.cloud bucket lives in Zurich
 # Hashed, immutable shell assets are uploaded as max-quality brotli with
 # Content-Encoding: br instead of relying on Cloudflare's on-the-fly level
 # (measured: main.js 268 -> 220 KB, transcoder wasm 408 -> 326 KB on the wire).
@@ -52,11 +52,11 @@ def precompress(path: Path, cache: str, encoding: str | None) -> bool:
 
 
 def run(args: list[str], dry: bool) -> None:
-    if args[:1] == ["aws"] and "--region" not in args:
-        args = args + ["--region", AWS_REGION]
+    if args[:1] == ["aws"] and "--endpoint-url" not in args:
+        args = r2_target.aws(*args[1:])  # R2 endpoint/profile/region; the one place is r2_target.py
     print(("DRY " if dry else "") + " ".join(args))
     if not dry:
-        result = subprocess.run(args, capture_output=True, text=True)
+        result = subprocess.run(args, capture_output=True, text=True, env=r2_target.aws_env())
         if result.returncode != 0:
             raise SystemExit(f"command failed ({result.returncode}): {' '.join(args)}\n{result.stderr.strip()}")
 
@@ -103,7 +103,7 @@ def upload_shell(bucket: str, prefix: str, dist: Path, dry: bool, manifest_rel: 
             continue
         if any(parent.is_symlink() for parent in [dist / Path(*rel.parts[:i]) for i in range(1, len(rel.parts))]):
             continue
-        # Browsers never request the .br/.gz siblings (S3 cannot negotiate);
+        # Browsers never request the .br/.gz siblings (the bucket cannot negotiate);
         # Cloudflare compresses text on the fly.
         if path.suffix in {".br", ".gz"}:
             continue
@@ -159,7 +159,7 @@ def write_local(out: Path, dist: Path, manifest_rel: str, payload: bytes, encode
             content_type, cache, encoding = metadata(path)
             sibling = target.with_name(target.name + ".br")
             if precompress(path, cache, encoding) and not (dist / rel).with_name(rel.name + ".br").exists():
-                sibling.write_bytes(brotli(path.read_bytes()))  # what the S3 object will carry
+                sibling.write_bytes(brotli(path.read_bytes()))  # what the bucket object will carry
     manifest_path = out / manifest_rel
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_bytes(payload)
@@ -171,7 +171,7 @@ def write_local(out: Path, dist: Path, manifest_rel: str, payload: bytes, encode
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bucket", default="wheatley.cloud")
+    parser.add_argument("--bucket", default=r2_target.BUCKET)
     parser.add_argument("--base-prefix", default="hexagons")
     parser.add_argument("--source-manifest", default=LIVE_MANIFEST)
     parser.add_argument("--asset-base", default="/hexagons/app/")
@@ -186,7 +186,7 @@ def main() -> int:
                         help="URL template of brotli split tile parts published by publish_tile_split.py, "
                              "e.g. /hexagons/next/releases/<release>/tiles_split/gosper_{yq}_{yr}.{part}.bin")
     parser.add_argument("--local-out", type=Path, default=None,
-                        help="write the staged tree to this directory instead of S3 (for netlab A/B)")
+                        help="write the staged tree to this directory instead of the bucket (for netlab A/B)")
     args = parser.parse_args()
     prefix = f"{args.base_prefix}/{args.target}"
     if args.target == "app" and not args.promote_live:

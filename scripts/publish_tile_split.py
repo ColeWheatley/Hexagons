@@ -12,9 +12,9 @@ never the live app's. The viewer switches to them when the manifest's
 `binary.split` block is present (see stage_next.py --tile-split).
 
 Steps (resumable; each skips work already done):
-  1. aws s3 sync the release's tiles_bin/ into WORKDIR/raw/
+  1. aws s3 sync (R2 target via r2_target.py) the release's tiles_bin/ into WORKDIR/raw/
   2. validate + split + brotli into WORKDIR/split/ (parallel)
-  3. aws s3 cp --recursive WORKDIR/split/ -> s3://BUCKET/DEST_PREFIX/ with
+  3. aws s3 cp --recursive WORKDIR/split/ -> BUCKET/DEST_PREFIX/ on R2 with
      Content-Encoding br, immutable caching
 
 usage: publish_tile_split.py --manifest live|PATH --workdir DIR
@@ -33,8 +33,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REGION = "eu-central-2"
-BUCKET = "wheatley.cloud"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import r2_target  # noqa: E402
+
+BUCKET = r2_target.BUCKET
 LIVE = "https://wheatley.cloud/hexagons/app/tile_manifest.json"
 USER_AGENT = "hexagons-stage-next/1.0"
 BOUNDARY = 44_864
@@ -101,9 +103,9 @@ def main() -> int:
     print(f"release {release}: {len(expected)} GSP3 tiles; s3://{BUCKET}/{source_prefix}/ -> s3://{BUCKET}/{dest_prefix}/", flush=True)
 
     if not args.skip_download:
-        subprocess.run(["aws", "s3", "sync", f"s3://{BUCKET}/{source_prefix}/", str(raw_dir),
-                        "--region", REGION, "--only-show-errors", "--exclude", "*", "--include", "gosper_*.bin"],
-                       check=True)
+        subprocess.run(r2_target.aws("s3", "sync", f"s3://{BUCKET}/{source_prefix}/", str(raw_dir),
+                                     "--only-show-errors", "--exclude", "*", "--include", "gosper_*.bin"),
+                       check=True, env=r2_target.aws_env())
     present = {p.name for p in raw_dir.glob("gosper_*.bin")}
     missing = expected - present
     if missing:
@@ -123,10 +125,10 @@ def main() -> int:
           f"({(agg_total + units_total) / raw_total:.1%})", flush=True)
 
     if not args.skip_upload:
-        subprocess.run(["aws", "s3", "cp", str(split_dir), f"s3://{BUCKET}/{dest_prefix}/", "--recursive",
-                        "--region", REGION, "--only-show-errors", "--exclude", "*.tmp",
-                        "--content-type", "application/octet-stream", "--content-encoding", "br",
-                        "--cache-control", IMMUTABLE], check=True)
+        subprocess.run(r2_target.aws("s3", "cp", str(split_dir), f"s3://{BUCKET}/{dest_prefix}/", "--recursive",
+                                     "--only-show-errors", "--exclude", "*.tmp",
+                                     "--content-type", "application/octet-stream", "--content-encoding", "br",
+                                     "--cache-control", IMMUTABLE), check=True, env=r2_target.aws_env())
         sample = sorted(expected)[0].removesuffix(".bin")
         url = f"https://wheatley.cloud/{dest_prefix}/{sample}.units.bin"
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "br"})

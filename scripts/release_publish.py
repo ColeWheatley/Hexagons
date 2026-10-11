@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Atomic S3 publication for baked Hexagons assets.
+"""Atomic publication of baked Hexagons assets to the bucket (Cloudflare R2, see r2_target.py).
 
 Assets are copied below ``releases/<sha256>/`` and verified before the one
 mutable object, ``tile_manifest.json``, is replaced.  An interrupted publish
@@ -14,10 +14,14 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import r2_target  # noqa: E402
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 NO_CACHE = "no-cache, no-store, must-revalidate"
@@ -76,8 +80,8 @@ class LocalStore(Store):
 
 class AwsStore(Store):
     def __init__(self, bucket: str, prefix: str): self.bucket, self.prefix = bucket, prefix.strip("/")
-    def _url(self, key: str) -> str: return f"s3://{self.bucket}/{self.prefix}/{key}"
-    def _run(self, args: list[str]) -> bytes: return subprocess.run(args, check=True, capture_output=True).stdout
+    def _url(self, key: str) -> str: return r2_target.s3_url(f"{self.prefix}/{key}", self.bucket)
+    def _run(self, args: list[str]) -> bytes: return subprocess.run(r2_target.aws(*args[1:]), check=True, capture_output=True, env=r2_target.aws_env()).stdout
     def put(self, source: Path, key: str, *, cache_control: str, content_type: str,
             sha256_hex: str | None = None) -> None:
         digest = sha256_hex or sha256(source)
@@ -281,17 +285,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=Path("frontend/app/tile_manifest.json"))
     parser.add_argument("--app-root", type=Path, default=Path("frontend/app"))
-    parser.add_argument("--bucket"); parser.add_argument("--prefix", default="hexagons/app")
+    parser.add_argument("--bucket", help=f"R2 bucket (production: {r2_target.BUCKET}); required for a real publish"); parser.add_argument("--prefix", default="hexagons/app")
     parser.add_argument("--release-id", help="preallocated immutable run/release identity")
     parser.add_argument("--allow-beta-diagnostics", action="store_true",
                         help="allow diagnostic tattoos only for the beta-stubai manifest")
     parser.add_argument("--dry-run", action="store_true", help="publish to a temporary local fake-S3 only")
-    parser.add_argument("--fake-s3", type=Path, help="filesystem fake-S3 root (never contacts AWS)")
+    parser.add_argument("--fake-s3", type=Path, help="filesystem fake-S3 root (never contacts R2)")
     args = parser.parse_args()
     if args.fake_s3: store: Store = LocalStore(args.fake_s3)
     elif args.dry_run: store = LocalStore(Path(tempfile.mkdtemp(prefix="hexagons-fake-s3-")))
     elif args.bucket: store = AwsStore(args.bucket, args.prefix)
-    else: parser.error("provide --bucket for S3 or --dry-run/--fake-s3 for local verification")
+    else: parser.error("provide --bucket for R2 or --dry-run/--fake-s3 for local verification")
     print(f"published release {publish(args.manifest, args.app_root, store, allow_beta_diagnostics=args.allow_beta_diagnostics, release_override=args.release_id)}")
 
 if __name__ == "__main__": main()
