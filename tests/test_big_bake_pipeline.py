@@ -177,9 +177,10 @@ class InventoryTests(unittest.TestCase):
     def test_production_runtime_refuses_fast_or_tattooed_recipe(self):
         with tempfile.TemporaryDirectory() as temp:
             payload = inventory_fixture(Path(temp))
-            payload["sources"]["aerial"] = {
-                "valid_count": bake_preflight.EXPECTED_FULL_CORPUS_FILES,
-                "total_bytes": bake_preflight.EXPECTED_FULL_CORPUS_BYTES,
+            payload["sources"]["aerial"] = {"valid_count": 2, "total_bytes": 30}
+            payload["sources"]["aerial_files"] = [{"path": "a.tif"}, {"path": "b.tif"}]
+            payload["sources"]["known_source_inventory"] = {
+                "expected_files": 2, "expected_bytes": 30, "matches": True,
             }
             big_bake.validate_runtime_inventory(payload)
             payload["texture_recipe"]["encoding_effort"] = 1
@@ -189,6 +190,29 @@ class InventoryTests(unittest.TestCase):
             payload["texture_recipe"]["diagnostic_tattoos"] = True
             with self.assertRaisesRegex(ValueError, "diagnostic tattoos"):
                 big_bake.validate_runtime_inventory(payload)
+
+
+    def test_production_runtime_validates_against_recorded_corpus_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            payload = inventory_fixture(Path(temp))
+            payload["sources"]["aerial"] = {"valid_count": 2, "total_bytes": 30}
+            payload["sources"]["aerial_files"] = [{"path": "a.tif"}, {"path": "b.tif"}]
+            with self.assertRaisesRegex(ValueError, "audited source inventory"):
+                big_bake.validate_runtime_inventory(payload)
+            known = {"expected_files": 2, "expected_bytes": 30, "matches": False}
+            payload["sources"]["known_source_inventory"] = known
+            with self.assertRaisesRegex(ValueError, "audited source inventory"):
+                big_bake.validate_runtime_inventory(payload)
+            known["matches"] = True
+            known["expected_bytes"] = 31
+            with self.assertRaisesRegex(ValueError, "complete source corpus"):
+                big_bake.validate_runtime_inventory(payload)
+            known["expected_bytes"] = 30
+            payload["sources"]["aerial_files"].pop()
+            with self.assertRaisesRegex(ValueError, "complete source corpus"):
+                big_bake.validate_runtime_inventory(payload)
+            payload["sources"]["aerial_files"].append({"path": "b.tif"})
+            big_bake.validate_runtime_inventory(payload)
 
 
 class IsolationTests(unittest.TestCase):
@@ -299,13 +323,95 @@ class ProgressiveUploadTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
-    def _write_tif(self, path: Path, *, crs="EPSG:31254"):
+    def _write_tif(self, path: Path, *, crs="EPSG:31254", origin=(1000, 2000)):
         data = np.zeros((3, 8, 8), dtype=np.uint8)
         with rasterio.open(
             path, "w", driver="GTiff", width=8, height=8, count=3,
-            dtype="uint8", crs=crs, transform=from_origin(1000, 2000, 0.2, 0.2),
+            dtype="uint8", crs=crs, transform=from_origin(*origin, 0.2, 0.2),
         ) as target:
             target.write(data)
+
+    def _write_tsv(self, path: Path, tifs):
+        import hashlib
+
+        path.write_text("".join(
+            f"{tif.name}\t{tif.stat().st_size}\t{hashlib.sha256(tif.read_bytes()).hexdigest()}\n"
+            for tif in sorted(tifs)
+        ))
+
+    def test_audited_tsv_defines_corpus_identity_for_any_sheet_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sources = root / "sources"
+            corpus = root / "corpus"
+            sources.mkdir()
+            corpus.mkdir()
+            tifs = []
+            for index, name in enumerate((
+                "dop_2221-28_2023.tif", "dop_m31w_60000_230000_2022.tif",
+                "dop_m31w_61250_230000_2022.tif",
+            )):
+                self._write_tif(sources / name, origin=(1000 + 10 * index, 2000))
+                # Corpus directories may be symlink farms; names come from the link.
+                (corpus / name).symlink_to(sources / name)
+                tifs.append(corpus / name)
+            tsv = root / "inventory.tsv"
+            self._write_tsv(tsv, tifs)
+            summary, valid, _coverage = bake_preflight.inspect_aerial_sources(tifs)
+            self.assertEqual(summary["valid_count"], 3)
+            self.assertEqual(summary["duplicate_bounds"], [])
+            result = bake_preflight.compare_known_source_inventory(tsv, valid, verify_hashes=True)
+            self.assertTrue(result["matches"])
+            self.assertEqual(result["expected_files"], 3)
+            self.assertEqual(result["expected_bytes"], summary["total_bytes"])
+            self.assertEqual(len(result["representative_full_hashes"]), 3)
+
+            # An extra on-disk sheet absent from the TSV is unexpected.
+            extra = corpus / "dop_m31w_62500_230000_2022.tif"
+            self._write_tif(extra, origin=(1100, 2000))
+            _summary, valid, _ = bake_preflight.inspect_aerial_sources(tifs + [extra])
+            result = bake_preflight.compare_known_source_inventory(tsv, valid, verify_hashes=True)
+            self.assertFalse(result["matches"])
+            self.assertEqual(result["unexpected"], [extra.name])
+
+            # A TSV row with no file on disk is missing.
+            _summary, valid, _ = bake_preflight.inspect_aerial_sources(tifs[:2])
+            result = bake_preflight.compare_known_source_inventory(tsv, valid, verify_hashes=True)
+            self.assertFalse(result["matches"])
+            self.assertEqual(result["missing"], [tifs[2].name])
+
+            # Same name and size but different content fails the hash probe.
+            lines = tsv.read_text().splitlines()
+            name, size, _digest = lines[0].split("\t")
+            lines[0] = f"{name}\t{size}\t{'0' * 64}"
+            tsv.write_text("\n".join(lines) + "\n")
+            _summary, valid, _ = bake_preflight.inspect_aerial_sources(tifs)
+            result = bake_preflight.compare_known_source_inventory(tsv, valid, verify_hashes=True)
+            self.assertFalse(result["matches"])
+            self.assertEqual(result["hash_mismatches"], [name])
+
+    def test_audited_tsv_rejects_malformed_or_empty_inventories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tsv = Path(temp) / "inventory.tsv"
+            tsv.write_text("")
+            with self.assertRaisesRegex(ValueError, "empty"):
+                bake_preflight.load_known_source_inventory(tsv)
+            tsv.write_text(f"a.tif\t1\t{'a' * 64}\na.tif\t1\t{'b' * 64}\n")
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                bake_preflight.load_known_source_inventory(tsv)
+            tsv.write_text(f"a.tif\t1\tnot-a-digest\n")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                bake_preflight.load_known_source_inventory(tsv)
+
+    def test_duplicate_bounds_are_reported_regardless_of_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "dop_2221-28_2023.tif"
+            second = root / "dop_m31w_1000_1998_2022.tif"
+            self._write_tif(first)
+            self._write_tif(second)
+            summary, _valid, _ = bake_preflight.inspect_aerial_sources([first, second])
+            self.assertEqual(len(summary["duplicate_bounds"]), 1)
 
     def test_source_validation_reports_corruption_metadata_and_representative_hash(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -332,11 +438,9 @@ class PreflightTests(unittest.TestCase):
         inventory_path = BACKEND / "aerial_source_inventory.tsv"
         known = bake_preflight.load_known_source_inventory(inventory_path)
         restored = restore_corpus.load_inventory(inventory_path)
-        self.assertEqual(len(known), bake_preflight.EXPECTED_FULL_CORPUS_FILES)
-        self.assertEqual(
-            sum(item["bytes"] for item in known.values()),
-            bake_preflight.EXPECTED_FULL_CORPUS_BYTES,
-        )
+        # Historical release 20260730T071045Z-1548e536091d corpus identity.
+        self.assertEqual(len(known), 3_718)
+        self.assertEqual(sum(item["bytes"] for item in known.values()), 28_185_093_979)
         self.assertEqual(
             [(item.name, item.size, item.sha256) for item in restored],
             [

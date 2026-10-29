@@ -21,7 +21,6 @@ from shapely.ops import unary_union
 import bake_inventory
 import generate_manifest
 import waffle_iron as waffle
-from bake_preflight import EXPECTED_FULL_CORPUS_BYTES, EXPECTED_FULL_CORPUS_FILES
 from gosper_texture_page_adapter import exact_pages_for_tiles
 from progressive_upload import ProgressiveUploadSpool
 
@@ -114,10 +113,19 @@ def validate_runtime_inventory(inventory: dict) -> None:
                 f"production-tirol texture transaction must be WebP{waffle.TEXTURE_BOOTSTRAP_SIZE} "
                 "plus 128/256/4096 tiers"
             )
-        aerial = inventory["sources"]["aerial"]
+        # Corpus identity is whatever audited TSV the preflight matched; the
+        # inventory must carry that match and agree with it exactly.
+        sources = inventory["sources"]
+        aerial = sources.get("aerial", {})
+        known = sources.get("known_source_inventory")
+        if not known or not known.get("matches"):
+            raise ValueError(
+                "production-tirol inventory lacks a matched audited source inventory; re-run preflight"
+            )
         if (
-            aerial.get("valid_count") != EXPECTED_FULL_CORPUS_FILES
-            or aerial.get("total_bytes") != EXPECTED_FULL_CORPUS_BYTES
+            aerial.get("valid_count") != known.get("expected_files")
+            or aerial.get("total_bytes") != known.get("expected_bytes")
+            or len(sources.get("aerial_files", [])) != known.get("expected_files")
         ):
             raise ValueError("production-tirol inventory does not describe the complete source corpus")
 

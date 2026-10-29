@@ -49,8 +49,6 @@ import r2_target  # scripts/ is on sys.path via waffle_iron; the one place for t
 
 
 GIB = 1024 ** 3
-EXPECTED_FULL_CORPUS_BYTES = 28_185_093_979
-EXPECTED_FULL_CORPUS_FILES = 3_718
 # The recorded recipe version and the recorded effort must be derived from the
 # same value: page markers on disk embed the effort, so a version string built
 # with a different effort can never match a marker, and every already-baked
@@ -66,7 +64,11 @@ def run_text(args: list[str], *, cwd: Path | None = None) -> str:
 
 
 def load_known_source_inventory(path: Path) -> dict[str, dict[str, Any]]:
-    """Load the audited filename/size/full-digest source identity."""
+    """Load the audited filename/size/full-digest source identity.
+
+    The TSV is the single source of truth for corpus identity: its row count
+    and byte sum are the expected full-corpus totals.
+    """
     result: dict[str, dict[str, Any]] = {}
     for line_number, raw in enumerate(path.read_text().splitlines(), 1):
         parts = raw.split("\t")
@@ -75,17 +77,16 @@ def load_known_source_inventory(path: Path) -> dict[str, dict[str, Any]]:
         name, size_text, digest = parts
         if name in result:
             raise ValueError(f"{path}:{line_number}: duplicate filename {name}")
+        if not name.endswith(".tif") or "/" in name:
+            raise ValueError(f"{path}:{line_number}: expected a bare .tif filename")
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise ValueError(f"{path}:{line_number}: invalid SHA-256")
-        result[name] = {"bytes": int(size_text), "sha256": digest}
-    if (
-        len(result) != EXPECTED_FULL_CORPUS_FILES
-        or sum(item["bytes"] for item in result.values()) != EXPECTED_FULL_CORPUS_BYTES
-    ):
-        raise ValueError(
-            "source inventory identity mismatch: expected "
-            f"{EXPECTED_FULL_CORPUS_FILES} files / {EXPECTED_FULL_CORPUS_BYTES} bytes"
-        )
+        size = int(size_text)
+        if size <= 0:
+            raise ValueError(f"{path}:{line_number}: non-positive byte size")
+        result[name] = {"bytes": size, "sha256": digest}
+    if not result:
+        raise ValueError(f"{path}: source inventory is empty")
     return result
 
 
@@ -101,7 +102,9 @@ def compare_known_source_inventory(
     inventory_path: Path, valid_sources: list[dict[str, Any]], *, verify_hashes: bool,
 ) -> dict[str, Any]:
     expected = load_known_source_inventory(inventory_path)
-    actual = {Path(item["path"]).name: item for item in valid_sources}
+    # Compare by the discovered filename (a corpus may be a directory of
+    # symlinks whose resolved targets live elsewhere).
+    actual = {item.get("name", Path(item["path"]).name): item for item in valid_sources}
     missing = sorted(set(expected) - set(actual))
     unexpected = sorted(set(actual) - set(expected))
     size_mismatches = [
@@ -130,6 +133,7 @@ def compare_known_source_inventory(
                 hash_mismatches.append(name)
     return {
         "path": str(inventory_path.resolve()),
+        "sha256": sha256_path(inventory_path),
         "expected_files": len(expected),
         "expected_bytes": sum(item["bytes"] for item in expected.values()),
         "missing": missing,
@@ -213,6 +217,7 @@ def inspect_aerial_sources(paths: list[Path]) -> tuple[dict[str, Any], list[dict
                 )
                 item = {
                     "path": str(path.resolve()),
+                    "name": path.name,
                     "bytes": size,
                     "mtime_ns": path.stat().st_mtime_ns,
                     "width": source.width,
@@ -469,16 +474,10 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
         warnings.append(
             f"source corpus has {len(aerial['overlap_anomalies'])} positive-area overlaps"
         )
-    if profile.require_full_corpus and (
-        aerial["valid_count"] != EXPECTED_FULL_CORPUS_FILES
-        or aerial["total_bytes"] != EXPECTED_FULL_CORPUS_BYTES
-    ):
-        failures.append(
-            "rechner-big requires the complete Tirol corpus "
-            f"(expected {EXPECTED_FULL_CORPUS_FILES} files / {EXPECTED_FULL_CORPUS_BYTES} bytes; "
-            f"found {aerial['valid_count']} / {aerial['total_bytes']})"
-        )
     if profile.require_full_corpus:
+        # Corpus identity (file count, byte total, names, sizes, representative
+        # full hashes) comes solely from the audited TSV passed via
+        # --source-inventory.
         if not args.source_inventory.is_file():
             failures.append(f"audited source inventory is absent: {args.source_inventory}")
         else:
@@ -486,12 +485,21 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
                 known_source_inventory = compare_known_source_inventory(
                     args.source_inventory, valid_sources, verify_hashes=True
                 )
-                if not known_source_inventory["matches"]:
-                    failures.append(
-                        "source corpus does not match the audited filename/size/hash inventory"
-                    )
             except Exception as exc:
                 failures.append(f"audited source inventory is invalid: {exc}")
+        if known_source_inventory is not None:
+            expected_files = known_source_inventory["expected_files"]
+            expected_bytes = known_source_inventory["expected_bytes"]
+            if aerial["valid_count"] != expected_files or aerial["total_bytes"] != expected_bytes:
+                failures.append(
+                    f"{profile.name} requires the complete audited corpus "
+                    f"(expected {expected_files} files / {expected_bytes} bytes; "
+                    f"found {aerial['valid_count']} / {aerial['total_bytes']})"
+                )
+            if not known_source_inventory["matches"]:
+                failures.append(
+                    "source corpus does not match the audited filename/size/hash inventory"
+                )
 
     dem = None
     if not args.dem.is_file():
@@ -601,6 +609,7 @@ def build_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str,
             "sources": {
                 "aerial_dir": str(args.aerial_dir.resolve()), "aerial": aerial,
                 "aerial_files": valid_sources, "dem": dem,
+                "known_source_inventory": known_source_inventory,
                 "intersection_bounds": report["expected_intersection_bounds"],
             },
             "geometry_recipe": {"version": BAKER_VERSION, "format": "GSP3"},

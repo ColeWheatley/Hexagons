@@ -47,6 +47,7 @@ write_current() {
     printf 'DEM_PATH=%q\n' "$DEM_PATH"
     printf 'S3_BUCKET=%q\n' "$S3_BUCKET"
     printf 'S3_PREFIX=%q\n' "$S3_PREFIX"
+    printf 'SOURCE_INVENTORY=%q\n' "$SOURCE_INVENTORY"
   } > "$temporary"
   mv "$temporary" "$CURRENT"
 }
@@ -62,6 +63,8 @@ new_run() {
   UNIT="hexagons-big-bake-$RUN_ID"
   AERIAL_DIR="${HEXAGONS_AERIAL_DIR:-$ROOT/hex_backend/aerial_tifs}"
   DEM_PATH="${HEXAGONS_DEM_PATH:-$ROOT/hex_backend/DGM_Tirol_5m_epsg31254_2006_2020.tif}"
+  # Audited name/bytes/sha256 TSV: the sole definition of the expected corpus.
+  SOURCE_INVENTORY="${HEXAGONS_SOURCE_INVENTORY:-$ROOT/hex_backend/aerial_source_inventory.tsv}"
   # Cloudflare R2 bucket (same default as scripts/r2_target.py; wheatley.cloud moved off S3 2026-10-11).
   # The aws profile/endpoint come from scripts/r2_target.py (WHEATLEY_AWS_PROFILE, WHEATLEY_S3_ENDPOINT).
   S3_BUCKET="${HEXAGONS_S3_BUCKET:-${WHEATLEY_BUCKET:-wheatley-cloud}}"
@@ -76,6 +79,12 @@ preflight() {
   else
     load_current
   fi
+  SOURCE_INVENTORY="${SOURCE_INVENTORY:-$ROOT/hex_backend/aerial_source_inventory.tsv}"
+  local publication_args=()
+  # HEXAGONS_NO_PUBLISH=1: bake + progressive upload only; no site build,
+  # release pointer flip or public verification. HEXAGONS_NO_UPLOAD=1: local only.
+  [[ "${HEXAGONS_NO_PUBLISH:-0}" == "1" ]] && publication_args+=(--no-publish)
+  [[ "${HEXAGONS_NO_UPLOAD:-0}" == "1" ]] && publication_args+=(--no-upload)
   git -C "$ROOT" fetch --prune origin
   echo "Repository: $ROOT"
   echo "Branch: $(git -C "$ROOT" branch --show-current)"
@@ -90,12 +99,14 @@ preflight() {
     --release-profile production-tirol \
     --run-id "$RUN_ID" \
     --aerial-dir "$AERIAL_DIR" \
+    --source-inventory "$SOURCE_INVENTORY" \
     --dem "$DEM_PATH" \
     --output-root "$OUTPUT_ROOT" \
     --report "$REPORT" \
     --inventory "$INVENTORY" \
     --bucket "$S3_BUCKET" \
-    --prefix "$S3_PREFIX" | tee "$RUN_ROOT/preflight.log"
+    --prefix "$S3_PREFIX" \
+    "${publication_args[@]}" | tee "$RUN_ROOT/preflight.log"
 }
 
 assert_pushed_clean_revision() {
@@ -125,12 +136,23 @@ start_service() {
     exit 0
   fi
   systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
+  # The transient unit inherits the systemd user manager's environment, not
+  # this shell's: forward the R2 target/credential variables that are set here
+  # (an explicitly empty WHEATLEY_AWS_PROFILE is meaningful, so test with +x).
+  local forwarded_env=() name
+  for name in WHEATLEY_BUCKET WHEATLEY_S3_ENDPOINT WHEATLEY_AWS_PROFILE WHEATLEY_AWS_REGION \
+      AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+    if [[ -n "${!name+x}" ]]; then
+      forwarded_env+=("--setenv=$name=${!name}")
+    fi
+  done
   systemd-run --user \
     --unit="$UNIT" \
     --collect \
     --property=Restart=no \
     --property=TimeoutStopSec=120 \
     --working-directory="$ROOT" \
+    "${forwarded_env[@]}" \
     "$SCRIPT" worker
   sleep 1
   systemctl --user show "$UNIT" -p MainPID --value > "$RUN_ROOT/pid"
