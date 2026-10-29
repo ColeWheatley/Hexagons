@@ -14,7 +14,7 @@
 // - Range requests are never answered from, or written to, Cache Storage
 //   (Cache.put rejects 206). Progressive KTX2 prefixes are cached by the
 //   texture worker itself.
-const BUILD_ID = 'v0.10.0-rc6+945492899b3c';
+const BUILD_ID = 'v0.10.0-rc6+e4c03007601c';
 const SCOPE_TAG = (() => {
     try {
         return new URL(self.registration.scope).pathname.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'root';

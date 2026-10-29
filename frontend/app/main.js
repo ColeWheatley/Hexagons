@@ -1573,7 +1573,7 @@ class PistonViewer {
         this.readouts.nearLodBands = `${nearBands.join(' / ')} km`;
         this.readouts.farLodBands = `${farBands.join(' / ')} km`;
         this.readouts.movingLodSummary =
-            `moving: uniform skirtless L${this.movingLevel} (${movingWidth.toFixed(0)} m)`;
+            `moving: uniform skirted L${this.movingLevel} (${movingWidth.toFixed(0)} m)`;
         this.readouts.settledLodSummary =
             `settled: fixed ${[...nearBands, ...farBands].join(' / ')} km bands`;
     }
@@ -1718,7 +1718,7 @@ class PistonViewer {
                     }
                 }
             }
-            if (k >= 1 && g.children[1]) g.children[1].visible = !forceCoarse;
+            if (k >= 1 && g.children[1]) g.children[1].visible = true; // moving L3 keeps its skirts too
             if (forceCoarse) {
                 const visible = k === this.movingLevel;
                 if (g.visible !== visible) g.visible = visible;
@@ -4553,7 +4553,7 @@ class PistonViewer {
                 if (!layer) continue;
                 layer.userData.activeSkirts = lodData.activeSkirts;
                 layer.userData.gosperLevel = level;
-                if (level >= 1 && layer.children[1]) layer.children[1].visible = !this.isMovingView;
+                if (level >= 1 && layer.children[1]) layer.children[1].visible = true;
                 replacement.add(layer);
                 builtLevels[level] = true;
             }
@@ -5046,10 +5046,10 @@ class PistonViewer {
                 if (finalMesh) {
                     finalMesh.userData.activeSkirts = lodData.activeSkirts;
                     finalMesh.userData.gosperLevel = level;
-                    // Aggregate skirts only render when settled — moving mode
-                    // is large SKIRTLESS caps (fast) by owner contract.
+                    // Aggregate skirts render while moving too, so the large
+                    // moving-mode caps are not skirtless.
                     if (level >= 1 && finalMesh.children[1]) {
-                        finalMesh.children[1].visible = !this.isMovingView;
+                        finalMesh.children[1].visible = true;
                     }
                     meshGroup.add(finalMesh);
                     builtLevels[level] = true;
