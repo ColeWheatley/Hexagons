@@ -498,5 +498,16 @@ class PreflightTests(unittest.TestCase):
             self.assertTrue(snapshot["completed"])
 
 
+class CrsLabelTests(unittest.TestCase):
+    def test_bare_wkt_gk_west_is_epsg_31254_but_other_zones_are_not(self):
+        import rasterio.crs
+        import bake_preflight
+        epsg = rasterio.crs.CRS.from_epsg(31254)
+        bare = rasterio.crs.CRS.from_wkt(epsg.to_wkt())
+        self.assertEqual(bake_preflight.crs_label(epsg), "EPSG:31254")
+        self.assertEqual(bake_preflight.crs_label(bare), "EPSG:31254")
+        self.assertEqual(bake_preflight.crs_label(rasterio.crs.CRS.from_epsg(31255)), "EPSG:31255")
+
+
 if __name__ == "__main__":
     unittest.main()

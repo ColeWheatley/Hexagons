@@ -58,6 +58,26 @@ DEFAULT_BUCKET = r2_target.BUCKET  # Cloudflare R2 bucket (wheatley.cloud moved 
 DEFAULT_PREFIX = "hexagons/app"
 
 
+_CRS_LABELS: dict[str, str] = {}
+
+
+def crs_label(crs: Any) -> str:
+    """'EPSG:n' for a raster CRS, even when the file stores bare WKT without an authority.
+
+    Some Land Tirol sheets carry the full MGI / Austria GK West definition as text, so
+    str(crs) is a long WKT string although it is EPSG:31254.  pyproj recognises it with
+    a lowered confidence threshold; anything it cannot identify keeps its raw text so the
+    CRS check still fails for genuinely different projections.
+    """
+    text = str(crs)
+    if text.startswith("EPSG:") or crs is None:
+        return text
+    if text not in _CRS_LABELS:
+        code = pyproj.CRS.from_wkt(crs.to_wkt()).to_epsg(min_confidence=20)
+        _CRS_LABELS[text] = f"EPSG:{code}" if code else text
+    return _CRS_LABELS[text]
+
+
 def run_text(args: list[str], *, cwd: Path | None = None) -> str:
     result = subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False)
     return (result.stdout or result.stderr).strip()
@@ -178,7 +198,7 @@ def raster_descriptor(path: Path) -> dict[str, Any]:
             "height": dataset.height,
             "count": dataset.count,
             "dtype": list(dataset.dtypes),
-            "crs": str(dataset.crs),
+            "crs": crs_label(dataset.crs),
             "resolution": [abs(float(dataset.transform.a)), abs(float(dataset.transform.e))],
             "bounds": [float(value) for value in dataset.bounds],
             "nodata": dataset.nodata,
@@ -210,7 +230,7 @@ def inspect_aerial_sources(paths: list[Path]) -> tuple[dict[str, Any], list[dict
                 # without spending hours hashing or decoding the whole corpus.
                 source.read(1, window=rasterio.windows.Window(0, 0, 1, 1))
                 bounds = tuple(float(value) for value in source.bounds)
-                crs = str(source.crs)
+                crs = crs_label(source.crs)
                 resolution = (
                     round(abs(float(source.transform.a)), 9),
                     round(abs(float(source.transform.e)), 9),
