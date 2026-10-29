@@ -1,3 +1,7 @@
+# Current Tirol display upgrade
+
+For the human-launched Rechner session, follow [docs/RECHNER_TIROL_UPGRADE.md](docs/RECHNER_TIROL_UPGRADE.md). It defines the authoritative administrative Tirol-minus-Lienz coverage west of Wörgl, source inventory, required pipeline work and staged publication gates; it supersedes legacy source-union/rectangle coverage for this upgrade. Do not start or schedule the overnight work from a preparation chat.
+
 # Working with this repo
 
 ## Tasking OpenAI Codex agents
