@@ -16,7 +16,7 @@ Start the server online, unthrottled, from a shell that stays open:
 
 ```sh
 node scripts/netlab/netlab_server.mjs \
-  --proxy-mount /hexagons/app/=https://wheatley.cloud/hexagons/app/ \
+  --proxy-mount /hexagons/app/=https://colewheatley.com/hexagons/app/ \
   --profile none --log scripts/netlab/tmp/server.jsonl
 ```
 
@@ -33,7 +33,7 @@ Stop that server and start an **offline** server with the same log path and `--p
 
 ```sh
 node scripts/netlab/netlab_server.mjs \
-  --proxy-mount /hexagons/app/=https://wheatley.cloud/hexagons/app/ \
+  --proxy-mount /hexagons/app/=https://colewheatley.com/hexagons/app/ \
   --profile cafe --offline --log scripts/netlab/tmp/server.jsonl
 ```
 

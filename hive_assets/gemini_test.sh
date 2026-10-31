@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse arguments
-URL="${1:-https://wheatley.cloud/powfinder/hexagons/app/}"
+URL="${1:-https://colewheatley.com/hexagons/app/}"
 ADDENDUM=""
 
 # Check for --prompt flag

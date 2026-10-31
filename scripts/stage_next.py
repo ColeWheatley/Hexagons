@@ -35,8 +35,8 @@ import compact_manifest  # noqa: E402
 import r2_target  # noqa: E402
 from publish_site import IMMUTABLE, REVALIDATE, metadata, sha256  # noqa: E402
 
-LIVE_MANIFEST = "https://wheatley.cloud/hexagons/app/tile_manifest.json"
-PUBLIC = "https://wheatley.cloud"
+LIVE_MANIFEST = r2_target.public_url("hexagons/app/tile_manifest.json")
+PUBLIC = r2_target.PUBLIC_BASE
 # Cloudflare rejects Python's default urllib user agent with 403.
 USER_AGENT = "hexagons-stage-next/1.0"
 

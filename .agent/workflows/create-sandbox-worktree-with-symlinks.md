@@ -54,8 +54,8 @@ When your work is done, the owner will review your branch and either merge it or
 
 ## Project Overview: Hexagons (PowFinder 3D)
 
-**Live site**: [https://wheatley.cloud/powfinder/hexagons/app/](https://wheatley.cloud/powfinder/hexagons/app/)
-**Landing page**: [https://wheatley.cloud/powfinder/hexagons/landing/](https://wheatley.cloud/powfinder/hexagons/landing/)
+**Live site**: [https://colewheatley.com/hexagons/app/](https://colewheatley.com/hexagons/app/)
+**Landing page**: [https://colewheatley.com/hexagons/](https://colewheatley.com/hexagons/)
 
 ### What Is This?
 
@@ -63,7 +63,7 @@ A 3D hexagonal terrain viewer for the Austrian Alps (Tirol). It renders real hig
 
 ### Development Stage
 
-We are in **active development** on a local machine. The app is already deployed at `wheatley.cloud`, but we're iterating heavily on:
+We are in **active development** on a local machine. The app is already deployed at `colewheatley.com/hexagons/`, but we're iterating heavily on:
 - **Performance**: Memory usage, frame times, LOD transitions, render spikes
 - **Visual quality**: Skirt rendering, AO, texture transitions, anti-aliasing
 - **Data pipeline**: The `waffle_iron.py` baker that converts DEM TIFs → binary hex tiles
@@ -78,7 +78,7 @@ We are in **active development** on a local machine. The app is already deployed
 | Search | Nominatim geocoding + proj4 | `frontend/app/search.js` |
 | Styling | Vanilla CSS, glassmorphism | `frontend/app/style.css` |
 | Backend/Baker | Python (rasterio, numpy) | `hex_backend/waffle_iron.py` |
-| Hosting | Static files on S3 via `wheatley.cloud` | — |
+| Hosting | Static files on Cloudflare R2 (`colewheatley-com`) via `colewheatley.com` | — |
 
 
 ### How It Works

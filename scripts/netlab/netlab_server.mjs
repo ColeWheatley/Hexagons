@@ -143,7 +143,7 @@ function args(argv) {
 }
 function upstreamGet(url, dest) {
   const target = new URL(url);
-  if (target.protocol !== 'https:' || target.hostname !== 'wheatley.cloud' ||
+  if (target.protocol !== 'https:' || target.hostname !== 'colewheatley.com' ||
       !target.pathname.startsWith('/hexagons/app/'))
     return Promise.reject(new Error(`upstream URL outside allowed Wheatley app path: ${target.href}`));
   return new Promise((resolve, reject) => {

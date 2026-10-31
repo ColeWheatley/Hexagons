@@ -6,8 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import urllib.request
-from urllib.parse import urljoin
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import r2_target  # noqa: E402  the one place for the public origin
 
 
 def fetch(url: str) -> tuple[bytes, str, dict[str, str]]:
@@ -15,6 +20,9 @@ def fetch(url: str) -> tuple[bytes, str, dict[str, str]]:
     with urllib.request.urlopen(request, timeout=30) as response:
         if response.status != 200:
             raise RuntimeError(f"{url}: HTTP {response.status}")
+        if urlparse(response.geturl()).netloc != urlparse(url).netloc:
+            # A cross-origin redirect (e.g. the retired wheatley.cloud/hexagons/*) is not a verified origin.
+            raise RuntimeError(f"{url}: redirected to {response.geturl()}")
         return response.read(), response.headers.get_content_type(), dict(response.headers)
 
 
@@ -27,7 +35,7 @@ def require_type(url: str, expected: str) -> bytes:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="https://wheatley.cloud/hexagons/")
+    parser.add_argument("--base-url", default=r2_target.public_url("hexagons/"))
     args = parser.parse_args()
     base = args.base_url.rstrip("/") + "/"
     landing = require_type(base, "text/html").decode("utf-8")

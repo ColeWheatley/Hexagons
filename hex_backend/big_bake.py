@@ -21,6 +21,7 @@ from shapely.ops import unary_union
 import bake_inventory
 import generate_manifest
 import waffle_iron as waffle
+import r2_target  # on sys.path via waffle_iron; the one place for the public origin
 from bake_preflight import EXPECTED_FULL_CORPUS_BYTES, EXPECTED_FULL_CORPUS_FILES
 from gosper_texture_page_adapter import exact_pages_for_tiles
 from progressive_upload import ProgressiveUploadSpool
@@ -484,8 +485,8 @@ def run(inventory_path: Path) -> None:
             sys.executable, str(repo / "scripts/verify_public_release.py")
         ], check=True)
         inventory["public_verification"] = {
-            "status": "complete", "landing": "https://wheatley.cloud/hexagons/",
-            "application": "https://wheatley.cloud/hexagons/app/",
+            "status": "complete", "landing": r2_target.public_url("hexagons/"),
+            "application": r2_target.public_url("hexagons/app/"),
         }
     inventory["manifest"] = {
         "status": "complete", "path": str(manifest_path),
