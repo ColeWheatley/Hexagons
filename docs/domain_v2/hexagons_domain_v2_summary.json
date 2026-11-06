@@ -1,0 +1,18 @@
+{
+ "domain": {
+  "sheets": 7986,
+  "area_km2": 9982.5
+ },
+ "M28 2023": {
+  "sheets": 5253,
+  "area_km2": 6566.2
+ },
+ "M28 2025": {
+  "sheets": 2178,
+  "area_km2": 2722.5
+ },
+ "M31 2022 (reprojected to M28 grid)": {
+  "sheets": 555,
+  "area_km2": 693.8
+ }
+}
