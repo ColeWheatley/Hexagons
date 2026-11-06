@@ -1,7 +1,7 @@
 # Goal: build "netlab" — a realistic slow-network A/B bench for the Hexagons viewer
 
 You are working in a standalone git clone of the Hexagons repo on branch `codex/netlab`.
-The live app is https://colewheatley.com/hexagons/app/ (a Three.js hex-terrain viewer of Tirol).
+The live app is https://wheatley.cloud/hexagons/app/ (a Three.js hex-terrain viewer of Tirol).
 The owner's complaint: it loads slowly on real (slow, bufferbloated) wifi. Other agents are
 about to change how the app downloads terrain tiles and textures. Your job is the
 **measurement instrument** they (and the orchestrator) will use to prove each change helps.
@@ -16,7 +16,7 @@ teardown discipline), `frontend/app/dev/benchmark.js` (how scenarios drive the c
 ## Hard rules
 
 - NEVER write to S3/AWS or any remote service. NEVER `git push`. Only read from
-  `https://colewheatley.com/hexagons/app/...` (plain HTTPS GETs).
+  `https://wheatley.cloud/hexagons/app/...` (plain HTTPS GETs).
 - Only ONE headless Chrome at a time. Launch with `subprocess.Popen(..., start_new_session=True)`,
   never start a new one until the previous one has been waited on, tear down with
   terminate → kill(process group) → wait in `finally`, unique `--user-data-dir` per launch (its path MUST contain the string `Hexagons`, e.g. under this clone — an external memory tripwire keys on it)
@@ -41,7 +41,7 @@ generated once via the `openssl` CLI into `scripts/netlab/.cert/`, gitignored) t
 reproduces production serving AND a realistic bottleneck link.
 
 Mounts (CLI flags, repeatable):
-- `--proxy-mount /hexagons/app/=https://colewheatley.com/hexagons/app/` — every request under
+- `--proxy-mount /hexagons/app/=https://wheatley.cloud/hexagons/app/` — every request under
   the mount path is served from a local **mirror** directory (`--mirror-dir`, default
   `~/dev/hexagons-netlab-mirror/`), keyed by upstream path **including** the query string
   (hash it into the filename if needed); on a miss, fetch the FULL object from upstream once

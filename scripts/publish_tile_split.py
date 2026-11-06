@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import r2_target  # noqa: E402
 
 BUCKET = r2_target.BUCKET
-LIVE = r2_target.public_url("hexagons/app/tile_manifest.json")
+LIVE = "https://wheatley.cloud/hexagons/app/tile_manifest.json"
 USER_AGENT = "hexagons-stage-next/1.0"
 BOUNDARY = 44_864
 TOTAL = 280_166
@@ -130,7 +130,7 @@ def main() -> int:
                                      "--content-type", "application/octet-stream", "--content-encoding", "br",
                                      "--cache-control", IMMUTABLE), check=True, env=r2_target.aws_env())
         sample = sorted(expected)[0].removesuffix(".bin")
-        url = r2_target.public_url(f"{dest_prefix}/{sample}.units.bin")
+        url = f"https://wheatley.cloud/{dest_prefix}/{sample}.units.bin"
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "br"})
         with urllib.request.urlopen(request, timeout=60) as response:
             wire = response.read()

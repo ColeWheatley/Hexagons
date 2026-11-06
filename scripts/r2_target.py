@@ -1,11 +1,7 @@
-"""The ONE place that says where Hexagons publishes: Cloudflare R2, bucket colewheatley-com,
-served publicly at https://colewheatley.com/hexagons/...
+"""The ONE place that says where Hexagons publishes: Cloudflare R2, bucket wheatley-cloud.
 
-History: the site moved off AWS S3 (bucket ``wheatley.cloud``, eu-central-2) to
-Cloudflare R2 bucket ``wheatley-cloud`` on 2026-10-11; on 2026-10-31 Hexagons moved
-again, to its own bucket ``colewheatley-com`` behind https://colewheatley.com (same
-``hexagons/`` key prefix, keys unchanged). wheatley.cloud is now the Nunatak site;
-its old /hexagons/* URLs only redirect, so nothing here may fetch or publish there. R2 speaks the S3 API, so the publish scripts still
+wheatley.cloud moved off AWS S3 (bucket ``wheatley.cloud``, eu-central-2) to
+Cloudflare R2 on 2026-10-11. R2 speaks the S3 API, so the publish scripts still
 shell out to ``aws s3 ...``; they just have to add the R2 endpoint, profile and
 region to every call and must not hand AWS credentials to R2. Use:
 
@@ -14,15 +10,13 @@ region to every call and must not hand AWS credentials to R2. Use:
 
 Override with environment variables (nothing else in the repo hard-codes these):
 
-    WHEATLEY_BUCKET        bucket name                     (default colewheatley-com)
-    WHEATLEY_PUBLIC_BASE   public origin serving the bucket (default https://colewheatley.com)
+    WHEATLEY_BUCKET        bucket name                     (default wheatley-cloud)
     WHEATLEY_S3_ENDPOINT   S3 API endpoint                 (default: the Cloudflare account's R2 endpoint)
     WHEATLEY_AWS_PROFILE   aws CLI profile holding R2 keys (default r2; set to "" to use ambient
                            AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, e.g. an R2 token on a build box)
     WHEATLEY_AWS_REGION    signing region                  (default auto)
 
-The old S3 bucket and the R2 bucket ``wheatley-cloud`` (now Nunatak's) must not
-receive Hexagons deploys.
+The old S3 bucket is a frozen fallback and must not receive deploys.
 
 R2 differences that matter here: no ``--website-redirect-location`` (write a
 meta-refresh HTML page instead); folder URL -> index.html is a Cloudflare
@@ -32,14 +26,8 @@ Content-Encoding metadata are stored and served as set.
 from __future__ import annotations
 
 import os
-import sys
 
-BUCKET = os.environ.get("WHEATLEY_BUCKET", "colewheatley-com")
-PUBLIC_BASE = os.environ.get("WHEATLEY_PUBLIC_BASE", "https://colewheatley.com").rstrip("/")
-LEGACY_BUCKETS = ("wheatley-cloud", "wheatley.cloud")
-if BUCKET in LEGACY_BUCKETS:  # a stale shell export would otherwise publish to the old site silently
-    print(f"r2_target: WARNING: WHEATLEY_BUCKET={BUCKET} is a legacy bucket; Hexagons publishes to "
-          "colewheatley-com since 2026-10-31", file=sys.stderr)
+BUCKET = os.environ.get("WHEATLEY_BUCKET", "wheatley-cloud")
 ENDPOINT = os.environ.get(
     "WHEATLEY_S3_ENDPOINT", "https://898b8ac0de5372981a4a7de7641c4135.r2.cloudflarestorage.com")
 PROFILE = os.environ.get("WHEATLEY_AWS_PROFILE", "r2")
@@ -75,10 +63,5 @@ def s3_url(key: str, bucket: str | None = None) -> str:
     return f"s3://{bucket or BUCKET}/{key.lstrip('/')}"
 
 
-def public_url(key: str = "") -> str:
-    """Public HTTPS URL of a bucket key, e.g. public_url("hexagons/app/tile_manifest.json")."""
-    return f"{PUBLIC_BASE}/{key.lstrip('/')}"
-
-
 if __name__ == "__main__":  # `python scripts/r2_target.py` prints the effective target
-    print(f"bucket={BUCKET} public={PUBLIC_BASE} endpoint={ENDPOINT} profile={PROFILE or '(ambient env credentials)'} region={REGION}")
+    print(f"bucket={BUCKET} endpoint={ENDPOINT} profile={PROFILE or '(ambient env credentials)'} region={REGION}")

@@ -76,13 +76,11 @@ AWS CLI v2 is pinned by Pixi. Credentials must work non-interactively:
 pixi run aws sts get-caller-identity
 ```
 
-The production bucket/prefix default to `s3://colewheatley-com/hexagons/app` on **Cloudflare R2**,
-served at `https://colewheatley.com/hexagons/` (Hexagons moved there on 2026-10-31; the R2 bucket
-`wheatley-cloud` is now the Nunatak site and its `/hexagons/*` URLs only redirect; the old `wheatley.cloud`
-AWS S3 bucket is a frozen fallback; deploy to neither). Override with `HEXAGONS_S3_BUCKET` and `HEXAGONS_S3_PREFIX` if required.
+The production bucket/prefix default to `s3://wheatley-cloud/hexagons/app` on **Cloudflare R2**
+(the site moved off AWS S3 on 2026-10-11; the old `wheatley.cloud` S3 bucket is a frozen fallback and
+must not be deployed to). Override with `HEXAGONS_S3_BUCKET` and `HEXAGONS_S3_PREFIX` if required.
 The endpoint, aws profile (`r2`, holding the R2 access keys in `~/.aws/credentials`) and region (`auto`)
-are defined once in `scripts/r2_target.py` and overridable via `WHEATLEY_BUCKET`,
-`WHEATLEY_PUBLIC_BASE` (public origin, default `https://colewheatley.com`), `WHEATLEY_S3_ENDPOINT`,
+are defined once in `scripts/r2_target.py` and overridable via `WHEATLEY_S3_ENDPOINT`,
 `WHEATLEY_AWS_PROFILE` (empty string = use ambient `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) and
 `WHEATLEY_AWS_REGION`. The Rechner therefore needs an `r2` profile (or those env vars) before preflight.
 
@@ -127,8 +125,8 @@ idempotent by size, content type, cache policy, and SHA-256 metadata.
 After strict manifest validation, the isolated app build and landing files are
 copied without deletion to:
 
-- `https://colewheatley.com/hexagons/`
-- `https://colewheatley.com/hexagons/app/`
+- `https://wheatley.cloud/hexagons/`
+- `https://wheatley.cloud/hexagons/app/`
 
 Static versioned files use immutable caching. HTML and the mutable manifest
 revalidate. The final manifest pointer flips only after immutable assets exist.

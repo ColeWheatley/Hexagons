@@ -56,7 +56,7 @@ EXPECTED_FULL_CORPUS_FILES = 3_718
 # with a different effort can never match a marker, and every already-baked
 # page then looks stale to a regenerated inventory.
 PRODUCTION_ENCODING_EFFORT = 4
-DEFAULT_BUCKET = r2_target.BUCKET  # Cloudflare R2 bucket (colewheatley-com since 2026-10-31)
+DEFAULT_BUCKET = r2_target.BUCKET  # Cloudflare R2 bucket (wheatley.cloud moved off S3 2026-10-11)
 DEFAULT_PREFIX = "hexagons/app"
 
 
