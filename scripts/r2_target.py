@@ -16,7 +16,10 @@ Override with environment variables (nothing else in the repo hard-codes these):
                            AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, e.g. an R2 token on a build box)
     WHEATLEY_AWS_REGION    signing region                  (default auto)
 
-The old S3 bucket is a frozen fallback and must not receive deploys.
+The old S3 bucket is a frozen fallback and must not receive deploys. Enforced here:
+every bucket name, ``s3://`` URL and ``--bucket`` argument that passes through this module is
+checked, and a legacy bucket (the AWS S3 ones, or another site's R2 bucket) or an AWS endpoint
+stops the script before anything is sent.
 
 R2 differences that matter here: no ``--website-redirect-location`` (write a
 meta-refresh HTML page instead); folder URL -> index.html is a Cloudflare
@@ -35,9 +38,38 @@ REGION = os.environ.get("WHEATLEY_AWS_REGION", "auto")
 
 _AWS_CREDENTIAL_ENV = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
 
+# Buckets Hexagons must never write to: the frozen AWS S3 buckets, and the R2 buckets of the other two sites.
+LEGACY_BUCKETS = frozenset({
+    "wheatley.cloud", "www.wheatley.cloud", "wheatley-cloud-eu",      # AWS S3, frozen since 2026-10-11
+    "colewheatley.com", "www.colewheatley.com",                       # AWS S3, old colewheatley.com
+    "colewheatley-com", "powcast", "nunatak",                         # R2: other sites / the duplicate bucket
+})
+
+
+def check_bucket(bucket: str) -> str:
+    """Return ``bucket``, or stop the script if it is a legacy bucket."""
+    if bucket in LEGACY_BUCKETS:
+        raise SystemExit(f"r2_target: refusing bucket {bucket!r}: it is a legacy bucket, not wheatley.cloud's R2 "
+                         f"bucket (wheatley-cloud). See LEGACY_BUCKETS in scripts/r2_target.py.")
+    return bucket
+
+
+def _check_args(args: tuple[str, ...]) -> None:
+    for i, arg in enumerate(args):
+        if arg.startswith("s3://"):
+            check_bucket(arg[5:].split("/", 1)[0])
+        elif arg == "--bucket" and i + 1 < len(args):
+            check_bucket(args[i + 1])
+
+
+if "amazonaws.com" in ENDPOINT:
+    raise SystemExit(f"r2_target: refusing endpoint {ENDPOINT!r}: AWS S3 is frozen; Hexagons publishes to Cloudflare R2.")
+check_bucket(BUCKET)
+
 
 def aws(*args: str) -> list[str]:
     """``aws <args> [--profile P] --region R --endpoint-url E`` (explicit flags: old CLIs ignore endpoint_url in config)."""
+    _check_args(args)
     command = ["aws", *args]
     if PROFILE:
         command += ["--profile", PROFILE]
@@ -60,7 +92,7 @@ def aws_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def s3_url(key: str, bucket: str | None = None) -> str:
-    return f"s3://{bucket or BUCKET}/{key.lstrip('/')}"
+    return f"s3://{check_bucket(bucket or BUCKET)}/{key.lstrip('/')}"
 
 
 if __name__ == "__main__":  # `python scripts/r2_target.py` prints the effective target
